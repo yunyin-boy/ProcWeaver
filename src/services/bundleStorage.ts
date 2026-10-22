@@ -1,0 +1,428 @@
+import {
+  BusinessBundleDefinition,
+  BundleLocalInstance,
+  ExportableBundlePackage,
+  BundleSlot,
+  BundleProcessMember,
+  BundleCategory,
+  BundleFallback,
+} from "../types/businessBundle";
+import type { BundlePlatform } from "../types/platform";
+import { validAndroidPackage, processMembers, validateProcessBindings } from "../utils/bundlePlatform";
+import type { BundleRepositoryOrigin } from "../types/bundleRepository";
+
+const STORAGE_KEY = "netbox_business_bundles_instances_v1";
+let installSerial = 0;
+
+// 标准默认语义插槽
+const DEFAULT_SLOTS: BundleSlot[] = [
+  {
+    id: "main",
+    name: "主业务出口",
+    description: "业务主进程与核心后台伴生进程访问外网所使用的代理节点",
+    required: true,
+  },
+  {
+    id: "dns",
+    name: "DNS 解析出口",
+    description: "域名解析出站插槽，默认跟随主业务出口以防 DNS 投毒",
+    required: false,
+    followSlotId: "main",
+  },
+];
+
+// 内置开箱精选规则包模板（便携包与安装包仅携带 OpenAI 与 Google 反重力 2 个核心套件）
+export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
+  {
+    packageId: "openai-chatgpt",
+    packageName: "OpenAI / ChatGPT 生产力套件",
+    packageVersion: "v1.3",
+    category: "dev",
+    mode: "strict",
+    icon: "🧠",
+    description: "管理 ChatGPT、Codex 及已配置伴生进程的业务出口；目标应用须支持代理接入，实际效果以连接记录为准",
+    slots: DEFAULT_SLOTS,
+    processes: [
+      { exe: "ChatGPT.exe", role: "main", description: "桌面主客户端" },
+      { exe: "codex.exe", role: "worker", description: "OpenAI 核心数据与代码辅助进程" },
+      { exe: "node.exe", role: "worker", description: "扩展脚本与本地运行依赖" },
+    ],
+    additionalExes: ["ChatGPT.exe", "codex.exe", "node.exe"],
+    macosProcesses: [
+      { exe: "ChatGPT", role: "main", description: "macOS 桌面客户端；需遵循系统代理设置" },
+      { exe: "codex", role: "cli", description: "命令行进程；需配置代理环境变量" },
+    ],
+    domains: [
+      "openai.com",
+      "chatgpt.com",
+      "oaistatic.com",
+      "oaiusercontent.com",
+      "auth0.openai.com",
+    ],
+  },
+  {
+    packageId: "google-antigravity",
+    packageName: "Google Antigravity 2.0 研发套件",
+    packageVersion: "v1.0",
+    category: "dev",
+    mode: "strict",
+    icon: "🌌",
+    description: "管理 Antigravity 主程序及当前平台已配置的协同进程；可观测子进程继承业务出口规则",
+    slots: DEFAULT_SLOTS,
+    processes: [
+      { exe: "Antigravity.exe", role: "main", description: "主集成开发环境与核心进程" },
+      { exe: "language_server.exe", role: "worker", description: "LSP 语言模型与语义推理核心工作服务" },
+      { exe: "agy.exe", role: "cli", description: "Antigravity 开发者命令行终端" },
+      { exe: "antigravity-service.exe", role: "worker", description: "后台状态监测守护服务" },
+    ],
+    additionalExes: [
+      "Antigravity.exe",
+      "antigravity.exe",
+      "language_server.exe",
+      "agy.exe",
+      "antigravity-service.exe",
+      "Antigravity IDE.exe",
+    ],
+    macosProcesses: [{ exe: "Antigravity", role: "main", description: "macOS 应用主进程及可观测的子进程" }],
+    domains: [
+      "antigravity.google",
+      "gemini.google.com",
+      "generativeai.google",
+      "aistudio.google.com",
+    ],
+  },
+];
+
+// 获取全部已装载的本地规则包实例 (开箱严格仅装载官方 2 个预设：OpenAI 与 Google 反重力)
+export function getBundleInstances(): BundleLocalInstance[] {
+  const independent = typeof document !== "undefined" && document.documentElement.dataset.edition === "process";
+  const prepare = (instances: BundleLocalInstance[]): BundleLocalInstance[] => independent
+    ? instances.map(i => i.backend === "external" ? i : { ...i, backend: "external", enabled: false, slotBindings: { main: null, dns: "FOLLOW_MAIN" }, slotTargets: undefined, externalEndpointId: null })
+    : instances;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        // 自动清洗历史遗留的旧版未修改 mock 套件 (inst-cursor / inst-browser)
+        const cleaned = parsed.filter(
+          (item: BundleLocalInstance) =>
+            !["inst-cursor", "inst-browser"].includes(item.instanceId)
+        );
+        if (cleaned.length !== parsed.length) {
+          const ready = prepare(cleaned);
+          saveBundleInstances(ready);
+          return ready;
+        }
+        const ready = prepare(parsed);
+        if (independent && ready.some((item, index) => item !== parsed[index])) saveBundleInstances(ready);
+        return ready;
+      }
+    }
+  } catch (err) {
+    console.error("读取业务规则包存储失败:", err);
+  }
+
+  // 初次初始化：严格仅装载官方开箱双预设（OpenAI 和 反重力），其余全部按需自仓库获取或手动导入
+  const initialInstances: BundleLocalInstance[] = [
+    {
+      instanceId: "inst-chatgpt",
+      definition: PRESET_BUNDLES_CATALOG[0], // ChatGPT
+      enabled: true,
+      slotBindings: { main: null, dns: "FOLLOW_MAIN" },
+      watcherMode: "auto",
+      isModified: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+    {
+      instanceId: "inst-antigravity",
+      definition: PRESET_BUNDLES_CATALOG[1], // Google Antigravity
+      enabled: false, // 默认停用 (跟随系统默认)
+      slotBindings: { main: null, dns: "FOLLOW_MAIN" },
+      watcherMode: "auto",
+      isModified: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  ];
+
+  const ready = prepare(initialInstances);
+  saveBundleInstances(ready);
+  return ready;
+}
+
+// 保存本地实例到持久化存储
+export function saveBundleInstances(instances: BundleLocalInstance[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(instances));
+  } catch (err) {
+    console.error("持久化业务规则包实例失败:", err);
+    throw new Error("无法保存本机规则包，请检查存储空间后重试");
+  }
+}
+
+// 从预设模板装载新实例
+export function installPresetBundle(
+  definition: BusinessBundleDefinition,
+  autoEnable = false,
+  boundNode: string | null = null,
+  repositoryOrigin?: BundleRepositoryOrigin
+): BundleLocalInstance {
+  const instances = getBundleInstances();
+  let instanceId: string;
+  do { instanceId = `inst-${definition.packageId}-${Date.now().toString(36)}-${(++installSerial).toString(36)}`; } while (instances.some(i => i.instanceId === instanceId));
+
+  const newInstance: BundleLocalInstance = {
+    instanceId,
+    definition: JSON.parse(JSON.stringify(definition)),
+    enabled: autoEnable && Boolean(boundNode),
+    slotBindings: {
+      main: boundNode,
+      dns: "FOLLOW_MAIN",
+    },
+    watcherMode: definition.mode === "sandbox" ? "notify" : "auto",
+    isModified: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...(repositoryOrigin ? { repositoryOrigin: { ...repositoryOrigin } } : {}),
+  };
+
+  instances.push(newInstance);
+  saveBundleInstances(instances);
+  return newInstance;
+}
+
+// 更新指定实例
+export function updateBundleInstance(
+  instanceId: string,
+  updater: (prev: BundleLocalInstance) => BundleLocalInstance
+): BundleLocalInstance[] {
+  const instances = getBundleInstances();
+  const index = instances.findIndex((i) => i.instanceId === instanceId);
+  if (index !== -1) {
+    const updated = updater(instances[index]);
+    updated.updatedAt = Date.now();
+    instances[index] = updated;
+    saveBundleInstances(instances);
+  }
+  return instances;
+}
+
+// 卸载/删除指定实例
+export function deleteBundleInstance(instanceId: string): BundleLocalInstance[] {
+  const instances = getBundleInstances().filter((i) => i.instanceId !== instanceId);
+  saveBundleInstances(instances);
+  return instances;
+}
+
+// 创建自定义规则包
+export function createCustomBundle(
+  name: string,
+  exes: string[],
+  domains: string[],
+  platform: BundlePlatform = "windows",
+  processBindings?: BundleLocalInstance["processBindings"],
+  options?: {
+    icon?: string;
+    mode?: "strict" | "sandbox";
+    category?: BundleCategory;
+    description?: string;
+    fallback?: BundleFallback;
+  }
+): BundleLocalInstance {
+  const instances = getBundleInstances();
+  const packageId = `custom-${Date.now().toString(36)}`;
+  const bindings = platform === "android" ? [] : processBindings?.[platform] ?? [];
+  validateProcessBindings(bindings, platform);
+
+  const mode = options?.mode ?? "strict";
+  const definition: BusinessBundleDefinition = {
+    packageId,
+    packageName: name,
+    packageVersion: "v1.0",
+    category: options?.category ?? "custom",
+    mode,
+    icon: options?.icon ?? "📦",
+    fallback: options?.fallback ?? (mode === "strict" ? "direct" : "rules"),
+    description: options?.description ?? "用户自定义业务规则套件",
+    slots: DEFAULT_SLOTS,
+    processes: processMembers(platform === "windows" ? exes : [], [], bindings, platform),
+    additionalExes: platform === "windows" ? exes : [],
+    macosProcesses: platform === "macos" ? processMembers(exes, [], bindings, platform) : undefined,
+    androidPackages: platform === "android" ? exes : undefined,
+    domains,
+  };
+
+  const newInstance: BundleLocalInstance = {
+    instanceId: `inst-${packageId}`,
+    definition,
+    processBindings,
+    enabled: false, // 默认停用 (跟随系统默认)
+    slotBindings: { main: null, dns: "FOLLOW_MAIN" },
+    watcherMode: mode === "sandbox" ? "notify" : "auto",
+    isModified: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+
+  instances.push(newInstance);
+  saveBundleInstances(instances);
+  return newInstance;
+}
+
+// 规范安全导出：生成 .pwpack.json (白名单脱敏，绝对剔除本机实际节点与订阅身份)
+export function exportBundlePackage(instance: BundleLocalInstance): ExportableBundlePackage {
+  const def = instance.definition;
+  // 仅克隆通用的结构，绝不携带 slotBindings
+  const cleanDef: BusinessBundleDefinition = {
+    packageId: def.packageId,
+    packageName: def.packageName,
+    packageVersion: def.packageVersion,
+    category: def.category,
+    mode: def.mode,
+    fallback: def.fallback ?? "rules",
+    icon: def.icon,
+    description: def.description,
+    slots: def.slots.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      required: s.required,
+      followSlotId: s.followSlotId,
+    })),
+    processes: def.processes.map((p) => ({
+      exe: p.exe,
+      role: p.role,
+      description: p.description,
+      ...(p.includeDescendants !== undefined ? { includeDescendants: p.includeDescendants } : {}),
+    })),
+    macosProcesses: def.macosProcesses?.map(p => ({ exe: p.exe, role: p.role, description: p.description, ...(p.includeDescendants !== undefined ? { includeDescendants: p.includeDescendants } : {}) })),
+    androidPackages: def.androidPackages ? [...def.androidPackages] : undefined,
+    additionalExes: def.additionalExes ? [...def.additionalExes] : undefined,
+    domains: def.domains ? [...def.domains] : undefined,
+    author: def.author || "Net-Box User",
+  };
+
+  return {
+    formatVersion: "1.0",
+    exportedAt: new Date().toISOString(),
+    bundle: cleanDef,
+  };
+}
+
+// 校验并解析外部导入的 .pwpack.json (严格遵循 B05 契约)
+export function validateAndParseBundlePackage(jsonString: string): {
+  valid: boolean;
+  error?: string;
+  bundle?: BusinessBundleDefinition;
+} {
+  try {
+    if (!jsonString || typeof jsonString !== "string") {
+      return { valid: false, error: "导入内容为空" };
+    }
+    if (jsonString.length > 5 * 1024 * 1024) {
+      return { valid: false, error: "导入文件体积过大（超过 5MB 上限），已拒绝处理" };
+    }
+
+    const data = JSON.parse(jsonString);
+    if (!data || typeof data !== "object") {
+      return { valid: false, error: "文件格式无效，非合法的 JSON 对象" };
+    }
+
+    if (data.formatVersion && typeof data.formatVersion === "string" && !data.formatVersion.startsWith("1.")) {
+      return { valid: false, error: `不支持的规则包格式版本: ${data.formatVersion}` };
+    }
+
+    const bundle = data.bundle || data;
+    if (bundle.fallback !== undefined && !["rules", "system", "direct"].includes(bundle.fallback)) {
+      return { valid: false, error: "未命中域名时的策略无效" };
+    }
+    if (!bundle.packageName || typeof bundle.packageName !== "string" || !bundle.packageName.trim()) {
+      return { valid: false, error: "缺少必要的规则包名称 (packageName)" };
+    }
+    if (!Array.isArray(bundle.processes) || (bundle.processes.length === 0 && !bundle.macosProcesses?.length && !bundle.androidPackages?.length)) {
+      return { valid: false, error: "规则包中必须至少包含一个进程定义 (processes)" };
+    }
+    if (bundle.processes.length > 100) {
+      return { valid: false, error: "单包进程数量超过安全上限 (最大 100 个)" };
+    }
+
+    // 清洗并严格校验进程名（严禁路径遍历字符、斜杠以及纯数字）
+    const validProcesses: BundleProcessMember[] = [];
+    for (const p of bundle.processes) {
+      const rawExe = (typeof p === "string" ? p : p?.exe || "").trim();
+      if (!rawExe) continue;
+      // 拒绝路径遍历或带路径的非法执行内容
+      if (rawExe.includes("/") || rawExe.includes("\\") || rawExe.includes("..")) {
+        return { valid: false, error: `检测到不安全的进程路径字符: ${rawExe}` };
+      }
+      // 拒绝纯数字进程名
+      if (/^\d+$/.test(rawExe)) {
+        return { valid: false, error: `进程名称无效（不能为纯数字）: ${rawExe}` };
+      }
+      const role = p.role === "main" || p.role === "cli" ? p.role : "worker";
+      validProcesses.push({
+        exe: rawExe,
+        role,
+        description: typeof p.description === "string" ? p.description : "",
+        ...(typeof p.includeDescendants === "boolean" ? { includeDescendants: p.includeDescendants } : {}),
+      });
+    }
+
+    let macosProcesses: BundleProcessMember[] | undefined;
+    if (bundle.macosProcesses !== undefined) {
+      if (!Array.isArray(bundle.macosProcesses) || bundle.macosProcesses.length > 100) return { valid: false, error: "macOS 进程列表无效或超过 100 个" };
+      macosProcesses = [];
+      for (const p of bundle.macosProcesses) {
+        if (!p || typeof p.exe !== "string" || !p.exe.trim() || p.exe.length > 260 || /[/\\\x00-\x1f]/.test(p.exe) || p.exe.includes("..") || /^\d+$/.test(p.exe.trim()) || p.exe.trim().toLowerCase().endsWith(".app")) return { valid: false, error: "macOS 进程名无效；请填写 .app 内实际可执行文件名" };
+        if (!["main", "worker", "cli", "helper"].includes(p.role)) return { valid: false, error: "macOS 进程角色无效" };
+        macosProcesses.push({ exe: p.exe.trim(), role: p.role, description: typeof p.description === "string" ? p.description.slice(0, 512) : "", ...(typeof p.includeDescendants === "boolean" ? { includeDescendants: p.includeDescendants } : {}) });
+      }
+    }
+    let androidPackages: string[] | undefined;
+    if (bundle.androidPackages !== undefined) {
+      if (!Array.isArray(bundle.androidPackages) || bundle.androidPackages.length > 100 || bundle.androidPackages.some((p: unknown) => typeof p !== "string" || !validAndroidPackage(p))) {
+        return { valid: false, error: "Android 应用包名无效或超过 100 个" };
+      }
+      androidPackages = [...new Set<string>(bundle.androidPackages)];
+    }
+    if (validProcesses.length === 0 && !macosProcesses?.length && !androidPackages?.length) {
+      return { valid: false, error: "经过过滤后，未找到任何有效的可执行进程定义" };
+    }
+
+    // 校验域名列表
+    let validDomains: string[] | undefined = undefined;
+    if (Array.isArray(bundle.domains)) {
+      if (bundle.domains.length > 1000) {
+        return { valid: false, error: "单包域名数量超过安全上限 (最大 1000 个)" };
+      }
+      validDomains = bundle.domains
+        .filter((d: any) => typeof d === "string" && d.trim().length > 0 && !d.includes(" ") && !d.includes("/"))
+        .map((d: any) => d.trim().toLowerCase());
+    }
+
+    // 格式化并补全插槽
+    const validBundle: BusinessBundleDefinition = {
+      packageId: bundle.packageId || `imported-${Date.now().toString(36)}`,
+      packageName: bundle.packageName.trim(),
+      packageVersion: bundle.packageVersion || "v1.0",
+      category: bundle.category || "custom",
+      mode: bundle.mode === "sandbox" ? "sandbox" : "strict",
+      fallback: bundle.fallback ?? "rules",
+      icon: bundle.icon || "📦",
+      description: bundle.description || "导入的规则包",
+      slots: Array.isArray(bundle.slots) && bundle.slots.length > 0 ? bundle.slots : DEFAULT_SLOTS,
+      processes: validProcesses,
+      macosProcesses,
+      androidPackages,
+      additionalExes: Array.isArray(bundle.additionalExes) ? bundle.additionalExes.filter((e: any) => typeof e === "string") : undefined,
+      domains: validDomains,
+      author: bundle.author,
+    };
+
+    return { valid: true, bundle: validBundle };
+  } catch (err: any) {
+    return { valid: false, error: `解析 JSON 失败: ${err.message || err}` };
+  }
+}
