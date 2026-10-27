@@ -15,7 +15,8 @@ impl Fixture {
         config.default_endpoint_id = Some("upstream".into()); config.endpoints = vec![endpoint("upstream", port)];
         config.dns.enabled = dns_enabled;
         config.bundles = vec![Bundle { id: "bundle".into(), name: "bundle".into(), main_exe: path.clone(), enabled: true, mode: "strict".into(), domains: vec![],
-            members: vec![model::Member { kind: "path".into(), value: path, descendants: true }], endpoint_id: None, fallback: "direct".into(), port: 0, dns_port: 0 }];
+            members: vec![model::Member { kind: "path".into(), value: path, descendants: true }], endpoint_id: None, fallback: "direct".into(), port: 0, dns_port: 0,
+            block_ipv6: None, block_udp: None, sniff_sni: None }];
         self.runtime.apply(config).await.unwrap()
     }
 }

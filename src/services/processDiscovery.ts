@@ -172,3 +172,186 @@ export function createDomainCollector(limit = 500, connectionLimit = 10000) {
     get saturated() { return saturated; },
   };
 }
+
+export const KNOWN_APP_NAMES: Record<string, { label: string; icon: string }> = {
+  "chrome.exe": { label: "Google Chrome 浏览器", icon: "🌐" },
+  "msedge.exe": { label: "Microsoft Edge 浏览器", icon: "🌐" },
+  "firefox.exe": { label: "Mozilla Firefox 火狐", icon: "🦊" },
+  "brave.exe": { label: "Brave 隐私浏览器", icon: "🦁" },
+  "antigravity.exe": { label: "Antigravity 2.0 桌面端", icon: "🌌" },
+  "antigravity ide.exe": { label: "Antigravity 次世代 IDE", icon: "🛸" },
+  "language_server.exe": { label: "Antigravity 核心语言服务 (LSP)", icon: "🧠" },
+  "language_server_windows_x64.exe": { label: "Antigravity 核心语言服务 (LSP)", icon: "🧠" },
+  "telegram.exe": { label: "Telegram 桌面端", icon: "💬" },
+  "discord.exe": { label: "Discord 语音客户端", icon: "🎮" },
+  "code.exe": { label: "Visual Studio Code", icon: "💻" },
+  "cursor.exe": { label: "Cursor AI 编辑器", icon: "💻" },
+  "idea64.exe": { label: "IntelliJ IDEA", icon: "💻" },
+  "pycharm64.exe": { label: "PyCharm", icon: "🐍" },
+  "webstorm64.exe": { label: "WebStorm", icon: "💻" },
+  "rider64.exe": { label: "JetBrains Rider", icon: "💻" },
+  "clion64.exe": { label: "CLion", icon: "💻" },
+  "steam.exe": { label: "Steam 游戏平台", icon: "🕹️" },
+  "steamwebhelper.exe": { label: "Steam 网页辅助服务", icon: "🕹️" },
+  "epicgameslauncher.exe": { label: "Epic Games 客户端", icon: "🎮" },
+  "wechat.exe": { label: "微信桌面版", icon: "💬" },
+  "qq.exe": { label: "腾讯 QQ 客户端", icon: "🐧" },
+  "spotify.exe": { label: "Spotify 音乐播放器", icon: "🎵" },
+  "cloudmusic.exe": { label: "网易云音乐", icon: "🎵" },
+  "dingtalk.exe": { label: "钉钉桌面端", icon: "💼" },
+  "feishu.exe": { label: "飞书桌面端", icon: "💼" },
+  "notion.exe": { label: "Notion 笔记", icon: "📝" },
+  "obs64.exe": { label: "OBS Studio 录屏推流", icon: "📹" },
+  "potplayer64.exe": { label: "PotPlayer 播放器", icon: "🎬" },
+  "clash-verge.exe": { label: "Clash Verge 客户端", icon: "🐱" },
+  "node.exe": { label: "Node.js 运行时", icon: "🟢" },
+  "git.exe": { label: "Git 版本控制", icon: "🌿" },
+  "powershell.exe": { label: "Windows PowerShell", icon: "⚡" },
+  "pwsh.exe": { label: "PowerShell Core", icon: "⚡" },
+  "postman.exe": { label: "Postman API 工具", icon: "🚀" },
+  "thunder.exe": { label: "迅雷下载", icon: "⚡" },
+  "baidunetdisk.exe": { label: "百度网盘", icon: "☁️" },
+  "wemeetapp.exe": { label: "腾讯会议", icon: "📹" },
+  "slack.exe": { label: "Slack 协作", icon: "💬" },
+  "doudian.exe": { label: "抖店工作台", icon: "🛍️" },
+};
+
+export const SYSTEM_PROCESS_NAMES = new Set([
+  "system",
+  "[system process]",
+  "registry",
+  "smss.exe",
+  "csrss.exe",
+  "wininit.exe",
+  "services.exe",
+  "lsass.exe",
+  "svchost.exe",
+  "fontdrvhost.exe",
+  "dwm.exe",
+  "memory compression",
+  "spoolsv.exe",
+  "runtimebroker.exe",
+  "taskhostw.exe",
+  "sihost.exe",
+  "ctfmon.exe",
+  "searchhost.exe",
+  "shellexperiencehost.exe",
+  "startmenuexperiencehost.exe",
+  "securityhealthservice.exe",
+  "sgrmbroker.exe",
+  "smartscreen.exe",
+  "conhost.exe",
+  "wudfhost.exe",
+  "dashost.exe",
+  "dllhost.exe",
+  "explorer.exe",
+  "textinputhost.exe",
+  "searchindexer.exe",
+  "audiodg.exe",
+  "cmd.exe",
+]);
+
+export interface ProcessAppCard {
+  id: string;
+  name: string;
+  friendlyName?: string;
+  icon: string;
+  executablePath: string;
+  instances: ProcessEntry[];
+  children: ProcessEntry[];
+  isSystem: boolean;
+  mainPid: number;
+}
+
+export function aggregateProcessCards(
+  entries: ProcessEntry[],
+  platform: BundlePlatform,
+  query: string = "",
+  hideSystem: boolean = true
+): ProcessAppCard[] {
+  const groups = new Map<string, ProcessEntry[]>();
+
+  for (const p of entries) {
+    if (!p.name) continue;
+    // PID 0 or missing executable path
+    if (p.pid === 0 || !p.executablePath) {
+      if (hideSystem) continue;
+      const key = "system:pid0";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(p);
+      continue;
+    }
+    const key = processKey(p.executablePath, platform);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(p);
+  }
+
+  const identityToGroupKey = new Map<string, string>();
+  for (const [key, list] of groups.entries()) {
+    for (const p of list) identityToGroupKey.set(p.identity, key);
+  }
+
+  const cards: ProcessAppCard[] = [];
+
+  for (const [key, items] of groups.entries()) {
+    const rep = items.find(i => Boolean(i.executablePath)) || items[0];
+    const exe = rep.executablePath ? executableName(rep.executablePath) : rep.name;
+    const lower = exe.toLowerCase();
+    const isSystem = SYSTEM_PROCESS_NAMES.has(lower) || rep.pid === 0;
+
+    if (hideSystem && isSystem) continue;
+
+    const known = KNOWN_APP_NAMES[lower];
+    const icon = known?.icon || (isSystem ? "⚙️" : "🖥️");
+    const friendlyName = known?.label;
+
+    // Discover children spawned by any instance in this card
+    const spawnedChildren: ProcessEntry[] = [];
+    const childSet = new Set<string>();
+
+    for (const p of entries) {
+      if (!p.parentIdentity || childSet.has(p.identity)) continue;
+      const parentKey = identityToGroupKey.get(p.parentIdentity);
+      if (parentKey === key && identityToGroupKey.get(p.identity) !== key) {
+        childSet.add(p.identity);
+        spawnedChildren.push(p);
+      }
+    }
+
+    cards.push({
+      id: key,
+      name: exe,
+      friendlyName,
+      icon,
+      executablePath: rep.executablePath || "",
+      instances: items.sort((a, b) => a.pid - b.pid),
+      children: spawnedChildren.sort((a, b) => a.name.localeCompare(b.name) || a.pid - b.pid),
+      isSystem,
+      mainPid: items[0].pid,
+    });
+  }
+
+  // Filter with query
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? cards.filter(c => {
+        if (c.name.toLowerCase().includes(q)) return true;
+        if (c.friendlyName && c.friendlyName.toLowerCase().includes(q)) return true;
+        if (c.executablePath.toLowerCase().includes(q)) return true;
+        if (c.instances.some(i => i.pid.toString().includes(q))) return true;
+        if (c.children.some(ch => ch.name.toLowerCase().includes(q) || ch.pid.toString().includes(q) || (ch.executablePath && ch.executablePath.toLowerCase().includes(q)))) return true;
+        return false;
+      })
+    : cards;
+
+  // Sort: Known apps first, then non-system, then alphabet, then system
+  return filtered.sort((a, b) => {
+    const aKnown = KNOWN_APP_NAMES[a.name.toLowerCase()] ? 1 : 0;
+    const bKnown = KNOWN_APP_NAMES[b.name.toLowerCase()] ? 1 : 0;
+    if (aKnown !== bKnown) return bKnown - aKnown;
+
+    if (a.isSystem !== b.isSystem) return a.isSystem ? 1 : -1;
+
+    return a.name.localeCompare(b.name);
+  });
+}

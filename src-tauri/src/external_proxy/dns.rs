@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream, UdpSocket}, sync::{watch, Semaphore}};
 
 #[derive(Debug)]
-pub(super) struct Question { pub name: String, id: u16, kind: u16, class: u16, end: usize }
+pub(super) struct Question { pub name: String, pub id: u16, pub kind: u16, pub class: u16, pub end: usize }
 impl PartialEq for Question {
     fn eq(&self, other: &Self) -> bool { self.name == other.name && self.id == other.id && self.kind == other.kind && self.class == other.class }
 }
@@ -103,6 +103,10 @@ pub(super) fn failure(query: &[u8], code: u8) -> Vec<u8> {
         result.extend(q.kind.to_be_bytes()); result.extend(q.class.to_be_bytes());
     }
     result
+}
+/// 空响应秒回 (NOERROR, Answers: 0)，用于阻断 IPv6 AAAA 查询
+pub(super) fn empty_reply(query: &[u8]) -> Vec<u8> {
+    failure(query, 0)
 }
 fn append_name(packet: &mut Vec<u8>, name: &str) {
     for part in name.split('.').filter(|s| !s.is_empty()) { packet.push(part.len() as u8); packet.extend(part.as_bytes()); }
@@ -234,6 +238,11 @@ pub(super) async fn listen(runtime: Arc<Engine>, id: String, tcp: TcpListener, u
 }
 async fn handle(runtime: &Engine, id: &str, process: &crate::routing_overrides::tracker::ProcessEntry, query: &[u8], tcp: bool) -> Vec<u8> {
     let Ok(q) = question(query) else { return failure(query, 1); };
+    let config = runtime.config();
+    let bundle = config.bundles.iter().find(|b| b.id == id);
+    if bundle.map(|b| b.effective_block_ipv6(&config)).unwrap_or(config.block_ipv6) && q.kind == 28 {
+        return empty_reply(query);
+    }
     let policy_target = Destination { host: q.name, port: 53 };
     let Ok((endpoint, route, generation, ports)) = runtime.select(id, process, &policy_target) else { return failure(query, 5); };
     let settings = runtime.config().dns;

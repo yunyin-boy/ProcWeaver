@@ -396,10 +396,15 @@ async fn wait_for_core_ready(child: &mut Child, controller: u16, mixed: u16) -> 
 #[tauri::command]
 pub async fn stop_core(state: tauri::State<'_, CoreStateMutex>) -> Result<CoreStatus, String> {
     let _lifecycle = LIFECYCLE.lock().await;
-    let mut state = state.lock().map_err(|e| e.to_string())?;
-
-    stop_owned_child(&mut state)?;
+    let (mixed_port, controller_port) = {
+        let mut state_guard = state.lock().map_err(|e| e.to_string())?;
+        stop_owned_child(&mut state_guard)?;
+        (state_guard.mixed_port, state_guard.controller_port)
+    };
     let proxy = sysproxy::system_proxy_snapshot();
+
+    // 核心停止时，若已开启 DNS 护航，需还原系统/驱动 DNS 设置，避免断网
+    let _ = crate::commands::dns_adapter::restore_dns_guard().await;
 
     Ok(CoreStatus {
         running: false,
@@ -407,8 +412,8 @@ pub async fn stop_core(state: tauri::State<'_, CoreStateMutex>) -> Result<CoreSt
         pid: None,
         system_proxy_enabled: proxy.enabled(),
         system_proxy: proxy,
-        mixed_port: state.mixed_port,
-        controller_port: state.controller_port,
+        mixed_port,
+        controller_port,
         active_core: None,
         started_at: None,
     })

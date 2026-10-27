@@ -117,6 +117,7 @@ use super::*;
             targets: vec![entries[0].clone()],
             entries,
             instances: vec![],
+            ..Plan::default()
         };
         plan.validate().unwrap();
         assert_eq!(plan.port_for(r"C:\one\chrome.exe", 1, 1), Some(61002));
@@ -140,8 +141,39 @@ use super::*;
                 created_at: 99,
                 path: r"C:\node.exe".into(),
             }],
+            ..Plan::default()
         };
         assert_eq!(plan.port_for(r"C:\node.exe", 7, 99), Some(61001));
         assert_eq!(plan.port_for(r"C:\node.exe", 7, 100), None);
         assert_eq!(plan.port_for(r"C:\node.exe", 8, 99), None);
+    }
+    #[test]
+    fn sniffer_override_destination_and_scoped_dns_port_matching_work() {
+        use crate::routing_overrides::model::{DnsRule, Overrides, Target};
+        let config = Overrides {
+            dns_enabled: true,
+            dns_rules: vec![DnsRule {
+                id: "ag-dns".into(),
+                enabled: true,
+                domain_kind: "suffix".into(),
+                domain: "googleapis.com".into(),
+                resolver_url: "https://1.1.1.1/dns-query".into(),
+                target: Target {
+                    profile_id: "default".into(),
+                    kind: "node".into(),
+                    name: "VN".into(),
+                },
+            }],
+            ..Overrides::default()
+        };
+        let raw = "dns:\n  enable: true\n  listen: 127.0.0.1:45053\nrules:\n  - MATCH,DIRECT\n";
+        let result: Value = serde_yaml::from_str(&compose(raw, &config).unwrap()).unwrap();
+        assert_eq!(result["sniffer"]["enable"], true);
+        assert_eq!(result["sniffer"]["parse-pure-ip"], true);
+        assert_eq!(result["sniffer"]["override-destination"], true);
+        let plan: Plan = serde_yaml::from_value(result[KEY].clone()).unwrap();
+        assert_eq!(plan.dns_port, Some(45053));
+        assert_eq!(plan.dns_port_for("daily-cloudcode-pa.googleapis.com"), Some(45053));
+        assert_eq!(plan.dns_port_for("googleapis.com"), Some(45053));
+        assert_eq!(plan.dns_port_for("www.baidu.com"), None);
     }

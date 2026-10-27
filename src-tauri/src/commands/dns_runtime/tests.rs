@@ -196,7 +196,7 @@ fn native_dns_startup_reload_and_conflict_are_verified() {
         // 真实护航入口已持有生命周期锁，内部检查不能再次加锁或修改网卡。
         let error = tokio::time::timeout(
             Duration::from_secs(1),
-            crate::commands::dns_adapter::toggle_dns_guard(true),
+            crate::commands::dns_adapter::toggle_dns_guard(true, None),
         )
         .await
         .expect("护航入口不可因重复获取生命周期锁而挂起")

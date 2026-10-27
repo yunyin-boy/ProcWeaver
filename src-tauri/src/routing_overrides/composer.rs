@@ -35,7 +35,11 @@ pub fn compose_owned(raw: &str, config: &Overrides, profile_id: &str) -> Result<
 }
 fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[ProcessRule], owned: bool) -> Result<String, String> {
     let config = normalize(config.clone())?;
-    if !config.process_enabled && !config.dns_enabled { return Ok(raw.into()); }
+    #[cfg(windows)]
+    let windivert_guard = !owned && crate::commands::dns_adapter::is_windivert_dns_guard_active();
+    #[cfg(not(windows))]
+    let windivert_guard = false;
+    if !config.process_enabled && !config.dns_enabled && !windivert_guard { return Ok(raw.into()); }
     let available = targets(raw, profile_id)?;
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
     if config.process_enabled {
@@ -81,7 +85,7 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
         rules.splice(0..0, prefix);
     }
     let dns_rules: Vec<_> = config.dns_rules.iter().filter(|r| config.dns_enabled && r.enabled).collect();
-    if !dns_rules.is_empty() {
+    if !dns_rules.is_empty() || windivert_guard {
         for r in &dns_rules { if !available.contains(&r.target) { return Err(format!("域名 {} 的 DNS 出口不可用，请重绑定或禁用该规则", r.domain)); } }
         // 不静默改变已有直连 DNS、hosts 或节点启动解析策略。
         if yaml["dns"]["direct-nameserver"].as_sequence().is_some_and(|v| !v.is_empty())

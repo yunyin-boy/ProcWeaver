@@ -149,7 +149,13 @@ fn confirm_blocking(plan: Plan, core_pid: u32) -> Result<(), String> {
             return Ok(());
         }
         let (tx, rx) = mpsc::channel();
-        let operation = if !session.paused && session.plan.entries == plan.entries && session.plan.targets == plan.targets {
+        let operation = if !session.paused
+            && session.plan.entries == plan.entries
+            && session.plan.targets == plan.targets
+            && session.plan.dns_port == plan.dns_port
+            && session.plan.dns_domains == plan.dns_domains
+            && session.plan.dns_all == plan.dns_all
+        {
             Operation::Instances { instances: plan.instances.clone() }
         } else { Operation::Update { plan: plan.clone() } };
         session

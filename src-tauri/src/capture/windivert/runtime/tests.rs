@@ -104,6 +104,7 @@ fn real_runtime_tcp_udp_dns_and_stop_use_owned_flows_only() {
             entries: vec![entry.clone()],
             targets: vec![entry],
             instances: vec![],
+            ..Plan::default()
         };
         let filter=format!("outbound and ((tcp and (tcp.SrcPort == {tcp_port} or tcp.SrcPort == {{relay4}} or tcp.SrcPort == {{relay6}})) or (udp and udp.SrcPort == {udp_port}))");
         let engine = Engine::start_inner(

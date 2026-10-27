@@ -81,6 +81,13 @@ fn resolve(raw: &str, previous: Option<&(Plan, Identity)>) -> Result<String, Str
     for target in &mut plan.targets {
         target.port = *remapped.get(&(target.owner.clone(), target.port)).ok_or("接管目标入口映射丢失")?;
     }
+    if plan.dns_port.is_some() {
+        plan.dns_port = yaml["dns"]["listen"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| crate::commands::dns_runtime::parse_listen(s).ok())
+            .map(|a| a.port());
+    }
     plan.validate()?;
     yaml[KEY] = serde_yaml::to_value(plan).map_err(|_| "WinDivert 入口计划无法编码")?;
     // Hold both transports until the complete candidate has been generated.

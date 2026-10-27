@@ -48,6 +48,7 @@ playwright-report/
 /output/
 /portable/
 /dist-packages/
+/html/
 /src-tauri/target/
 /src-tauri/gen/schemas/
 /src-tauri/gen/android/.gradle/

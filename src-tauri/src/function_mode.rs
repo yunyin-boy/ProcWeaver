@@ -80,7 +80,7 @@ pub async fn set_function_mode(mode: FunctionMode, expected_mode: FunctionMode, 
             if let Err(e) = crate::commands::sysproxy::set_system_proxy_raw(true, Some(mixed_port)) { failures.push(e); }
         }
         if was_dns && process::ACTIVE.load(Ordering::SeqCst) {
-            if let Err(e) = crate::commands::dns_adapter::enable_dns_guard().await { failures.push(e); }
+            if let Err(e) = crate::commands::dns_adapter::enable_dns_guard(None).await { failures.push(e); }
         }
         return Err(if failures.is_empty() { format!("切换失败，保留原功能模式：{error}") }
             else { format!("切换失败，原功能模式保留；网络恢复未完成：{}；原因：{error}", failures.join("；")) });

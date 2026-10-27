@@ -34,6 +34,14 @@ pub struct Bundle {
     pub fallback: String,
     #[serde(default)] pub port: u16,
     #[serde(default)] pub dns_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub block_ipv6: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub block_udp: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub sniff_sni: Option<bool>,
+}
+impl Bundle {
+    pub fn effective_block_ipv6(&self, global: &Config) -> bool { self.block_ipv6.unwrap_or(global.block_ipv6) }
+    pub fn effective_block_udp(&self, global: &Config) -> bool { self.block_udp.unwrap_or(global.block_udp) }
+    pub fn effective_sniff_sni(&self, global: &Config) -> bool { self.sniff_sni.unwrap_or(global.sniff_sni) }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -41,6 +49,7 @@ pub struct DnsSettings { pub enabled: bool, pub server: String, pub port: u16 }
 impl Default for DnsSettings {
     fn default() -> Self { Self { enabled: false, server: "1.1.1.1".into(), port: 53 } }
 }
+const fn default_true() -> bool { true }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
@@ -50,9 +59,24 @@ pub struct Config {
     pub endpoints: Vec<Endpoint>,
     pub bundles: Vec<Bundle>,
     #[serde(default)] pub dns: DnsSettings,
+    #[serde(default = "default_true")] pub block_ipv6: bool,
+    #[serde(default = "default_true")] pub block_udp: bool,
+    #[serde(default = "default_true")] pub sniff_sni: bool,
 }
 impl Default for Config {
-    fn default() -> Self { Self { revision: 0, enabled: true, default_endpoint_id: None, endpoints: vec![], bundles: vec![], dns: DnsSettings::default() } }
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            enabled: true,
+            default_endpoint_id: None,
+            endpoints: vec![],
+            bundles: vec![],
+            dns: DnsSettings::default(),
+            block_ipv6: true,
+            block_udp: true,
+            sniff_sni: true,
+        }
+    }
 }
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
@@ -127,5 +151,46 @@ mod tests {
         assert!(!domain_matches("example.com", "a.example.com"));
         assert!(!valid_host("x\r\nAuthorization: secret"));
         assert!(!valid_host("user@host"));
+    }
+    #[test] fn config_defaults_and_bundle_overrides_work() {
+        let global = Config::default();
+        assert!(global.block_ipv6);
+        assert!(global.block_udp);
+        assert!(global.sniff_sni);
+
+        let mut bundle = Bundle {
+            id: "b1".into(),
+            name: "Test".into(),
+            main_exe: "test.exe".into(),
+            enabled: true,
+            mode: "strict".into(),
+            domains: vec![],
+            members: vec![],
+            endpoint_id: None,
+            fallback: "direct".into(),
+            port: 0,
+            dns_port: 0,
+            block_ipv6: None,
+            block_udp: None,
+            sniff_sni: None,
+        };
+        // 继承全局
+        assert!(bundle.effective_block_ipv6(&global));
+        assert!(bundle.effective_block_udp(&global));
+        assert!(bundle.effective_sniff_sni(&global));
+
+        // 局部特例覆盖
+        bundle.block_udp = Some(false);
+        bundle.block_ipv6 = Some(false);
+        assert!(!bundle.effective_block_udp(&global));
+        assert!(!bundle.effective_block_ipv6(&global));
+        assert!(bundle.effective_sniff_sni(&global));
+
+        // 向后兼容旧 JSON 反序列化（缺少新增字段时依然成功且赋默认值）
+        let legacy_json = r#"{"revision":1,"enabled":true,"defaultEndpointId":null,"endpoints":[],"bundles":[]}"#;
+        let parsed: Config = serde_json::from_str(legacy_json).unwrap();
+        assert!(parsed.block_ipv6);
+        assert!(parsed.block_udp);
+        assert!(parsed.sniff_sni);
     }
 }

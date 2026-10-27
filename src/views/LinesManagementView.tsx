@@ -76,12 +76,29 @@ function formatBytes(bytes?: number): string {
   return `${parseFloat(val.toFixed(1))} ${sizes[i]}`;
 }
 
+function formatFriendlyProbeError(raw?: string): string {
+  if (!raw) return "未获取到有效出口 IP";
+  const text = String(raw).trim();
+  if (/unexpected eof|\beof\b/i.test(text)) return "连接意外中断 (EOF)";
+  if (/timeout|timed?\s*out|deadline exceeded|超时/i.test(text)) return "节点响应超时";
+  if (/connection refused|actively refused|拒绝/i.test(text)) return "目标拒绝连接";
+  if (/connection reset|forcibly closed|重置/i.test(text)) return "连接被远端重置";
+  if (/no such host|dns|lookup/i.test(text)) return "域名解析失败";
+  const cleaned = text
+    .replace(/(?:Get|Post|Head)\s+"https?:\/\/[^"]+"\s*:\s*/gi, "")
+    .replace(/https?:\/\/[^\s"']+/gi, "")
+    .trim();
+  return cleaned || "探测请求失败";
+}
+
 export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = React.memo(({ coreMode = null }) => {
   const mobile = document.documentElement.dataset.platform === "android";
   const [catalogOffline, setCatalogOffline] = useState(false);
   const healthUnavailable = !mobile && catalogOffline;
   const [catalogMessage, setCatalogMessage] = useState("");
   const [probeMessage, setProbeMessage] = useState("");
+  const [probeFailures, setProbeFailures] = useState<Array<{ node: string; reason: string }>>([]);
+  const [probeDetailOpen, setProbeDetailOpen] = useState(false);
   const readRevision = useRef(0);
   const nodeSession = useRef(0);
   const openSubscriptions = () => {
@@ -519,6 +536,8 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
     if (probingAll || singleProbeBusy.current) return;
     singleProbeBusy.current = true;
     setProbeMessage("");
+    setProbeFailures([]);
+    setProbeDetailOpen(false);
     const job = new AbortController(); pendingJobs.current.add(job);
     setProbingNodes((prev) => ({ ...prev, [name]: true }));
     logInfo("IP健康", `发起单节点深度体检: [${name}]`);
@@ -526,7 +545,11 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
       let resultItem: IpHealthInfo | null = null;
       await probeNodeHealthBatch([name], (_node, res, _completed, _total, error) => {
         if (res) resultItem = { ...res, catalogKey: proxies[name]?.catalogKey };
-        else setProbeMessage(`${nodeLabel(name)}：${error || "未获取到有效出口 IP"}`);
+        else {
+          const reason = formatFriendlyProbeError(error);
+          setProbeFailures([{ node: nodeLabel(name), reason }]);
+          setProbeMessage(`${nodeLabel(name)}：${reason}`);
+        }
       }, job.signal);
       if (job.signal.aborted) return;
       if (resultItem) {
@@ -553,7 +576,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
         logWarn("IP健康", `节点 [${name}] 深度体检未能解析到出口画像数据`);
       }
     } catch (err: any) {
-      setProbeMessage(`体检失败：${String(err)}`);
+      setProbeMessage(`体检失败：${formatFriendlyProbeError(err?.message || String(err))}`);
       console.error("单节点体检失败:", err);
       logError("IP健康", `节点 [${name}] 深度体检失败: ${err?.message || String(err)}`);
     } finally {
@@ -571,9 +594,11 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
 
     setProbingAll(true);
     setProbeMessage("");
+    setProbeFailures([]);
+    setProbeDetailOpen(false);
     const job = new AbortController(); pendingJobs.current.add(job);
     setProbeProgress({ completed: 0, total: targetNames.length });
-    const failures: string[] = [];
+    const failures: Array<{ node: string; reason: string }> = [];
 
     const probeConcurrency = getStoredHealthProbeConcurrency();
     logInfo(
@@ -606,19 +631,27 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
     try {
       await probeNodeHealthBatch(targetNames, (node, result, completed, total, error) => {
         if (result) result = { ...result, catalogKey: proxies[node]?.catalogKey };
-        else if (failures.length < 3) failures.push(`${nodeLabel(node)}：${error || "未获取到有效 IP"}`);
+        else if (failures.length < 12) failures.push({ node: nodeLabel(node), reason: formatFriendlyProbeError(error) });
         if (result) successCount++;
         batch.add({ node, result, completed, total });
       }, job.signal);
       const costMs = Math.round(performance.now() - startAllTime);
-      setProbeMessage(job.signal.aborted ? "体检已取消" : `体检完成：成功 ${successCount}，失败 ${targetNames.length - successCount}。${failures.length ? `失败示例：${failures.join("；")}。可单独重试。` : ""}`);
+      const failCount = targetNames.length - successCount;
+      setProbeFailures(failures);
+      setProbeMessage(
+        job.signal.aborted
+          ? "体检已取消"
+          : failCount > 0
+            ? `体检完成：成功 ${successCount} · 失败 ${failCount}`
+            : `体检完成：全部 ${successCount} 个节点正常`
+      );
       logInfo(
         "IP健康",
         `全量节点深度体检${job.signal.aborted ? "已停止" : "完成"} [总耗时: ${costMs}ms]: 成功获取画像 ${successCount}/${targetNames.length} 个节点`
       );
     } catch (err: any) {
       console.error("全量 IP 健康体检出错:", err);
-      setProbeMessage(`体检未完成：${String(err)}`);
+      setProbeMessage(`体检未完成：${formatFriendlyProbeError(err?.message || String(err))}`);
       logError("IP健康", `全量 IP 健康体检异常中断: ${err?.message || String(err)}`);
     } finally {
       batch.flush();
@@ -994,14 +1027,88 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
     };
   }, []);
 
+  // 体检结果胶囊提示自动收起（展开详情或正在体检时不自动消失）
+  useEffect(() => {
+    if (!probeMessage || probingAll || anySingleProbe || probeDetailOpen) return;
+    const timer = window.setTimeout(() => {
+      setProbeMessage("");
+      setProbeFailures([]);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [probeMessage, probingAll, anySingleProbe, probeDetailOpen]);
+
   return (
     <div className={`${mobile ? "mobile-nodes-page " : ""}flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950 transition-colors duration-200 relative`}>
-      {(catalogMessage || (!mobile && catalogOffline) || (probeMessage && (!mobile || (!probingAll && !anySingleProbe))) || (!mobile && (probingAll || anySingleProbe))) && <div role="status" className="mobile-notice mx-3 my-2 shrink-0">
+      {(catalogMessage || (!mobile && catalogOffline)) && <div role="status" className="mobile-notice mx-3 my-2 shrink-0">
         {!mobile && catalogOffline && <p>当前为本地配置管理，可管理订阅、本地节点和自建线路，保存后在下次启动核心时使用。切换出口、测速和 IP 体检需启动核心。</p>}
         {catalogMessage && <p>{catalogMessage} <button onClick={() => void loadData()}>重新读取</button></p>}
-        {probeMessage && (!mobile || (!probingAll && !anySingleProbe)) && <p>{probeMessage}</p>}
-        {!mobile && (probingAll || anySingleProbe) && <button onClick={() => { pendingJobs.current.forEach(job => job.abort()); setProbeMessage("正在取消体检…"); }}>取消检测</button>}
       </div>}
+      {((probeMessage && (!mobile || (!probingAll && !anySingleProbe))) || (!mobile && (probingAll || anySingleProbe))) && (
+        <div role="status" className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center max-w-[92vw]">
+          <div className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full bg-slate-900/92 dark:bg-slate-800/95 text-white text-xs font-medium shadow-xl border border-slate-700/70 backdrop-blur-md">
+            {(probingAll || anySingleProbe) ? (
+              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping shrink-0" />
+            ) : probeFailures.length > 0 || /失败|未完成|取消|需要先启动/.test(probeMessage) ? (
+              <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+            ) : (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+            )}
+            <span className="truncate max-w-[60vw]">
+              {probeMessage || (probeProgress ? `正在体检 (${probeProgress.completed}/${probeProgress.total})…` : "正在检测节点 IP 画像…")}
+            </span>
+            {!probingAll && !anySingleProbe && probeFailures.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setProbeDetailOpen(prev => !prev)}
+                className="px-2 py-0.5 rounded-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 text-[11px] font-semibold transition shrink-0"
+              >
+                {probeDetailOpen ? "收起详情" : `查看失败 (${probeFailures.length})`}
+              </button>
+            )}
+            {!mobile && (probingAll || anySingleProbe) && (
+              <button
+                type="button"
+                onClick={() => { pendingJobs.current.forEach(job => job.abort()); setProbeMessage("正在取消体检…"); }}
+                className="px-2 py-0.5 rounded-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-400/30 text-[11px] font-semibold transition shrink-0"
+              >
+                取消检测
+              </button>
+            )}
+            {!probingAll && !anySingleProbe && (
+              <button
+                type="button"
+                aria-label="关闭体检提示"
+                onClick={() => { setProbeMessage(""); setProbeFailures([]); setProbeDetailOpen(false); }}
+                className="ml-0.5 w-4 h-4 rounded-full inline-flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700/60 transition shrink-0"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          {probeDetailOpen && probeFailures.length > 0 && (
+            <div className="mt-2 w-[360px] max-w-[90vw] rounded-2xl bg-slate-900/95 dark:bg-slate-800/95 text-slate-200 border border-slate-700/80 shadow-2xl backdrop-blur-md p-3 text-xs">
+              <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-700/70">
+                <span className="font-semibold text-amber-300">失败节点摘要（可单独点击节点卡片重试）</span>
+                <button
+                  type="button"
+                  onClick={() => setProbeDetailOpen(false)}
+                  className="text-slate-400 hover:text-white text-[11px]"
+                >
+                  收起
+                </button>
+              </div>
+              <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+                {probeFailures.map((item, idx) => (
+                  <div key={`${item.node}-${idx}`} className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-slate-800/70 dark:bg-slate-900/60">
+                    <span className="truncate text-slate-200 font-medium">{item.node}</span>
+                    <span className="shrink-0 text-[11px] text-amber-300/90 bg-amber-500/10 px-1.5 py-0.5 rounded">{item.reason}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* 顶栏控制台 */}
       {mobile ? (
         <div className="mobile-node-toolbar px-3 py-2 border-b border-slate-200/90 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/60 backdrop-blur-md flex flex-col gap-2 shrink-0">

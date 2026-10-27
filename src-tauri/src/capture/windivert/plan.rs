@@ -1,5 +1,5 @@
 use super::{context, preflight};
-use crate::routing_overrides::{model::Overrides, ownership, tracker::{ProcessEntry, TrackingStatus}};
+use crate::routing_overrides::{model::Overrides, ownership, tracker::{self, ProcessEntry, TrackingStatus}};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,15 +41,30 @@ pub struct Instance {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DnsDomain {
+    pub domain: String,
+    pub suffix: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Plan {
     pub entries: Vec<Entry>,
     pub targets: Vec<Entry>,
     pub instances: Vec<Instance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_domains: Vec<DnsDomain>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dns_all: bool,
 }
 impl Plan {
     pub fn validate(&self) -> Result<(), String> {
-        if self.entries.len() > 64 || self.targets.len() > 512 || self.instances.len() > 1024 {
+        if self.entries.len() > 64 || self.targets.len() > 512 || self.instances.len() > 1024 || self.dns_domains.len() > 4096 {
             return Err("WinDivert 接管范围超过容量限制".into());
+        }
+        if self.dns_port == Some(0) {
+            return Err("WinDivert DNS 入口端口无效".into());
         }
         for e in self.entries.iter().chain(&self.targets) {
             if !matches!(e.kind.as_str(), "path" | "name" | "any") || e.value.is_empty() || e.value.len() > 32768
@@ -90,14 +105,45 @@ impl Plan {
         if let Some(instance) = self.instances.iter().find(|p| p.pid == pid && p.created_at == created_at && p.path.eq_ignore_ascii_case(path)) {
             return self.context_for(&instance.owner, path).map(|e| e.port);
         }
-        // Explicit roots also work before the observer's next snapshot. Inherited
-        // children require the exact verified incarnation in the runtime map.
-        let target = ["path", "name"].into_iter().find_map(|kind| self.targets.iter().find(|e| e.kind == kind && e.matches(path)))?;
-        self.context_for(&target.owner, path).map(|e| e.port)
+        // Explicit roots also work before the observer's next snapshot.
+        let target = ["path", "name"].into_iter().find_map(|kind| self.targets.iter().find(|e| e.kind == kind && e.matches(path)));
+        if let Some(target) = target {
+            return self.context_for(&target.owner, path).map(|e| e.port);
+        }
+        // 即时血缘穿透：快照轮询存在时间差，动态派生的子进程在此直接比对祖先链条
+        let identity = format!("{pid}:{created_at}");
+        if let Some(p) = tracker::entry(&identity) {
+            for (_, ancestor_path) in &p.ancestors {
+                if let Some(target) = ["path", "name"].into_iter().find_map(|kind| self.targets.iter().find(|e| e.kind == kind && e.matches(ancestor_path))) {
+                    return self.context_for(&target.owner, path).map(|e| e.port);
+                }
+            }
+        }
+        None
     }
     pub fn refresh_instances(&mut self, config: &Overrides, state: &TrackingStatus) -> Result<(), String> {
         self.instances = instances(config, &state.entries);
         self.validate()
+    }
+    pub fn has_dns(&self) -> bool {
+        self.dns_port.is_some() && (self.dns_all || !self.dns_domains.is_empty())
+    }
+    pub fn dns_port_for(&self, name: &str) -> Option<u16> {
+        let port = self.dns_port?;
+        if self.dns_all {
+            return Some(port);
+        }
+        let name = name.trim_end_matches('.');
+        self.dns_domains
+            .iter()
+            .any(|d| {
+                name.eq_ignore_ascii_case(&d.domain)
+                    || (d.suffix
+                        && name.len() > d.domain.len()
+                        && name.as_bytes().get(name.len() - d.domain.len() - 1) == Some(&b'.')
+                        && name[name.len() - d.domain.len()..].eq_ignore_ascii_case(&d.domain))
+            })
+            .then_some(port)
     }
 }
 
@@ -167,7 +213,39 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
             entries.push(entry); compiled.push(rules);
         }
     }
-    let mut plan = Plan { entries, targets: vec![], instances: vec![] };
+    let dns_domains: Vec<DnsDomain> = if config.dns_enabled {
+        config
+            .dns_rules
+            .iter()
+            .filter(|r| r.enabled)
+            .map(|r| DnsDomain {
+                domain: r.domain.trim_end_matches('.').to_ascii_lowercase(),
+                suffix: r.domain_kind == "suffix",
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let dns_all = crate::commands::dns_adapter::is_windivert_dns_guard_active();
+    let dns_port = if (!dns_domains.is_empty() || dns_all)
+        && yaml["dns"]["enable"].as_bool() == Some(true)
+    {
+        yaml["dns"]["listen"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| crate::commands::dns_runtime::parse_listen(s).ok())
+            .map(|a| a.port())
+    } else {
+        None
+    };
+    let mut plan = Plan {
+        entries,
+        targets: vec![],
+        instances: vec![],
+        dns_port,
+        dns_domains,
+        dns_all,
+    };
     if config.process_enabled {
         for rule in config.process_rules.iter().filter(|r| ownership::standalone(r, config)) {
             let owner = ownership::key(rule, config);
@@ -178,8 +256,15 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
     }
     plan.refresh_instances(config, &crate::routing_overrides::tracker::status(config))?;
     let mut yaml = context::attach(&yaml, &compiled, &plan.entries.iter().map(|e| e.port).collect::<Vec<_>>())?;
-    if yaml["sniffer"].is_null() {
-        yaml["sniffer"] = serde_yaml::from_str("enable: true\nparse-pure-ip: true\nsniff:\n  TLS:\n    ports: [443, 8443]\n  HTTP:\n    ports: [80, 8080]\n").map_err(|_| "嗅探配置无效")?;
+    if !yaml["sniffer"].is_mapping() {
+        yaml["sniffer"] = serde_yaml::from_str("enable: true\nparse-pure-ip: true\noverride-destination: true\nsniff:\n  TLS:\n    ports: [443, 8443]\n  HTTP:\n    ports: [80, 8080]\n    override-destination: true\n").map_err(|_| "嗅探配置无效")?;
+    } else if let Some(sniffer) = yaml["sniffer"].as_mapping_mut() {
+        sniffer.insert("enable".into(), true.into());
+        sniffer.insert("parse-pure-ip".into(), true.into());
+        sniffer.insert("override-destination".into(), true.into());
+        if !sniffer.contains_key(Value::from("sniff")) {
+            sniffer.insert("sniff".into(), serde_yaml::from_str("TLS:\n  ports: [443, 8443]\nHTTP:\n  ports: [80, 8080]\n  override-destination: true\n").map_err(|_| "嗅探配置无效")?);
+        }
     }
     yaml[KEY] = serde_yaml::to_value(plan).map_err(|_| "接管计划序列化失败")?;
     serde_yaml::to_string(&yaml).map_err(|_| "接管配置序列化失败".into())

@@ -13,6 +13,37 @@ pub struct DnsAdapterRecovery {
     pub interface_alias: String,
     pub was_dhcp: bool,
     pub static_dns: Vec<String>,
+    #[serde(default)]
+    pub windivert_mode: bool,
+    #[serde(default)]
+    pub origin: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DnsGuardInfo {
+    pub enabled: bool,
+    pub origin: String,
+    pub windivert_mode: bool,
+}
+
+pub fn is_windivert_dns_guard_active() -> bool {
+    let Ok(bytes) = std::fs::read(recovery_path()) else {
+        return false;
+    };
+    serde_json::from_slice::<DnsAdapterRecovery>(&bytes)
+        .map(|r| r.windivert_mode)
+        .unwrap_or(false)
+}
+
+pub fn requires_port_53_guard() -> Result<bool, String> {
+    let path = recovery_path();
+    if !path.exists() {
+        return Ok(false);
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let record: DnsAdapterRecovery = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(!record.windivert_mode)
 }
 
 fn recovery_path() -> PathBuf {
@@ -86,11 +117,55 @@ pub async fn check_dns_service_ready() -> Result<(), String> {
     super::dns_runtime::confirm_guard(&raw, pid).await
 }
 
-/// 启用本地 DNS 护航（将网卡首选 DNS 指向 127.0.0.1）
-pub async fn enable_dns_guard() -> Result<(), String> {
+/// 启用本地 DNS 护航（WinDivert 模式采用驱动层 53 -> 动态高位端口透明转发；常规模式将网卡首选 DNS 指向 127.0.0.1）
+pub async fn enable_dns_guard(origin: Option<String>) -> Result<(), String> {
     #[cfg(windows)]
     {
         let _guard = ADAPTER_LOCK.lock().await;
+
+        let is_running = crate::commands::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst);
+        if !is_running {
+            return Err("Mihomo 核心当前未运行，无法启用 DNS 护航。请先启动核心。".into());
+        }
+
+        let use_windivert = super::settings::get_general_settings()
+            .is_ok_and(|s| s.traffic_mode == crate::capture::windivert::plan::MODE);
+
+        let path = recovery_path();
+        let target_origin = origin.unwrap_or_else(|| "manual".into());
+
+        if use_windivert {
+            let mut final_origin = target_origin;
+            if path.exists() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if let Ok(existing) = serde_json::from_slice::<DnsAdapterRecovery>(&bytes) {
+                        if existing.origin.as_deref() == Some("manual") && final_origin == "bundle" {
+                            final_origin = "manual".into();
+                        }
+                    }
+                }
+            }
+
+            let record = DnsAdapterRecovery {
+                interface_alias: String::new(),
+                was_dhcp: true,
+                static_dns: Vec::new(),
+                windivert_mode: true,
+                origin: Some(final_origin),
+            };
+            let json = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+            let save_path = path.clone();
+            tokio::task::spawn_blocking(move || crate::storage::replace(&save_path, &json))
+                .await
+                .map_err(|_| "保存 DNS 护航状态失败")??;
+
+            if let Err(e) = crate::routing_overrides::reapply(&crate::routing_overrides::read()?).await {
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(format!("启用 WinDivert 透明 DNS 护航失败: {e}"));
+            }
+            let _ = run_hidden_cmd_async("ipconfig", &["/flushdns"], 4).await;
+            return Ok(());
+        }
 
         // C03: 严格校验本地 DNS 服务就绪后再修改系统网卡
         check_dns_service_ready().await?;
@@ -100,6 +175,18 @@ pub async fn enable_dns_guard() -> Result<(), String> {
 
         // 如果已经是指向 127.0.0.1，说明已处于护航状态
         if static_dns.first().map(|s| s.as_str()) == Some("127.0.0.1") {
+            if path.exists() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if let Ok(mut existing) = serde_json::from_slice::<DnsAdapterRecovery>(&bytes) {
+                        if target_origin == "manual" && existing.origin.as_deref() != Some("manual") {
+                            existing.origin = Some("manual".into());
+                            let json = serde_json::to_vec_pretty(&existing).map_err(|e| e.to_string())?;
+                            let save_path = path.clone();
+                            let _ = tokio::task::spawn_blocking(move || crate::storage::replace(&save_path, &json)).await;
+                        }
+                    }
+                }
+            }
             return Ok(());
         }
 
@@ -107,10 +194,11 @@ pub async fn enable_dns_guard() -> Result<(), String> {
             interface_alias: alias.clone(),
             was_dhcp,
             static_dns: static_dns.clone(),
+            windivert_mode: false,
+            origin: Some(target_origin),
         };
 
         // 保存恢复快照凭证
-        let path = recovery_path();
         let json = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
         let save_path = path.clone();
         tokio::task::spawn_blocking(move || crate::storage::replace(&save_path, &json)).await.map_err(|_| "保存 DNS 恢复记录失败")??;
@@ -140,6 +228,7 @@ pub async fn enable_dns_guard() -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let _ = origin;
         Err("当前平台支持核心内 DNS 分流，暂不支持修改系统网卡 DNS".into())
     }
 }
@@ -156,6 +245,17 @@ pub async fn restore_dns_guard() -> Result<(), String> {
 
         let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
         let record: DnsAdapterRecovery = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+
+        if record.windivert_mode {
+            tokio::fs::remove_file(&path).await.map_err(|_| "清理 DNS 护航状态失败，请重试")?;
+            if crate::commands::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Ok(config) = crate::routing_overrides::read() {
+                    let _ = crate::routing_overrides::reapply(&config).await;
+                }
+            }
+            let _ = run_hidden_cmd_async("ipconfig", &["/flushdns"], 4).await;
+            return Ok(());
+        }
 
         let alias = &record.interface_alias;
         let restore_res = if record.was_dhcp || record.static_dns.is_empty() {
@@ -215,7 +315,7 @@ mod tests {
     use super::*;
     #[test]
     fn performance_restoration_requires_mode_and_all_static_servers() {
-        let mut record = DnsAdapterRecovery { interface_alias: "test".into(), was_dhcp: false, static_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()] };
+        let mut record = DnsAdapterRecovery { interface_alias: "test".into(), was_dhcp: false, static_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()], windivert_mode: false, origin: None };
         assert!(verify_restored(&record, false, &record.static_dns).is_ok());
         assert!(verify_restored(&record, false, &record.static_dns[..1]).is_err());
         assert!(verify_restored(&record, true, &record.static_dns).is_err());
@@ -279,14 +379,28 @@ pub async fn emergency_repair_network() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn toggle_dns_guard(enable: bool) -> Result<bool, String> {
+pub async fn toggle_dns_guard(enable: bool, origin: Option<String>) -> Result<bool, String> {
     let _lifecycle = super::process::LIFECYCLE.lock().await;
     if enable { crate::function_mode::require_full()?; }
     if crate::shutdown::in_progress() { return Err("正在恢复网络并退出，请稍候".into()); }
     if enable {
-        enable_dns_guard().await?;
+        enable_dns_guard(origin).await?;
         Ok(true)
     } else {
+        // 如果是由业务包生命周期发起的关闭请求 (origin == "bundle")：
+        // 必须核验当前护航的归属：若用户已手动接管 ("manual")，则绝对不关闭，恪守用户最高主权！
+        if origin.as_deref() == Some("bundle") {
+            let path = recovery_path();
+            if path.exists() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    if let Ok(record) = serde_json::from_slice::<DnsAdapterRecovery>(&bytes) {
+                        if record.origin.as_deref() == Some("manual") {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
         restore_dns_guard().await?;
         Ok(false)
     }
@@ -296,6 +410,37 @@ pub async fn toggle_dns_guard(enable: bool) -> Result<bool, String> {
 pub fn get_dns_guard_status() -> Result<bool, String> {
     let path = recovery_path();
     Ok(path.exists())
+}
+
+#[tauri::command]
+pub fn get_dns_guard_info() -> Result<DnsGuardInfo, String> {
+    let path = recovery_path();
+    if !path.exists() {
+        return Ok(DnsGuardInfo {
+            enabled: false,
+            origin: "none".into(),
+            windivert_mode: false,
+        });
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(DnsGuardInfo {
+            enabled: false,
+            origin: "none".into(),
+            windivert_mode: false,
+        });
+    };
+    let record: DnsAdapterRecovery = serde_json::from_slice(&bytes).unwrap_or(DnsAdapterRecovery {
+        interface_alias: String::new(),
+        was_dhcp: true,
+        static_dns: Vec::new(),
+        windivert_mode: false,
+        origin: None,
+    });
+    Ok(DnsGuardInfo {
+        enabled: true,
+        origin: record.origin.unwrap_or_else(|| "manual".into()),
+        windivert_mode: record.windivert_mode,
+    })
 }
 
 #[tauri::command]

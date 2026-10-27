@@ -495,9 +495,15 @@ export async function restartElevated(): Promise<void> {
   }
 }
 
-export async function toggleDnsGuard(enable: boolean): Promise<boolean> {
+export interface DnsGuardInfo {
+  enabled: boolean;
+  origin: "none" | "manual" | "bundle";
+  windivertMode: boolean;
+}
+
+export async function toggleDnsGuard(enable: boolean, origin?: "manual" | "bundle"): Promise<boolean> {
   if (isTauri()) {
-    return await invokeTauri<boolean>("toggle_dns_guard", { enable });
+    return await invokeTauri<boolean>("toggle_dns_guard", { enable, origin });
   }
   return enable;
 }
@@ -507,6 +513,13 @@ export async function getDnsGuardStatus(): Promise<boolean> {
     return await invokeTauri<boolean>("get_dns_guard_status");
   }
   return false;
+}
+
+export async function getDnsGuardInfo(): Promise<DnsGuardInfo> {
+  if (isTauri()) {
+    return await invokeTauri<DnsGuardInfo>("get_dns_guard_info");
+  }
+  return { enabled: false, origin: "none", windivertMode: false };
 }
 
 export async function runNetworkEmergencyRepair(): Promise<string> {

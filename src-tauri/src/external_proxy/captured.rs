@@ -99,6 +99,31 @@ impl Context {
             && config.enabled
             && identity::owner(&config.bundles, &self.process) == Some(self.id.as_str())
     }
+    /// 运行期流传输存活判定：解耦短进程退出，只要所属业务包未停用，允许已建连接自然收尾
+    fn valid_runtime(&self) -> bool {
+        let config = self
+            .runtime
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        config.enabled
+            && config.bundles.iter().any(|b| b.id == self.id && b.enabled)
+    }
+    fn effective_block_ipv6(&self) -> bool {
+        let config = self.runtime.config.read().unwrap_or_else(|e| e.into_inner());
+        let bundle = config.bundles.iter().find(|b| b.id == self.id);
+        bundle.map(|b| b.effective_block_ipv6(&config)).unwrap_or(config.block_ipv6)
+    }
+    fn effective_block_udp(&self) -> bool {
+        let config = self.runtime.config.read().unwrap_or_else(|e| e.into_inner());
+        let bundle = config.bundles.iter().find(|b| b.id == self.id);
+        bundle.map(|b| b.effective_block_udp(&config)).unwrap_or(config.block_udp)
+    }
+    fn effective_sniff_sni(&self) -> bool {
+        let config = self.runtime.config.read().unwrap_or_else(|e| e.into_inner());
+        let bundle = config.bundles.iter().find(|b| b.id == self.id);
+        bundle.map(|b| b.effective_sniff_sni(&config)).unwrap_or(config.sniff_sni)
+    }
     fn select(
         &self,
         target: &Destination,
@@ -121,6 +146,9 @@ impl Context {
     }
     async fn dns(&self, target: &Destination, query: &[u8], tcp: bool) -> Result<Vec<u8>, String> {
         let question = dns::question(query)?;
+        if self.effective_block_ipv6() && question.kind == 28 {
+            return Ok(dns::empty_reply(query));
+        }
         let policy = Destination::new(&question.name, 53)?;
         let (endpoint, ports, revision, record) = self.select(&policy)?;
         let result = dns::exchange_traced(endpoint.as_ref(), target, query, &ports, tcp,&Trace::new(Some(record))).await;
@@ -154,13 +182,16 @@ pub(crate) async fn tcp(
     mut client: TcpStream,
     destination: SocketAddr,
 ) -> Result<(), String> {
+    if context.effective_block_ipv6() && destination.is_ipv6() {
+        return Err("当前策略已阻断 IPv6 TCP 连接".into());
+    }
     let _permit = context
         .runtime
         .capacity
         .clone()
         .try_acquire_owned()
         .map_err(|_| { diagnostics::emit("capacity.rejected","warning",serde_json::json!({"kind":"tcp","pid":context.process.pid,"target":destination.to_string()})); "独立代理连接已达上限" })?;
-    let target = Destination::new(&destination.ip().to_string(), destination.port())?;
+    let mut target = Destination::new(&destination.ip().to_string(), destination.port())?;
     if destination.port() == 53 {
         loop {
             let len = match tokio::time::timeout(Duration::from_secs(30), client.read_u16()).await {
@@ -186,16 +217,19 @@ pub(crate) async fn tcp(
                 .map_err(|_| "DNS TCP 写入失败")?;
         }
     }
-    let sniff = context
-        .runtime
-        .config()
-        .bundles
-        .iter()
-        .any(|b| b.id == context.id && b.mode == "sandbox" && !b.domains.is_empty());
+    let sniff = context.effective_sniff_sni()
+        || context
+            .runtime
+            .config()
+            .bundles
+            .iter()
+            .any(|b| b.id == context.id && b.mode == "sandbox" && !b.domains.is_empty());
     let mut prefix = Vec::new();
     let mut policy = target.clone();
     if sniff {
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+        let is_web = matches!(destination.port(), 80 | 443 | 8080 | 8443 | 8000 | 8888);
+        let wait_ms = if is_web { 500 } else { 50 };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
         let mut buffer = [0; 4096];
         loop {
             let count = match tokio::time::timeout_at(deadline, client.read(&mut buffer)).await {
@@ -207,7 +241,13 @@ pub(crate) async fn tcp(
                 super::sniff::Found::NeedMore => {}
                 super::sniff::Found::Done(host) => {
                     if let Some(host) = host {
-                        policy.host = host;
+                        policy.host = host.clone();
+                        // 动态 SNI 纠偏：若开启 sniff_sni，将上游连接目标重定向为嗅探出的真实域名
+                        if context.effective_sniff_sni() {
+                            if let Ok(updated) = Destination::new(&host, destination.port()) {
+                                target = updated;
+                            }
+                        }
                     }
                     break;
                 }
@@ -227,7 +267,7 @@ pub(crate) async fn tcp(
         let mut checkpoint=tokio::time::Instant::now();
         loop {tokio::select! {
             r=&mut copy=>return r.map(|(up,down)|(up+prefix.len()as u64,down)).map_err(|error| { trace.event("tcp.copy_failed","warning",transport::io_detail(&error)); "透明 TCP 连接中断，未直连重试".into() }),
-            _=interval.tick()=>{if !context.valid(){return Err("业务包已停用或原始进程退出".into());}if checkpoint.elapsed()>=Duration::from_secs(30){trace.event("tcp.tunnel_alive","info",serde_json::json!({"pid":context.process.pid}));checkpoint=tokio::time::Instant::now();}}
+            _=interval.tick()=>{if !context.valid_runtime(){return Err("业务包已停用".into());}if checkpoint.elapsed()>=Duration::from_secs(30){trace.event("tcp.tunnel_alive","info",serde_json::json!({"pid":context.process.pid}));checkpoint=tokio::time::Instant::now();}}
         }}
     }.await;
     match result {
@@ -249,6 +289,9 @@ pub(crate) async fn udp(
     mut requests: mpsc::Receiver<Vec<u8>>,
     responses: mpsc::Sender<Vec<u8>>,
 ) -> Result<(), String> {
+    if context.effective_block_ipv6() && destination.is_ipv6() {
+        return Err("当前策略已阻断 IPv6 UDP 连接".into());
+    }
     let _permit = context
         .runtime
         .capacity
@@ -260,7 +303,7 @@ pub(crate) async fn udp(
         let mut queries = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
-                query=requests.recv()=>{let Some(query)=query else{return Ok(());};if queries.len()>=16{continue;}
+                query=requests.recv()=>{let Some(query)=query else{return Ok(());};if queries.len()>=256{continue;}
                     let context=context.clone();let target=target.clone();let responses=responses.clone();
                     queries.spawn(async move {
                         let reply = match context.dns(&target,&query,false).await {
@@ -275,6 +318,15 @@ pub(crate) async fn udp(
                 _=tokio::time::sleep(Duration::from_secs(30))=>return Ok(()),
             }
         }
+    }
+    // 优先于代理 UDP：禁止非 53 端口的通用 UDP（如 QUIC/443 等），迫使客户端秒级降级为 TCP
+    if context.effective_block_udp() {
+        diagnostics::emit("udp.blocked", "info", serde_json::json!({
+            "pid": context.process.pid,
+            "target": destination.to_string(),
+            "reason": "policy_block_udp"
+        }));
+        return Err("当前策略已禁止通用 UDP，促使客户端降级为 TCP".into());
     }
     let (endpoint, ports, revision, record) = context.select(&target)?;
     let trace=Trace::new(Some(record)); let _activity=trace.activity("udp");

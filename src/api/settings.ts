@@ -28,6 +28,7 @@ export interface GeneralSettings {
   logCapture?: boolean;
   tabAnimation?: boolean;
   trayMenuStyle?: "modern" | "classic";
+  autoDnsGuardWithBundle?: boolean;
 }
 export async function getGeneralSettings(): Promise<GeneralSettings> {
   if (!isTauri()) throw new Error("请在桌面客户端中读取设置");

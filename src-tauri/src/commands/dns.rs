@@ -177,7 +177,7 @@ pub(crate) async fn save_dns_settings_transaction(
 
     let _lifecycle = super::process::LIFECYCLE.lock().await;
     #[cfg(windows)]
-    super::dns_listener::validate_guard(&settings, super::dns_adapter::get_dns_guard_status()?)?;
+    super::dns_listener::validate_guard(&settings, super::dns_adapter::requires_port_53_guard()?)?;
     #[cfg(windows)]
     if settings.listener_mode == Some(DnsListenerMode::Off) {
         let config = crate::routing_overrides::read()?.effective();

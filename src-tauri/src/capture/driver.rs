@@ -31,6 +31,10 @@ type Close = unsafe extern "C" fn(Handle) -> i32;
 type Shutdown = unsafe extern "C" fn(Handle, i32) -> i32;
 type Checksums = unsafe extern "C" fn(*mut c_void, u32, *mut Address, u64) -> i32;
 type GetParam = unsafe extern "C" fn(Handle, i32, *mut u64) -> i32;
+type SetParam = unsafe extern "C" fn(Handle, i32, u64) -> i32;
+pub const PARAM_QUEUE_LEN: i32 = 0;
+pub const PARAM_QUEUE_TIME: i32 = 1;
+pub const PARAM_QUEUE_SIZE: i32 = 2;
 pub struct Api {
     module: Handle,
     open: Open,
@@ -40,6 +44,7 @@ pub struct Api {
     shutdown: Shutdown,
     checksums: Checksums,
     get_param: GetParam,
+    set_param: SetParam,
     _component_locks: Vec<std::fs::File>,
 }
 unsafe impl Send for Api {}
@@ -85,6 +90,7 @@ impl Api {
                 shutdown: symbol!("WinDivertShutdown", Shutdown),
                 checksums: symbol!("WinDivertHelperCalcChecksums", Checksums),
                 get_param: symbol!("WinDivertGetParam", GetParam),
+                set_param: symbol!("WinDivertSetParam", SetParam),
                 _component_locks: locks,
             }))
         }
@@ -133,6 +139,12 @@ impl Device {
             return Err(std::io::Error::last_os_error());
         }
         Ok((major, minor))
+    }
+    pub fn set_param(&self, param: i32, value: u64) -> std::io::Result<()> {
+        if unsafe { (self.api.set_param)(self.handle, param, value) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
     pub fn recv(&self, packet: &mut [u8]) -> std::io::Result<(usize, Address)> {
         let capacity: u32 = packet.len().try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "收包缓冲区过大"))?;

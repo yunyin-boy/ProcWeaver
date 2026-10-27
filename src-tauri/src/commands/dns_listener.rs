@@ -48,7 +48,7 @@ fn occupied(yaml: &Value, port: u16) -> bool {
 
 pub fn compose(raw: &str, config: &crate::routing_overrides::model::Overrides) -> Result<String, String> {
     let settings = super::dns::get_dns_settings()?;
-    let guard = super::dns_adapter::get_dns_guard_status()?;
+    let guard = super::dns_adapter::requires_port_53_guard()?;
     compose_with(raw, config, &settings, guard, last_port(), super::settings::get_general_settings()?.allow_lan)
 }
 
@@ -63,7 +63,8 @@ fn compose_with(raw: &str, config: &crate::routing_overrides::model::Overrides, 
         }
         return Ok(raw.into());
     };
-    let capture = config.dns_enabled && config.dns_rules.iter().any(|r| r.enabled);
+    let windivert_guard = super::dns_adapter::is_windivert_dns_guard_active();
+    let capture = (config.dns_enabled && config.dns_rules.iter().any(|r| r.enabled)) || windivert_guard;
     if mode == DnsListenerMode::Off && capture {
         return Err("DNS 规则接管需要本地监听，请选择自动或固定模式，或先关闭 DNS 接管规则".into());
     }
@@ -112,6 +113,11 @@ pub async fn resolve_for_apply(raw: &str, owned_pid: u32) -> Result<String, Stri
         if !tried.insert(port) || occupied(&yaml, port) { continue; }
         yaml["dns"]["listen"] = format!("127.0.0.1:{port}").into();
         if yaml["netbox-capture"].is_mapping() { yaml["netbox-capture"]["dns_port"] = port.into(); }
+        if yaml[crate::capture::windivert::plan::KEY].is_mapping()
+            && !yaml[crate::capture::windivert::plan::KEY]["dnsPort"].is_null()
+        {
+            yaml[crate::capture::windivert::plan::KEY]["dnsPort"] = port.into();
+        }
         let candidate = serde_yaml::to_string(&yaml).map_err(|_| "DNS 监听策略无法生成")?;
         match super::dns_runtime::preflight(&candidate, owned_pid).await {
             Ok(()) => return Ok(candidate),

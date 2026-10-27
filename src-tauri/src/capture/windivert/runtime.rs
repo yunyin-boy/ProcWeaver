@@ -88,10 +88,10 @@ impl Engine {
         Self::start_backend(plan, components, excluded, None, false)
     }
     pub(crate) fn start_external(components: &std::path::Path, excluded: Vec<Identity>) -> Result<Self,String> {
-        Self::start_backend(Plan {entries:vec![],targets:vec![],instances:vec![]}, components, excluded, None, true)
+        Self::start_backend(Plan::default(), components, excluded, None, true)
     }
     #[cfg(test)] pub(crate) fn external_fixture(components:&std::path::Path,excluded:Vec<Identity>,filter:&str)->Result<Self,String>{
-        Self::start_backend(Plan{entries:vec![],targets:vec![],instances:vec![]},components,excluded,Some(filter),true)
+        Self::start_backend(Plan::default(),components,excluded,Some(filter),true)
     }
     #[cfg(test)]
     fn start_inner(
@@ -130,7 +130,7 @@ impl Engine {
         if sockets.version().map_err(|_| "驱动版本读取失败")? != (2, 2) {
             return Err("WinDivert 共享驱动版本不兼容".into());
         }
-        let default_filter = if !external && plan.targets.is_empty() && plan.instances.is_empty() {
+        let default_filter = if !external && plan.targets.is_empty() && plan.instances.is_empty() && !plan.has_dns() {
             "false"
         } else {
             "outbound and (tcp or udp)"
@@ -140,6 +140,10 @@ impl Engine {
             .replace("{relay4}", &ports.0.to_string())
             .replace("{relay6}", &ports.1.to_string());
         let network_device = loaded.api.open(&filter_text, 0, 0)?;
+        // 扩容内核队列至 8192，避免突发高吞吐时内核丢包 (WINDIVERT_PARAM_QUEUE_LEN = 0)
+        let _ = network_device.set_param(0, 8192);
+        // 设置队列超时为 1500ms (WINDIVERT_PARAM_QUEUE_TIME = 1)
+        let _ = network_device.set_param(1, 1500);
         let shared = Arc::new(Shared {
             external,
             plan: RwLock::new(plan),
@@ -186,7 +190,7 @@ impl Engine {
     }
     pub fn has_targets(&self) -> bool {
         let plan = self.shared.plan.read().unwrap();
-        !plan.targets.is_empty() || !plan.instances.is_empty()
+        !plan.targets.is_empty() || !plan.instances.is_empty() || plan.has_dns()
     }
     pub fn update_instances(&self, instances: Vec<super::plan::Instance>) -> Result<(), String> {
         if self.shared.stop.load(Ordering::Acquire) || self.shared.paused.load(Ordering::Acquire) {
@@ -194,7 +198,7 @@ impl Engine {
         }
         let mut guard = self.shared.plan.write().unwrap();
         let mut next = guard.clone(); next.instances = instances; next.validate()?;
-        if guard.targets.is_empty() && guard.instances.is_empty() != next.instances.is_empty() {
+        if guard.targets.is_empty() && !guard.has_dns() && guard.instances.is_empty() != next.instances.is_empty() {
             return Err("接管范围改变，需要完整确认".into());
         }
         *guard = next;
@@ -421,16 +425,34 @@ fn network(s: Arc<Shared>) {
                     break;
                 }
             }
+            // 双轨备援：若 WFP 异步事件延迟或未到达，直接通过 Windows 系统连接表即时反查 PID
+            if owner.is_none() {
+                let pid = if flow.protocol == 6 {
+                    super::tcp_owner(flow.source, flow.destination)
+                } else {
+                    super::udp_owner(flow.source)
+                };
+                if let Some(pid) = pid {
+                    if let Some(identity) = Identity::inspect(pid) {
+                        owner = Some(super::ownership::Owner {
+                            endpoint: 0,
+                            observed_at: address.timestamp,
+                            identity,
+                        });
+                    }
+                }
+            }
         }
+        let is_excluded = owner.as_ref().is_some_and(|o| s.excluded.contains(&o.identity));
         let external = if s.external {
-            match owner.as_ref().filter(|o|!s.excluded.contains(&o.identity)).map(|o|crate::external_proxy::captured::resolve(&o.identity)).transpose() {
+            match owner.as_ref().filter(|_|!is_excluded).map(|o|crate::external_proxy::captured::resolve(&o.identity)).transpose() {
                 Ok(context)=>context.flatten(),
                 Err(_)=>{s.failures.fetch_add(1,Ordering::Relaxed);continue;}
             }
         } else {None};
         let choice = if s.external {external.as_ref().map(|_|0)} else {owner
             .as_ref()
-            .filter(|o| !s.excluded.contains(&o.identity))
+            .filter(|_| !is_excluded)
             .and_then(|o| {
                 s.plan.read().unwrap().port_for(
                     &o.identity.path,
@@ -439,14 +461,55 @@ fn network(s: Arc<Shared>) {
                 )
             })};
         let Some(port) = choice else {
+            if !is_excluded && !s.external && flow.protocol == 17 && flow.destination.port() == 53 {
+                let payload = &data[packet.payload..];
+                let matched_dns = super::dns::Question::parse_query(payload).and_then(|q| {
+                    s.plan.read().unwrap().dns_port_for(&q.name).map(|dns_port| (q, dns_port))
+                });
+                if let Some((question, dns_port)) = matched_dns {
+                    if s.paused.load(Ordering::Acquire) {
+                        s.failures.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    let Ok(permit) = s.capacity.clone().try_acquire_owned() else {
+                        s.failures.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    };
+                    let query = payload.to_vec();
+                    let template = data.to_vec();
+                    let mut reply_address = address;
+                    let shared = s.clone();
+                    s.worker.spawn(async move {
+                        let _permit = permit;
+                        shared.dns.fetch_add(1, Ordering::Relaxed);
+                        if dns_udp_relay(
+                            &shared,
+                            packet,
+                            template,
+                            &mut reply_address,
+                            dns_port,
+                            &query,
+                            &question,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            shared.failures.fetch_add(1, Ordering::Relaxed);
+                        }
+                    });
+                    continue;
+                }
+            }
             if owner.is_none() {
                 s.unknown.fetch_add(1, Ordering::Relaxed);
             }
-            let mut table = s.table.lock().unwrap();
-            if table.bypass.len() < 4096 {
-                table.bypass.insert(flow, Instant::now());
+            if flow.protocol != 17 || flow.destination.port() != 53 {
+                let mut table = s.table.lock().unwrap();
+                if table.bypass.len() < 4096 {
+                    table.bypass.insert(flow, Instant::now());
+                }
+                drop(table);
             }
-            drop(table);
             send(&s, data, &mut address, false);
             continue;
         };
@@ -686,6 +749,37 @@ async fn udp(
             _=tokio::time::sleep(Duration::from_secs(30))=>return Ok(()),
         }
     }
+}
+
+async fn dns_udp_relay(
+    s: &Shared,
+    p: Packet,
+    template: Vec<u8>,
+    address: &mut Address,
+    dns_port: u16,
+    query: &[u8],
+    question: &super::dns::Question,
+) -> std::io::Result<()> {
+    tokio::time::timeout(Duration::from_secs(4), async {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        socket.connect((Ipv4Addr::LOCALHOST, dns_port)).await?;
+        socket.send(query).await?;
+        let mut buffer = vec![0u8; 65535];
+        let n = socket.recv(&mut buffer).await?;
+        let answer = &buffer[..n];
+        if !question.matches_reply(answer) {
+            return Err(std::io::Error::other("DNS 响应问题区不匹配"));
+        }
+        if let Some(mut response) = p.udp_reply(&template, answer) {
+            if address.flags & (1 << 18) == 0 {
+                address.inbound();
+            }
+            send(s, &mut response, address, true);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "本地 DNS 转发超时"))?
 }
 
 #[cfg(test)]

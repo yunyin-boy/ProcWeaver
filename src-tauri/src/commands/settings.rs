@@ -52,6 +52,8 @@ pub struct GeneralSettings {
     pub health_probe_concurrency: usize,
     #[serde(default = "default_tray_menu_style")]
     pub tray_menu_style: String,
+    #[serde(default = "default_true")]
+    pub auto_dns_guard_with_bundle: bool,
 }
 fn default_enable_controller_port() -> bool { true }
 fn default_true() -> bool { true }
@@ -95,6 +97,7 @@ impl Default for GeneralSettings {
             log_capture: true,
             tab_animation: true,
             tray_menu_style: default_tray_menu_style(),
+            auto_dns_guard_with_bundle: true,
         }
     }
 }

@@ -248,6 +248,7 @@ pub fn run() {
             commands::system::restart_elevated,
             commands::dns_adapter::toggle_dns_guard,
             commands::dns_adapter::get_dns_guard_status,
+            commands::dns_adapter::get_dns_guard_info,
             commands::dns_adapter::run_network_emergency_repair,
             commands::app_launcher::launch_preset_app,
             commands::shortcut_manager::get_shortcut_status,

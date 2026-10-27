@@ -44,6 +44,9 @@ impl Fixture {
             fallback: "direct".into(),
             port: 0,
             dns_port: 0,
+            block_ipv6: Some(false),
+            block_udp: Some(false),
+            sniff_sni: Some(false),
         }];
         *runtime.config.write().unwrap() = config;
         Self {
@@ -361,4 +364,70 @@ async fn ordinary_udp_uses_socks_association_and_preserves_original_target() {
     drop(tx);
     job.await.unwrap().unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn block_udp_rejects_ordinary_udp_and_does_not_call_upstream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let f = Fixture::new(listener.local_addr().unwrap().port(), "socks5", false);
+    let mut config = f.context.runtime.config();
+    config.bundles[0].block_udp = Some(true);
+    *f.context.runtime.config.write().unwrap() = config;
+
+    let (_tx, rx) = mpsc::channel(4);
+    let (out, _) = mpsc::channel(4);
+    let res = udp(
+        f.context.clone(),
+        "192.0.2.99:123".parse().unwrap(),
+        rx,
+        out,
+    ).await;
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("已禁止通用 UDP"));
+}
+
+#[tokio::test]
+async fn block_ipv6_returns_empty_noerror_for_aaaa_queries() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let f = Fixture::new(listener.local_addr().unwrap().port(), "socks5", false);
+    let mut config = f.context.runtime.config();
+    config.bundles[0].block_ipv6 = Some(true);
+    *f.context.runtime.config.write().unwrap() = config;
+
+    // 构造一个 AAAA (Type 28 = 0x001c) 查询报文
+    let mut query = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    for part in ["api", "openai", "com"] {
+        query.push(part.len() as u8);
+        query.extend(part.as_bytes());
+    }
+    query.push(0);
+    // Type 28 (AAAA), Class 1 (IN)
+    query.extend([0x00, 0x1c, 0x00, 0x01]);
+
+    let target = Destination::new("127.0.0.1", 53).unwrap();
+    let reply = f.context.dns(&target, &query, false).await.unwrap();
+
+    // 验证返回值：标准合法 NOERROR 空响应 (Answers: 0)
+    assert_eq!(&reply[..2], &[0x12, 0x34]); // 相同 ID
+    assert_eq!(reply[2] & 0x80, 0x80); // QR=1 (响应)
+    assert_eq!(reply[3] & 0x0f, 0); // RCODE=0 (NOERROR)
+    assert_eq!(&reply[4..6], &[0x00, 0x01]); // QDCOUNT=1
+    assert_eq!(&reply[6..8], &[0x00, 0x00]); // ANCOUNT=0 (无答案记录)
+}
+
+#[tokio::test]
+async fn block_ipv6_rejects_ipv6_connections() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let f = Fixture::new(listener.local_addr().unwrap().port(), "socks5", false);
+    let mut config = f.context.runtime.config();
+    config.bundles[0].block_ipv6 = Some(true);
+    *f.context.runtime.config.write().unwrap() = config;
+
+    let v6_dest: SocketAddr = "[2001:db8::1]:443".parse().unwrap();
+    let (_tx, rx) = mpsc::channel(4);
+    let (out, _) = mpsc::channel(4);
+
+    let udp_res = udp(f.context.clone(), v6_dest, rx, out).await;
+    assert!(udp_res.is_err());
+    assert!(udp_res.unwrap_err().contains("已阻断 IPv6 UDP"));
 }

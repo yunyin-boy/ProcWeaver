@@ -32,7 +32,8 @@ import { DEFAULT_REPOSITORY, repositoryPage } from "../services/bundleRepositori
 import type { RepositoryPackage } from "../types/bundleRepository";
 import { usePlatform } from "../context/PlatformContext";
 import { bundleExes, processKey } from "../utils/bundlePlatform";
-import { toggleDnsGuard, getDnsGuardStatus, isTauri } from "../api";
+import { toggleDnsGuard, getDnsGuardInfo, isTauri } from "../api";
+import { dismissBundleDnsGuard, resetBundleDnsGuardDismissal } from "../services/bundleDnsGuard";
 import {
   Wrench,
   Download,
@@ -80,8 +81,9 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   const [isImportOpen, setIsImportOpen] = useState<boolean>(false);
   const [isModeGuideOpen, setIsModeGuideOpen] = useState<boolean>(false);
 
-  // 全局 DNS 护航与提示 (C02: 加入 isDnsPending 防重入与反馈)
+  // 全局 DNS 护航与提示 (智能联动与托管状态)
   const [dnsGuardEnabled, setDnsGuardEnabled] = useState<boolean>(false);
+  const [dnsGuardOrigin, setDnsGuardOrigin] = useState<"none" | "manual" | "bundle">("none");
   const [isDnsPending, setIsDnsPending] = useState<boolean>(false);
   const [bannerToast, setBannerToast] = useState<string>("");
 
@@ -96,13 +98,28 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    const refreshDns = () => { if (!processOnly && platform.dnsGuard) void getDnsGuardStatus().then(status => { if (!disposed) setDnsGuardEnabled(status); }).catch(() => {}); };
+    const refreshDns = () => {
+      if (!processOnly && platform.dnsGuard) {
+        void getDnsGuardInfo().then(info => {
+          if (!disposed) {
+            setDnsGuardEnabled(info.enabled);
+            setDnsGuardOrigin(info.origin);
+          }
+        }).catch(() => {});
+      }
+    };
     refreshDns();
     window.addEventListener("focus", refreshDns);
+    window.addEventListener("procweaver-dns-guard-changed", refreshDns);
     if (isTauri()) void import("@tauri-apps/api/event").then(({ listen }) => listen("procweaver-dns-guard-changed", refreshDns))
       .then(remove => { if (disposed) remove(); else unlisten = remove; }).catch(() => {});
 
-    return () => { disposed = true; unlisten?.(); window.removeEventListener("focus", refreshDns); };
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("focus", refreshDns);
+      window.removeEventListener("procweaver-dns-guard-changed", refreshDns);
+    };
   }, []);
 
   // 2. 业务包守护由独立入口检测负责，不修改其他进程使用的旧版全局守护。
@@ -204,15 +221,25 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     setActiveTab("installed");
   };
 
-  // DNS 护航切换 (C01, C02: 防重入与 pending 反馈)
+  // DNS 护航切换 (恪守用户最高主权)
   const handleToggleDns = async () => {
     if (isDnsPending) return;
     setIsDnsPending(true);
     try {
       const next = !dnsGuardEnabled;
-      const res = await toggleDnsGuard(next);
-      setDnsGuardEnabled(res);
-      showToast(res ? "🛡️ 已开启本地 DNS 防投毒护航" : "ℹ️ 已关闭本地 DNS 防投毒护航");
+      if (!next) {
+        dismissBundleDnsGuard();
+        const res = await toggleDnsGuard(false, "manual");
+        setDnsGuardEnabled(res);
+        setDnsGuardOrigin("none");
+        showToast("ℹ️ 已手动关闭本地 DNS 防投毒护航");
+      } else {
+        resetBundleDnsGuardDismissal();
+        const res = await toggleDnsGuard(true, "manual");
+        setDnsGuardEnabled(res);
+        setDnsGuardOrigin("manual");
+        showToast("🛡️ 已手动开启本地 DNS 防投毒护航");
+      }
     } catch (err: any) {
       showToast(`❌ 切换 DNS 护航失败: ${err?.message || err}`);
     } finally {
@@ -382,16 +409,42 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               type="button"
               onClick={handleToggleDns}
               disabled={!platform.dnsGuard || isDnsPending}
-              className={`px-2.5 py-1 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 text-xs font-medium flex items-center space-x-1.5 shadow-2xs transition ${
+              className={`px-2.5 py-1 rounded-xl border text-xs font-medium flex items-center space-x-1.5 shadow-2xs transition ${
                 isDnsPending ? "opacity-60 cursor-wait" : "cursor-pointer"
               } ${
-                dnsGuardEnabled ? "text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700/60" : "text-slate-600 dark:text-slate-400"
+                dnsGuardEnabled
+                  ? dnsGuardOrigin === "bundle"
+                    ? "bg-emerald-50/90 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-400 dark:border-emerald-600/70 shadow-emerald-500/10"
+                    : "bg-slate-50 dark:bg-slate-800/80 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700/60"
+                  : "bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
               }`}
-              title={platform.dnsGuard ? "开启后将 Windows 网卡首选 DNS 指向本地核心" : "macOS 首版不修改网卡 DNS；核心 DNS 策略仅作用于进入核心的查询"}
+              title={
+                !platform.dnsGuard
+                  ? "macOS 首版不修改网卡 DNS；核心 DNS 策略仅作用于进入核心的查询"
+                  : dnsGuardEnabled
+                    ? dnsGuardOrigin === "bundle"
+                      ? "当前由运行中的业务规则包自动托管 DNS 解析，防止 DNS 投毒与泄漏；业务包全部停止后将自动恢复系统默认。点击可手动关闭。"
+                      : "已手动开启网卡 DNS 防投毒护航（不受业务包启停影响）。点击可关闭。"
+                    : "开启后将 Windows 网卡首选 DNS 指向本地核心，防止 DNS 投毒与泄漏。点击可开启。"
+              }
             >
               <span>🛡️</span>
-              <span>DNS护航: <strong className={dnsGuardEnabled ? "text-emerald-600 dark:text-emerald-400" : "text-slate-700 dark:text-slate-300"}>
-                {!platform.dnsGuard ? "暂不支持" : isDnsPending ? "切换中..." : dnsGuardEnabled ? "已护航" : "关闭"}
+              <span>DNS护航: <strong className={
+                dnsGuardEnabled
+                  ? dnsGuardOrigin === "bundle"
+                    ? "text-emerald-700 dark:text-emerald-300 font-bold"
+                    : "text-emerald-600 dark:text-emerald-400 font-bold"
+                  : "text-slate-700 dark:text-slate-300"
+              }>
+                {!platform.dnsGuard
+                  ? "暂不支持"
+                  : isDnsPending
+                  ? "切换中..."
+                  : dnsGuardEnabled
+                  ? dnsGuardOrigin === "bundle"
+                    ? "开启 (业务托管)"
+                    : "开启"
+                  : "关闭"}
               </strong></span>
             </button>
 

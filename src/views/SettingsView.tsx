@@ -54,6 +54,7 @@ export const SettingsView: React.FC = () => {
   const [speedTestConcurrency, setSpeedTestConcurrency] = useState<number>(10);
   const [healthProbeConcurrency, setHealthProbeConcurrency] = useState<number>(4);
   const [appendSystemDns, setAppendSystemDns] = useState(false);
+  const [autoDnsGuardWithBundle, setAutoDnsGuardWithBundle] = useState(true);
   const [logCapture, setLogCapture] = useState(true);
   const [tabAnimation, setTabAnimation] = useState(true);
   const [trayMenuStyle, setTrayMenuStyle] = useState<"modern" | "classic">(platform.os === "macos" ? "classic" : "modern");
@@ -80,6 +81,7 @@ export const SettingsView: React.FC = () => {
       if (s.findProcessMode !== undefined) setFindProcessMode(s.findProcessMode);
       if (s.autoCloseConnections !== undefined) setAutoCloseConnections(s.autoCloseConnections);
       if (s.appendSystemDns !== undefined) setAppendSystemDns(s.appendSystemDns);
+      if (s.autoDnsGuardWithBundle !== undefined) setAutoDnsGuardWithBundle(s.autoDnsGuardWithBundle);
       if (s.logCapture !== undefined) setLogCapture(s.logCapture);
       if (s.tabAnimation !== undefined) setTabAnimation(s.tabAnimation);
       if (platform.os === "macos") setTrayMenuStyle("classic");
@@ -110,6 +112,7 @@ export const SettingsView: React.FC = () => {
         findProcessMode,
         autoCloseConnections,
         appendSystemDns,
+        autoDnsGuardWithBundle,
         logCapture,
         tabAnimation,
         trayMenuStyle,
@@ -385,6 +388,12 @@ export const SettingsView: React.FC = () => {
                   description: "使用当前系统 DNS 作为补充，具体生效范围取决于核心与当前网络配置。",
                   value: appendSystemDns,
                   update: setAppendSystemDns,
+                },
+                {
+                  title: "业务包联动 DNS 护航",
+                  description: "开启业务规则包时自动启用 DNS 护航（防投毒解析），业务包全部停止后自动恢复原有网卡设置（推荐）。",
+                  value: autoDnsGuardWithBundle,
+                  update: setAutoDnsGuardWithBundle,
                 },
               ].map(option => <label key={option.title} className="flex items-center justify-between gap-4 cursor-pointer">
                 <span><span className="block text-sm font-medium">{option.title}</span><span className="block text-xs text-slate-500 dark:text-slate-400">{option.description}</span></span>

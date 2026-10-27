@@ -72,6 +72,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
     processes: [
       { exe: "Antigravity.exe", role: "main", description: "主集成开发环境与核心进程" },
       { exe: "language_server.exe", role: "worker", description: "LSP 语言模型与语义推理核心工作服务" },
+      { exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" },
       { exe: "agy.exe", role: "cli", description: "Antigravity 开发者命令行终端" },
       { exe: "antigravity-service.exe", role: "worker", description: "后台状态监测守护服务" },
     ],
@@ -79,6 +80,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       "Antigravity.exe",
       "antigravity.exe",
       "language_server.exe",
+      "language_server_windows_x64.exe",
       "agy.exe",
       "antigravity-service.exe",
       "Antigravity IDE.exe",
@@ -89,6 +91,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       "gemini.google.com",
       "generativeai.google",
       "aistudio.google.com",
+      "googleapis.com",
     ],
   },
 ];
@@ -96,6 +99,40 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
 // 获取全部已装载的本地规则包实例 (开箱严格仅装载官方 2 个预设：OpenAI 与 Google 反重力)
 export function getBundleInstances(): BundleLocalInstance[] {
   const independent = typeof document !== "undefined" && document.documentElement.dataset.edition === "process";
+  const upgradePreset = (instances: BundleLocalInstance[]): { list: BundleLocalInstance[]; changed: boolean } => {
+    let changed = false;
+    const list = instances.map(item => {
+      if (item.definition?.packageId !== "google-antigravity") return item;
+      const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
+      const additionalExes = Array.isArray(item.definition.additionalExes) ? [...item.definition.additionalExes] : [];
+      const processes = Array.isArray(item.definition.processes) ? [...item.definition.processes] : [];
+      let itemChanged = false;
+      if (!domains.some(d => d.toLowerCase() === "googleapis.com")) {
+        domains.push("googleapis.com");
+        itemChanged = true;
+      }
+      if (!additionalExes.some(e => e.toLowerCase() === "language_server_windows_x64.exe")) {
+        additionalExes.push("language_server_windows_x64.exe");
+        itemChanged = true;
+      }
+      if (!processes.some(p => p.exe.toLowerCase() === "language_server_windows_x64.exe")) {
+        processes.push({ exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" });
+        itemChanged = true;
+      }
+      if (!itemChanged) return item;
+      changed = true;
+      return {
+        ...item,
+        definition: {
+          ...item.definition,
+          domains,
+          additionalExes,
+          processes,
+        },
+      };
+    });
+    return { list, changed };
+  };
   const prepare = (instances: BundleLocalInstance[]): BundleLocalInstance[] => independent
     ? instances.map(i => i.backend === "external" ? i : { ...i, backend: "external", enabled: false, slotBindings: { main: null, dns: "FOLLOW_MAIN" }, slotTargets: undefined, externalEndpointId: null })
     : instances;
@@ -109,12 +146,13 @@ export function getBundleInstances(): BundleLocalInstance[] {
           (item: BundleLocalInstance) =>
             !["inst-cursor", "inst-browser"].includes(item.instanceId)
         );
-        if (cleaned.length !== parsed.length) {
-          const ready = prepare(cleaned);
+        const upgraded = upgradePreset(cleaned);
+        if (cleaned.length !== parsed.length || upgraded.changed) {
+          const ready = prepare(upgraded.list);
           saveBundleInstances(ready);
           return ready;
         }
-        const ready = prepare(parsed);
+        const ready = prepare(upgraded.list);
         if (independent && ready.some((item, index) => item !== parsed[index])) saveBundleInstances(ready);
         return ready;
       }
