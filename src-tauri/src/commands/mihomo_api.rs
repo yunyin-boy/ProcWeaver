@@ -450,6 +450,33 @@ pub async fn get_active_connections() -> Result<Value, String> {
         .await
         .map_err(|e| format!("活动连接数据解析失败: {}", e))?;
 
+    let mut res = res;
+    if let Some(conns) = res.get_mut("connections").and_then(|c| c.as_array_mut()) {
+        #[cfg(windows)]
+        let hook_tiers = super::windows_integration::read_hook_tiers();
+        #[cfg(not(windows))]
+        let hook_tiers: std::collections::HashMap<u32, (u32, String)> = std::collections::HashMap::new();
+
+        for conn in conns {
+            if let Some(metadata) = conn.get_mut("metadata").and_then(|m| m.as_object_mut()) {
+                let proc_name = metadata.get("process").and_then(|p| p.as_str()).unwrap_or("");
+                let mut tier_str = "Direct";
+                for (_, (tier, name)) in &hook_tiers {
+                    if !proc_name.is_empty() && (crate::platform::same_path(proc_name, name) || name.eq_ignore_ascii_case(proc_name)) {
+                        tier_str = match *tier {
+                            1 => "Detours",
+                            2 => "IAT",
+                            3 => "Direct",
+                            _ => "Direct",
+                        };
+                        break;
+                    }
+                }
+                metadata.insert("hookTier".into(), serde_json::Value::String(tier_str.into()));
+            }
+        }
+    }
+
     Ok(res)
 }
 

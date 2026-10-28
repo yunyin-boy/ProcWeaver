@@ -93,6 +93,21 @@ fn build_http_client(proxy_port: Option<u16>) -> Result<reqwest::Client, String>
     builder.build().map_err(|e| format!("构建 HTTP 客户端失败: {}", e))
 }
 
+/// 主程序更新通道列表 (依次尝试主仓库与备选镜像)
+pub const APP_CHANNELS: &[&str] = &[
+    "jojhaa/ProcWeaver",
+    "yunyin-boy/ProcWeaver",
+];
+
+/// 规则仓库通道列表
+pub const RULES_CHANNELS: &[&str] = &[
+    "jojhaa/ProcWeaver-Rules",
+    "yunyin-boy/ProcWeaver-Rules",
+];
+
+pub const LINUX_DO_MAINTENANCE_NOTICE: &str = "仓库维护，点击前往 Linux 查看最新仓库地址";
+pub const LINUX_DO_URL: &str = "https://linux.do/t/topic/2940957";
+
 /// 获取当前代理核心的混合端口（若正在运行）
 fn get_running_proxy_port(state: &State<'_, CoreStateMutex>) -> Option<u16> {
     if let Ok(guard) = state.lock() {
@@ -103,50 +118,64 @@ fn get_running_proxy_port(state: &State<'_, CoreStateMutex>) -> Option<u16> {
     None
 }
 
-/// 检测 ProcWeaver 主仓库 Release
+/// 检测 ProcWeaver 主仓库及镜像通道 Release
 #[tauri::command]
 pub async fn check_app_update(
     state: State<'_, CoreStateMutex>,
 ) -> Result<AppUpdateInfo, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let repo_owner_repo = "jojhaa/ProcWeaver";
-    let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo_owner_repo);
     let proxy_port = get_running_proxy_port(&state);
-
-    // 尝试带代理或直连获取
     let client = build_http_client(proxy_port)?;
-    let response = client
-        .get(&api_url)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await;
+    let direct_client = if proxy_port.is_some() { build_http_client(None).ok() } else { None };
 
-    // 如果带代理失败且有代理端口，尝试直连一次兜底
-    let res = match response {
-        Ok(r) => Ok(r),
-        Err(e) => {
-            if proxy_port.is_some() {
-                let direct_client = build_http_client(None)?;
-                direct_client
-                    .get(&api_url)
-                    .header("Accept", "application/vnd.github.v3+json")
-                    .send()
-                    .await
-            } else {
-                Err(e)
+    let mut successful_release = None;
+    let mut hit_repo = APP_CHANNELS[0];
+    let mut channel_errors = Vec::new();
+
+    // 遍历所有可用更新通道进行探测
+    for &repo in APP_CHANNELS {
+        let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+        let mut response = client
+            .get(&api_url)
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await;
+
+        if response.is_err() && direct_client.is_some() {
+            response = direct_client.as_ref().unwrap()
+                .get(&api_url)
+                .header("Accept", "application/vnd.github.v3+json")
+                .send()
+                .await;
+        }
+
+        match response {
+            Ok(r) if r.status().is_success() => {
+                if let Ok(val) = r.json::<serde_json::Value>().await {
+                    successful_release = Some(val);
+                    hit_repo = repo;
+                    break;
+                } else {
+                    channel_errors.push(format!("{} JSON 解析失败", repo));
+                }
+            }
+            Ok(r) => {
+                channel_errors.push(format!("{} HTTP {}", repo, r.status()));
+            }
+            Err(e) => {
+                channel_errors.push(format!("{} 连接失败: {}", repo, e));
             }
         }
-    };
+    }
 
-    let release_val = match res {
-        Ok(r) if r.status().is_success() => {
-            r.json::<serde_json::Value>().await.map_err(|e| format!("解析 Release JSON 失败: {}", e))?
-        }
-        Ok(r) => {
-            return Err(format!("GitHub API 响应异常: HTTP {}", r.status()));
-        }
-        Err(e) => {
-            return Err(format!("检测更新网络请求失败: {}", e));
+    let (release_val, repo_owner_repo) = match successful_release {
+        Some(val) => (val, hit_repo),
+        None => {
+            return Err(format!(
+                "{}：{}",
+                LINUX_DO_MAINTENANCE_NOTICE,
+                LINUX_DO_URL
+            ));
         }
     };
 
@@ -155,7 +184,7 @@ pub async fn check_app_update(
     let release_name = release_val.get("name").and_then(|v| v.as_str()).unwrap_or(&tag_raw).to_string();
     let release_notes = release_val.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let published_at = release_val.get("published_at").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let html_url = release_val.get("html_url").and_then(|v| v.as_str()).unwrap_or("https://github.com/jojhaa/ProcWeaver/releases").to_string();
+    let html_url = release_val.get("html_url").and_then(|v| v.as_str()).unwrap_or(&format!("https://github.com/{}/releases", repo_owner_repo)).to_string();
 
     // 比较版本
     let has_update = compare_semver(&clean_latest, &current_version);
@@ -212,7 +241,7 @@ pub async fn check_app_update(
         asset_size_bytes,
         asset_size_formatted,
         html_url,
-        repo_url: "https://github.com/jojhaa/ProcWeaver".to_string(),
+        repo_url: format!("https://github.com/{}", repo_owner_repo),
     })
 }
 
@@ -252,8 +281,11 @@ pub async fn download_app_update(
     #[cfg(target_os = "android")]
     {
         let url = reqwest::Url::parse(&download_url).map_err(|_| "更新地址无效")?;
-        if url.scheme() != "https" || url.host_str() != Some("github.com") || !url.path().starts_with("/jojhaa/ProcWeaver/releases/download/") || !file_name.ends_with(".apk") {
-            return Err("仅接受官方仓库的 Android APK 更新".into());
+        let is_valid_channel = APP_CHANNELS.iter().any(|repo| {
+            url.path().starts_with(&format!("/{}/releases/download/", repo))
+        });
+        if url.scheme() != "https" || url.host_str() != Some("github.com") || !is_valid_channel || !file_name.ends_with(".apk") {
+            return Err("仅接受官方及镜像通道的 Android APK 更新".into());
         }
     }
     let base_dir = crate::commands::profile::get_base_dir();
@@ -628,46 +660,49 @@ pub async fn check_mihomo_update(
     })
 }
 
-/// 检查规则仓库 (ProcWeaver-Rules) 发版动态
+/// 检查规则仓库 (ProcWeaver-Rules) 发版动态 (支持主仓库与备选通道)
 #[tauri::command]
 pub async fn check_rules_repo_update(
     state: State<'_, CoreStateMutex>,
 ) -> Result<RulesRepoInfo, String> {
-    let repo_url = "https://github.com/jojhaa/ProcWeaver-Rules".to_string();
-    let api_url = "https://api.github.com/repos/jojhaa/ProcWeaver-Rules/releases/latest";
     let proxy_port = get_running_proxy_port(&state);
     let client = build_http_client(proxy_port)?;
 
-    let res = client
-        .get(api_url)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await;
+    for &repo in RULES_CHANNELS {
+        let repo_url = format!("https://github.com/{}", repo);
+        let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
 
-    if let Ok(r) = res {
-        if r.status().is_success() {
-            if let Ok(val) = r.json::<serde_json::Value>().await {
-                let tag = val.get("tag_name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let name = val.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let updated = val.get("published_at").and_then(|v| v.as_str()).map(|s| s.to_string());
-                return Ok(RulesRepoInfo {
-                    repo_url,
-                    latest_tag: tag,
-                    release_name: name,
-                    updated_at: updated,
-                    description: "包含常用业务规则包 (.pwpack.json)、分流规则集与增强规则配置".to_string(),
-                });
+        let res = client
+            .get(&api_url)
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await;
+
+        if let Ok(r) = res {
+            if r.status().is_success() {
+                if let Ok(val) = r.json::<serde_json::Value>().await {
+                    let tag = val.get("tag_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let name = val.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let updated = val.get("published_at").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    return Ok(RulesRepoInfo {
+                        repo_url,
+                        latest_tag: tag,
+                        release_name: name,
+                        updated_at: updated,
+                        description: "包含常用业务规则包 (.pwpack.json)、分流规则集与增强规则配置".to_string(),
+                    });
+                }
             }
         }
     }
 
-    // 默认兜底信息
+    // 默认兜底信息（提示 Linux.do 备用地址）
     Ok(RulesRepoInfo {
-        repo_url,
+        repo_url: format!("https://github.com/{}", RULES_CHANNELS[0]),
         latest_tag: Some("main (持续同步)".to_string()),
         release_name: Some("ProcWeaver 规则仓库 (Business-Rules & Core-Rules)".to_string()),
         updated_at: None,
-        description: "包含 Business-Rules 业务规则包与 Core-Rules 核心分流规则集".to_string(),
+        description: format!("包含 Business-Rules 业务规则包与 Core-Rules 核心分流规则集（如遇通道维护请查看: {}）", LINUX_DO_URL),
     })
 }
 
@@ -718,15 +753,36 @@ pub async fn check_core_rules_update(
         "v2026.09.21".to_string()
     };
 
-    let api_url = "https://api.github.com/repos/jojhaa/ProcWeaver-Rules/releases/latest";
     let proxy_port = get_running_proxy_port(&state);
     let client = build_http_client(proxy_port)?;
+    let direct_client = if proxy_port.is_some() { build_http_client(None).ok() } else { None };
 
-    let res = client
-        .get(api_url)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await;
+    let mut successful_val = None;
+    for &repo in RULES_CHANNELS {
+        let api_url = format!("https://api.github.com/repos/{}/releases/latest", repo);
+        let mut res = client
+            .get(&api_url)
+            .header("Accept", "application/vnd.github.v3+json")
+            .send()
+            .await;
+
+        if res.is_err() && direct_client.is_some() {
+            res = direct_client.as_ref().unwrap()
+                .get(&api_url)
+                .header("Accept", "application/vnd.github.v3+json")
+                .send()
+                .await;
+        }
+
+        if let Ok(r) = res {
+            if r.status().is_success() {
+                if let Ok(val) = r.json::<serde_json::Value>().await {
+                    successful_val = Some(val);
+                    break;
+                }
+            }
+        }
+    }
 
     let mut latest_version = current_version.clone();
     let mut release_name = "Core-Rules 核心规则基准版".to_string();
@@ -737,53 +793,55 @@ pub async fn check_core_rules_update(
     let mut asset_size_bytes = 0u64;
     let mut has_update = false;
 
-    if let Ok(r) = res {
-        if r.status().is_success() {
-            if let Ok(val) = r.json::<serde_json::Value>().await {
-                if let Some(tag) = val.get("tag_name").and_then(|v| v.as_str()) {
-                    latest_version = tag.to_string();
-                }
-                if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
-                    release_name = name.to_string();
-                }
-                if let Some(body) = val.get("body").and_then(|v| v.as_str()) {
-                    release_notes = body.to_string();
-                }
-                if let Some(published) = val.get("published_at").and_then(|v| v.as_str()) {
-                    published_at = published.to_string();
-                }
+    if let Some(val) = successful_val {
+        if let Some(tag) = val.get("tag_name").and_then(|v| v.as_str()) {
+            latest_version = tag.to_string();
+        }
+        if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+            release_name = name.to_string();
+        }
+        if let Some(body) = val.get("body").and_then(|v| v.as_str()) {
+            release_notes = body.to_string();
+        }
+        if let Some(published) = val.get("published_at").and_then(|v| v.as_str()) {
+            published_at = published.to_string();
+        }
 
-                // 寻找 Core-Rules 相关的压缩包
-                if let Some(assets) = val.get("assets").and_then(|v| v.as_array()) {
-                    for asset in assets {
-                        let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                        let lower = name.to_lowercase();
-                        if lower.ends_with(".zip") && (lower.contains("core-rules") || lower.contains("rules") || lower.contains("local-plan")) {
-                            asset_name = Some(name.to_string());
-                            download_url = asset.get("browser_download_url").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            asset_size_bytes = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                            break;
-                        }
-                    }
-                    // 若未找到特定命名，挑选第一个 zip
-                    if download_url.is_none() {
-                        for asset in assets {
-                            let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            if name.to_lowercase().ends_with(".zip") {
-                                asset_name = Some(name.to_string());
-                                download_url = asset.get("browser_download_url").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                asset_size_bytes = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                                break;
-                            }
-                        }
-                    }
+        // 寻找 Core-Rules 相关的压缩包
+        if let Some(assets) = val.get("assets").and_then(|v| v.as_array()) {
+            for asset in assets {
+                let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let lower = name.to_lowercase();
+                if lower.ends_with(".zip") && (lower.contains("core-rules") || lower.contains("rules") || lower.contains("local-plan")) {
+                    asset_name = Some(name.to_string());
+                    download_url = asset.get("browser_download_url").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    asset_size_bytes = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                    break;
                 }
-
-                if !latest_version.is_empty() && latest_version != current_version {
-                    has_update = true;
+            }
+            // 若未找到特定命名，挑选第一个 zip
+            if download_url.is_none() {
+                for asset in assets {
+                    let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if name.to_lowercase().ends_with(".zip") {
+                        asset_name = Some(name.to_string());
+                        download_url = asset.get("browser_download_url").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        asset_size_bytes = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                        break;
+                    }
                 }
             }
         }
+
+        if !latest_version.is_empty() && latest_version != current_version {
+            has_update = true;
+        }
+    } else {
+        return Err(format!(
+            "{}：{}",
+            LINUX_DO_MAINTENANCE_NOTICE,
+            LINUX_DO_URL
+        ));
     }
 
     let asset_size_formatted = format_bytes(asset_size_bytes);

@@ -25,6 +25,10 @@ pub struct EntryStatus {
     pub monitor_message:String,
     pub monitor_state:Option<routing_overrides::tracker::MonitorState>,
     pub identity_state:String, pub identity_message:String,
+    #[serde(default)]
+    pub hook_tier: Option<String>,
+    #[serde(default)]
+    pub hook_tier_reason: Option<String>,
 }
 #[cfg(any(windows, test))]
 fn monitor_report(main_exe:&str,selected:Option<&Path>,observation:&routing_overrides::tracker::Observation)->(String,String,String) {
@@ -129,13 +133,16 @@ pub async fn get_bundle_entry_states(instance_ids:Vec<String>)->Result<Vec<Entry
             .filter_map(|(_,exe,_)|exe.as_ref().ok()?.file_name().map(|n|n.to_string_lossy().into_owned())).collect();
         names.sort(); names.dedup();
         let rows=native::process_command_lines(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let hook_tiers = native::read_hook_tiers();
         let mut checked: HashMap<PathBuf, Result<Vec<Instance>, String>> = HashMap::new();
         plans.into_iter().map(|(bundle,exe,(monitor_message,identity_state,identity_message))| {
-        let outcome=(||{
+        let (state,message,instance_key,hook_tier,hook_tier_reason)=(||{
             if cfg!(windows) && identity_state!="path_verified" {
-                return Ok((if matches!(identity_state.as_str(),"not_seen"|"other_path"){"idle"}else{"unverified"},identity_message.clone(),String::new()));
+                return (if matches!(identity_state.as_str(),"not_seen"|"other_path"){"idle"}else{"unverified"},identity_message.clone(),String::new(),None,None);
             }
-            let exe=exe?;
+            let Ok(exe)=exe else {
+                return ("unverified",exe.unwrap_err(),String::new(),None,None);
+            };
             let running=checked.entry(exe.clone()).or_insert_with(|| match &rows {
                 Ok(rows)=>instances_from_commands(&exe,None,rows.iter().filter(|row|crate::platform::same_path(&row.name,&exe.file_name().unwrap_or_default().to_string_lossy())).map(|row|(row.pid,row.command.as_str()))),
                 Err(error)=>Err(error.clone()),
@@ -146,13 +153,34 @@ pub async fn get_bundle_entry_states(instance_ids:Vec<String>)->Result<Vec<Entry
                 let (state,message)=if !running.is_empty() && !crate::platform::macos::apps::supports_proxy_arguments(&exe) {
                     ("unverified", "已识别应用；原生 GUI 使用系统代理，命令行使用代理环境变量，实际接入以连接记录为准".into())
                 } else { (state,message) };
-                Ok::<_,String>((state,message,instance_key(running,bundle.port)))
-            }, Err(error) => Err(error.clone()) }
+                let (tier, reason) = if running.is_empty() {
+                    (None, None)
+                } else {
+                    let mut detected = None;
+                    for p in running.iter() {
+                        if let Some((t, _)) = hook_tiers.get(&p.pid) {
+                            detected = Some(*t);
+                            break;
+                        }
+                    }
+                    match detected {
+                        Some(2) => (Some("IatCompat".into()), Some("检测到宿主开启 ACG/代码段写保护，已安全降级为 IAT 导入表接管".into())),
+                        Some(1) => (Some("FullInline".into()), Some("内联 Hook 已全功能就绪，网络拦截与防侧漏抓漏保护已全开".into())),
+                        Some(3) => (Some("NativeBypass".into()), Some("命中 Chromium 渲染沙盒或安全进程，Hook 安全旁路，原生代理参数直通".into())),
+                        Some(4) => (Some("Failed".into()), Some("挂钩异常，请检查目标权限或安全软件拦截".into())),
+                        _ => if proxy_matches(&running[0].args, bundle.port) {
+                            (Some("NativeBypass".into()), Some("已使用原生代理参数直连运行，Hook 安全旁路".into()))
+                        } else {
+                            (Some("FullInline".into()), Some("内联 Hook 已就绪".into()))
+                        }
+                    }
+                };
+                (state,message,instance_key(running,bundle.port),tier,reason)
+            }, Err(error) => ("unverified",error.clone(),String::new(),None,None) }
         })();
-        let (state,message,instance_key)=outcome.unwrap_or_else(|message|("unverified",message,String::new()));
         #[cfg(windows)] let monitor_state=Some(observation.state);
         #[cfg(not(windows))] let monitor_state=None;
-        EntryStatus{instance_id:bundle.id,state:state.into(),message,instance_key,monitor_message,monitor_state,identity_state,identity_message,chains:vec![],connection_state:"core_stopped".into(),connection_message:"核心未运行，无法核验连接分流".into()}
+        EntryStatus{instance_id:bundle.id,state:state.into(),message,instance_key,monitor_message,monitor_state,identity_state,identity_message,chains:vec![],connection_state:"core_stopped".into(),connection_message:"核心未运行，无法核验连接分流".into(),hook_tier,hook_tier_reason}
     }).collect::<Vec<_>>() }).await.map_err(|_|"应用检测任务失败")?;
     if result.iter().any(|s| crate::external_proxy::generation(&s.instance_id).is_none()) && process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
         let observed=read_connections().await.and_then(|value|observe_connections(&mut result,&value));
@@ -560,7 +588,7 @@ mod tests {
         assert_eq!(stale.1,"unverified"); assert!(stale.0.contains("数据已过期")); assert!(!stale.2.contains("已确认"));
     }
     #[test] fn connection_probe_distinguishes_empty_invalid_and_observed() {
-        let mut states=vec![EntryStatus{instance_id:"browser".into(),state:"connected".into(),message:String::new(),instance_key:String::new(),monitor_message:String::new(),monitor_state:None,identity_state:String::new(),identity_message:String::new(),chains:vec![],connection_state:String::new(),connection_message:String::new()}];
+        let mut states=vec![EntryStatus{instance_id:"browser".into(),state:"connected".into(),message:String::new(),instance_key:String::new(),monitor_message:String::new(),monitor_state:None,identity_state:String::new(),identity_message:String::new(),chains:vec![],connection_state:String::new(),connection_message:String::new(),hook_tier:None,hook_tier_reason:None}];
         assert!(observe_connections(&mut states,&serde_json::json!({"error":"unauthorized"})).is_err());
         observe_connections(&mut states,&serde_json::json!({"connections":[]})).unwrap();
         assert_eq!(states[0].connection_state,"idle");

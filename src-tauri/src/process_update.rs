@@ -1,7 +1,13 @@
 //! Separate update channel: only process portable assets, never a full installer.
 use crate::commands::maintenance::AppUpdateInfo;
 use serde_json::Value;
-const REPO: &str = "https://github.com/jojhaa/ProcWeaver";
+
+const REPOS: &[&str] = &[
+    "jojhaa/ProcWeaver",
+    "yunyin-boy/ProcWeaver",
+];
+const LINUX_DO_NOTICE: &str = "仓库维护，点击前往 Linux 查看最新仓库地址：https://linux.do/t/topic/2940957";
+
 fn version(value: &str) -> Option<(u32, u32, u32)> {
     let parts = value.trim_start_matches(['v','V']).split('.').map(str::parse::<u32>).collect::<Result<Vec<_>, _>>().ok()?;
     (parts.len() == 3).then(|| (parts[0], parts[1], parts[2]))
@@ -22,21 +28,45 @@ fn client() -> Result<reqwest::Client, String> {
 }
 #[tauri::command]
 pub async fn check_process_update() -> Result<AppUpdateInfo, String> {
-    let response = client()?.get("https://api.github.com/repos/jojhaa/ProcWeaver/releases?per_page=30")
-        .send().await.map_err(|_| "连接版本服务器失败")?.error_for_status().map_err(|_| "版本服务器拒绝请求，请稍后重试")?;
-    let releases: Vec<Value> = response.json().await.map_err(|_| "版本列表格式无效")?;
+    let mut fetched_releases = None;
+    let mut hit_repo = REPOS[0];
+
+    for &repo in REPOS {
+        let url = format!("https://api.github.com/repos/{}/releases?per_page=30", repo);
+        if let Ok(c) = client() {
+            if let Ok(resp) = c.get(&url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(list) = resp.json::<Vec<Value>>().await {
+                        fetched_releases = Some(list);
+                        hit_repo = repo;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let releases = match fetched_releases {
+        Some(list) => list,
+        None => return Err(LINUX_DO_NOTICE.into()),
+    };
+
+    let repo_url = format!("https://github.com/{}", hit_repo);
     let current = env!("CARGO_PKG_VERSION");
     let mut info = AppUpdateInfo {
         current_version: format!("V{current}"), latest_version: format!("V{current}"), has_update: false,
         release_name: "独立进程版".into(), release_notes: "当前发布列表尚无独立进程版便携包。".into(),
         published_at: String::new(), download_url: None, asset_name: None, asset_size_bytes: 0,
-        asset_size_formatted: String::new(), html_url: format!("{REPO}/releases"), repo_url: REPO.into(),
+        asset_size_formatted: String::new(), html_url: format!("{repo_url}/releases"), repo_url,
     };
     if let Some((release, asset)) = selected(&releases) {
         let name = asset["name"].as_str().unwrap();
         let latest = asset_version(name).unwrap();
         let url = asset["browser_download_url"].as_str().ok_or("更新包地址缺失")?;
-        if !url.starts_with("https://github.com/jojhaa/ProcWeaver/releases/download/") || !url.ends_with(name) { return Err("更新包来源无效".into()); }
+        let is_valid_source = REPOS.iter().any(|repo| {
+            url.starts_with(&format!("https://github.com/{}/releases/download/", repo))
+        });
+        if !is_valid_source || !url.ends_with(name) { return Err("更新包来源无效".into()); }
         info.latest_version = format!("V{}.{}.{}", latest.0, latest.1, latest.2);
         info.has_update = Some(latest) > version(current);
         info.download_url = Some(url.into()); info.asset_name = Some(name.into());

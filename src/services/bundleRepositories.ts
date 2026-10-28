@@ -105,8 +105,25 @@ export async function loadRepository(repo: BundleRepository, request: Repository
   let files: { url: string; inline?: unknown }[];
   if (repo.kind === "github") {
     const slug = new URL(repo.url).pathname.slice(1);
-    const listing = `https://api.github.com/repos/${slug}/contents/${repo.directory.split("/").map(encodeURIComponent).join("/")}${repo.branch ? `?ref=${encodeURIComponent(repo.branch)}` : ""}`;
-    const data = await get(listing);
+    const getListing = (targetSlug: string) =>
+      `https://api.github.com/repos/${targetSlug}/contents/${repo.directory.split("/").map(encodeURIComponent).join("/")}${repo.branch ? `?ref=${encodeURIComponent(repo.branch)}` : ""}`;
+    let data: unknown;
+    try {
+      data = await get(getListing(slug));
+    } catch (err) {
+      if (slug.toLowerCase().includes("procweaver-rules")) {
+        const altSlug = slug.toLowerCase().includes("jojhaa")
+          ? slug.replace(/jojhaa/i, "yunyin-boy")
+          : slug.replace(/yunyin-boy/i, "jojhaa");
+        try {
+          data = await get(getListing(altSlug));
+        } catch {
+          throw new Error("仓库维护，点击前往 Linux 查看最新仓库地址：https://linux.do/t/topic/2940957");
+        }
+      } else {
+        throw err;
+      }
+    }
     if (!Array.isArray(data)) throw new Error("GitHub 地址须指向包含规则包的目录");
     if (data.length >= 1000) throw new Error("GitHub 目录过大，请指定较小的规则包目录");
     files = data.filter(f => f && f.type === "file" && typeof f.name === "string" && f.name.endsWith(".pwpack.json")).map(f => {

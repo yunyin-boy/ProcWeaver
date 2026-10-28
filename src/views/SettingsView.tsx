@@ -58,6 +58,7 @@ export const SettingsView: React.FC = () => {
   const [logCapture, setLogCapture] = useState(true);
   const [tabAnimation, setTabAnimation] = useState(true);
   const [trayMenuStyle, setTrayMenuStyle] = useState<"modern" | "classic">(platform.os === "macos" ? "classic" : "modern");
+  const [shimMode, setShimMode] = useState<"disabled" | "path" | "ifeo">("disabled");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [settingsError, setSettingsError] = useState("");
@@ -94,6 +95,7 @@ export const SettingsView: React.FC = () => {
       if (s.speedTestUrl) setSpeedTestUrl(s.speedTestUrl);
       if (s.speedTestConcurrency) setSpeedTestConcurrency(s.speedTestConcurrency);
       if (s.healthProbeConcurrency) setHealthProbeConcurrency(s.healthProbeConcurrency);
+      if (s.shimMode) setShimMode(s.shimMode as any);
       setSettingsReady(true);
     }).catch((e) => setSettingsError(String(e)));
   }, []);
@@ -116,6 +118,7 @@ export const SettingsView: React.FC = () => {
         logCapture,
         tabAnimation,
         trayMenuStyle,
+        shimMode,
         tunMode: trafficMode === "tun",
         trafficMode: trafficMode as any,
         autoStart,
@@ -736,6 +739,84 @@ export const SettingsView: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* 离散进程接管垫片 (Shim / IFEO 模式) */}
+            {platform.os === "windows" && (
+              <div className="pt-4 border-t border-slate-200/80 dark:border-slate-800/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="block text-sm font-semibold flex items-center gap-1.5">
+                      <span>离散与外部进程接管垫片 (Shim Engine)</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 font-mono">
+                        全场景双模
+                      </span>
+                    </span>
+                    <span className="block text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                      允许外部终端、VSCode 插件或脱离主进程树随意启动的程序（如 node、python 等）自动接入当前激活的业务包分流。
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                  {/* 1. 关闭 */}
+                  <button
+                    type="button"
+                    onClick={() => { setShimMode("disabled"); setSaved(false); }}
+                    className={`flex flex-col p-3 rounded-xl border text-left transition cursor-pointer ${
+                      shimMode === "disabled"
+                        ? "border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-900 dark:text-indigo-200 ring-1 ring-indigo-600"
+                        : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-semibold text-xs mb-1">
+                      <span>🚫 仅主入口接管</span>
+                      {shimMode === "disabled" && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                    </div>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      默认标准模式。仅接管由 ProcWeaver 直接拉起的程序进程树。
+                    </span>
+                  </button>
+
+                  {/* 2. PATH 模式 */}
+                  <button
+                    type="button"
+                    onClick={() => { setShimMode("path"); setSaved(false); }}
+                    className={`flex flex-col p-3 rounded-xl border text-left transition cursor-pointer ${
+                      shimMode === "path"
+                        ? "border-emerald-600 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 ring-1 ring-emerald-600"
+                        : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-semibold text-xs mb-1">
+                      <span className="text-emerald-700 dark:text-emerald-400">⚡ PATH 命令行垫片</span>
+                      {shimMode === "path" && <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />}
+                    </div>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      免管理员权限！在用户 PATH 置入转发垫片，捕获终端与开发工具的随意启动。
+                    </span>
+                  </button>
+
+                  {/* 3. IFEO 模式 */}
+                  <button
+                    type="button"
+                    onClick={() => { setShimMode("ifeo"); setSaved(false); }}
+                    className={`flex flex-col p-3 rounded-xl border text-left transition cursor-pointer ${
+                      shimMode === "ifeo"
+                        ? "border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-900 dark:text-indigo-200 ring-1 ring-indigo-600"
+                        : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-semibold text-xs mb-1">
+                      <span>🛡️ IFEO 全局劫持</span>
+                      {shimMode === "ifeo" && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                    </div>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      系统级全量捕获（需 UAC 提权）。劫持注册表启动器，附带防套娃死锁安全保护。
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>}
           {/* 表单底部统一操作栏与状态说明 */}
           {settingsError && (

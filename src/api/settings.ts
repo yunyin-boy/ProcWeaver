@@ -29,6 +29,7 @@ export interface GeneralSettings {
   tabAnimation?: boolean;
   trayMenuStyle?: "modern" | "classic";
   autoDnsGuardWithBundle?: boolean;
+  shimMode?: "disabled" | "path" | "ifeo";
 }
 export async function getGeneralSettings(): Promise<GeneralSettings> {
   if (!isTauri()) throw new Error("请在桌面客户端中读取设置");

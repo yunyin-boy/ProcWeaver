@@ -12,6 +12,7 @@ export interface ConnectionMetadata {
   process?: string;
   processPath?: string;
   inboundName?: string;
+  hookTier?: "Detours" | "IAT" | "Direct" | string;
   processContext?: { source: "windivert_context"; kind: "path" | "name" | "any" | "unknown"; value: string; owner?: string };
 }
 

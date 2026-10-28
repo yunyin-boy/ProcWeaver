@@ -543,6 +543,20 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = React.memo(({ con
                           <span className="truncate">{processName}</span>
                         </span>
                       )}
+                      {/* 接管方式逐行打标 (Detours / IAT / Direct) */}
+                      {conn.metadata.hookTier === "Detours" ? (
+                        <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 shrink-0" title="该连接由 Detours 深度内联挂钩截流">
+                          Detours
+                        </span>
+                      ) : conn.metadata.hookTier === "IAT" ? (
+                        <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0" title="该连接由 IAT 导入表兼容挂钩截流">
+                          IAT
+                        </span>
+                      ) : (
+                        <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30 shrink-0" title="该连接由原生代理参数直通或系统路由流转">
+                          Direct
+                        </span>
+                      )}
                     </div>
 
                     {/* 下方元数据：IP映射、链路链条与分流规则 */}

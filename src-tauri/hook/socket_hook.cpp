@@ -185,7 +185,7 @@ static bool ShouldBypass(const struct sockaddr *name) {
         uint16_t port = ntohs(sin->sin_port);
 
         // 127.0.0.1 (回环地址)
-        if (ip == 0x7F000001 || (ip >> 24) == 127) {
+        if (ip == 0x7F000001 || (ip >> 24) == 127 || port == g_config.bundle_port || port == g_config.dns_port) {
             return true;
         }
 
@@ -331,7 +331,8 @@ int WSAAPI HookConnect(
     const struct sockaddr *name,
     int namelen
 ) {
-    if (!g_config.enabled || g_config.bundle_port == 0) {
+    ReentryGuard guard;
+    if (guard.is_reentrant || !g_config.enabled || g_config.bundle_port == 0) {
         return TrueConnect(s, name, namelen);
     }
 
@@ -364,7 +365,8 @@ int WSAAPI HookWSAConnect(
     LPQOS lpSQOS,
     LPQOS lpGQOS
 ) {
-    if (!g_config.enabled || g_config.bundle_port == 0) {
+    ReentryGuard guard;
+    if (guard.is_reentrant || !g_config.enabled || g_config.bundle_port == 0) {
         return TrueWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
 
@@ -395,6 +397,8 @@ int WSAAPI HookSendTo(
     const struct sockaddr *to,
     int tolen
 ) {
+    ReentryGuard guard;
+    if (guard.is_reentrant) return TrueSendTo(s, buf, len, flags, to, tolen);
     if (ShouldBlockUdp(to)) {
         // 快速拒绝 UDP 探测或非代理 UDP，使客户端/浏览器 0 延迟秒切 TCP HTTP/2
         WSASetLastError(WSAECONNRESET);
@@ -414,6 +418,8 @@ int WSAAPI HookWSASendTo(
     LPWSAOVERLAPPED lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 ) {
+    ReentryGuard guard;
+    if (guard.is_reentrant) return TrueWSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
     if (ShouldBlockUdp(lpTo)) {
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;

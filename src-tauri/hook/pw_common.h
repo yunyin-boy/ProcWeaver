@@ -37,6 +37,44 @@ enum class TargetFilterMode {
     Exclude = 2
 };
 
+enum class HookTier : uint32_t {
+    Unknown = 0,
+    FullInline = 1,   // Detours Inline Hook 生效
+    IatCompat = 2,    // IAT 导入表 Hook 生效 (ACG 降级)
+    NativeBypass = 3, // 沙盒 / 强签名跳过 (原生代理参数直通)
+    Failed = 4        // 挂钩失败
+};
+
+#pragma pack(push, 1)
+struct HookProcessRecord {
+    uint32_t pid;
+    uint32_t hook_tier; // 对应 HookTier
+    char process_name[64];
+    uint32_t bundle_port;
+    uint64_t timestamp_ms;
+};
+
+struct HookStatusMap {
+    uint32_t magic; // 0x5057484B "PWHK"
+    uint32_t count;
+    HookProcessRecord records[256];
+};
+#pragma pack(pop)
+
+extern thread_local uint32_t g_reentry_depth;
+
+struct ReentryGuard {
+    bool is_reentrant;
+    ReentryGuard() {
+        is_reentrant = (++g_reentry_depth > 1);
+    }
+    ~ReentryGuard() {
+        if (g_reentry_depth > 0) {
+            --g_reentry_depth;
+        }
+    }
+};
+
 struct HookPolicy {
     bool proxy_tcp;          // 默认 true
     bool block_ipv6;         // 默认 true
@@ -60,6 +98,8 @@ struct HookConfig {
 
 extern HookConfig g_config;
 extern HMODULE g_hModule;
+extern HookTier g_hook_tier;
 
 void LoadHookConfig();
+void ReportHookTier(HookTier tier);
 std::string GetCurrentDllDir();

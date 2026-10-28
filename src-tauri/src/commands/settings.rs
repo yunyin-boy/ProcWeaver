@@ -54,7 +54,10 @@ pub struct GeneralSettings {
     pub tray_menu_style: String,
     #[serde(default = "default_true")]
     pub auto_dns_guard_with_bundle: bool,
+    #[serde(default = "default_shim_mode")]
+    pub shim_mode: String,
 }
+fn default_shim_mode() -> String { "disabled".into() }
 fn default_enable_controller_port() -> bool { true }
 fn default_true() -> bool { true }
 fn default_minimize_on_close() -> bool { crate::edition::PROCESS }
@@ -98,6 +101,7 @@ impl Default for GeneralSettings {
             tab_animation: true,
             tray_menu_style: default_tray_menu_style(),
             auto_dns_guard_with_bundle: true,
+            shim_mode: default_shim_mode(),
         }
     }
 }
@@ -127,6 +131,10 @@ async fn save_and_restart(settings: GeneralSettings, state: &super::process::Cor
     #[cfg(windows)]
     if settings.traffic_mode == crate::capture::windivert::plan::MODE && previous.traffic_mode != settings.traffic_mode {
         crate::capture::windivert::assets::validate_resource(&crate::capture::windivert::assets::resource()?)?;
+    }
+    #[cfg(windows)]
+    if previous.shim_mode != settings.shim_mode {
+        let _ = super::windows_integration::apply_shim_mode(&settings.shim_mode);
     }
     let (restart, mode) = {
         let mut core = state.lock().map_err(|_| "读取核心状态失败")?;

@@ -444,18 +444,30 @@ export const MaintenanceView: React.FC = () => {
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-2">
-                  <span>主仓库发布通道：</span>
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex flex-wrap items-center gap-2">
+                  <span>发布通道：</span>
                   <a
                     href="https://github.com/jojhaa/ProcWeaver"
                     target="_blank"
                     rel="noreferrer"
                     className="text-indigo-500 hover:underline flex items-center gap-1 font-mono"
+                    title="主通道 jojhaa/ProcWeaver"
                   >
                     jojhaa/ProcWeaver
                     <ExternalLink className="w-3 h-3" />
                   </a>
-                </p>
+                  <span className="text-slate-300 dark:text-slate-700">|</span>
+                  <a
+                    href="https://github.com/yunyin-boy/ProcWeaver"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-500 hover:underline flex items-center gap-1 font-mono"
+                    title="镜像通道 yunyin-boy/ProcWeaver"
+                  >
+                    yunyin-boy/ProcWeaver
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
               </div>
 
               <div className="flex items-center space-x-2.5">
@@ -471,12 +483,33 @@ export const MaintenanceView: React.FC = () => {
               </div>
             </div>
 
-            {/* 错误提示 */}
+            {/* 错误提示 / 仓库维护引导 */}
             {appError && (
-              <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{appError}</span>
-              </div>
+              appError.includes("linux.do") || appError.includes("仓库维护") ? (
+                <div className="mt-4 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="flex items-center gap-2.5">
+                    <Wrench className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <span className="font-bold">全部更新通道暂不可用 (仓库维护中)</span>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">所有官方及镜像发布通道均未响应或处于迁移维护状态。</p>
+                    </div>
+                  </div>
+                  <a
+                    href="https://linux.do/t/topic/2940957"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition shadow-xs"
+                  >
+                    <span>前往 Linux.do 查看最新仓库</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              ) : (
+                <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{appError}</span>
+                </div>
+              )
             )}
 
             {/* 新版本检测详情 */}
@@ -960,8 +993,32 @@ export const MaintenanceView: React.FC = () => {
                       </span>
                     )}
                   </h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    {mobile ? "更新域名与 IP 分流数据，供已启用的规则使用。" : <>源自 {rulesRepo?.releaseName || "ProcWeaver 官方规则仓库"} <code className="font-mono text-purple-600 dark:text-purple-400">Core-Rules/</code>，供域名与 IP 规则使用</>}
+                  <p className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-1.5">
+                    {mobile ? "更新域名与 IP 分流数据，供已启用的规则使用。" : (
+                      <>
+                        <span>源自</span>
+                        <a
+                          href="https://github.com/jojhaa/ProcWeaver-Rules"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-purple-600 dark:text-purple-400 hover:underline font-mono"
+                          title="主规则仓库 jojhaa/ProcWeaver-Rules"
+                        >
+                          jojhaa/ProcWeaver-Rules
+                        </a>
+                        <span className="text-slate-300 dark:text-slate-700">|</span>
+                        <a
+                          href="https://github.com/yunyin-boy/ProcWeaver-Rules"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-purple-600 dark:text-purple-400 hover:underline font-mono"
+                          title="镜像规则仓库 yunyin-boy/ProcWeaver-Rules"
+                        >
+                          yunyin-boy/ProcWeaver-Rules
+                        </a>
+                        <span>的 <code className="font-mono text-purple-600 dark:text-purple-400">Core-Rules/</code> 目录</span>
+                      </>
+                    )}
                   </p>
                 </div>
               </div>
@@ -1024,20 +1081,41 @@ export const MaintenanceView: React.FC = () => {
 
             {/* 更新提示或反馈 */}
             {coreRulesMsg && (
-              <div
-                className={`p-3 rounded-xl border text-xs flex items-center gap-2 transition ${
-                  coreRulesMsg.isError
-                    ? "bg-rose-50 border-rose-200 text-rose-700 dark:bg-rose-500/10 dark:border-rose-500/20 dark:text-rose-400"
-                    : "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/20 dark:text-emerald-400"
-                }`}
-              >
-                {coreRulesMsg.isError ? (
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                ) : (
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                )}
-                <span>{coreRulesMsg.text}</span>
-              </div>
+              coreRulesMsg.text.includes("linux.do") || coreRulesMsg.text.includes("仓库维护") ? (
+                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="flex items-center gap-2.5">
+                    <Wrench className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <span className="font-bold">核心规则仓库通道暂不可用 (仓库维护中)</span>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">所有官方及镜像规则仓库通道均未响应或处于维护状态。</p>
+                    </div>
+                  </div>
+                  <a
+                    href="https://linux.do/t/topic/2940957"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition shadow-xs"
+                  >
+                    <span>前往 Linux.do 查看最新仓库</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              ) : (
+                <div
+                  className={`p-3 rounded-xl border text-xs flex items-center gap-2 transition ${
+                    coreRulesMsg.isError
+                      ? "bg-rose-50 border-rose-200 text-rose-700 dark:bg-rose-500/10 dark:border-rose-500/20 dark:text-rose-400"
+                      : "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-500/10 dark:border-emerald-500/20 dark:text-emerald-400"
+                  }`}
+                >
+                  {coreRulesMsg.isError ? (
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{coreRulesMsg.text}</span>
+                </div>
+              )
             )}
 
             {/* 本地物理路径 */}

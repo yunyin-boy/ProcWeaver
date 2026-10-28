@@ -172,6 +172,20 @@ export const BundleDetailModal: React.FC<Props> = ({
                   <span>{entry.connectionMessage}</span>
                 </p>
               )}
+              <p className="flex items-start space-x-1">
+                <span className="text-slate-400 shrink-0">Hook 接管：</span>
+                <span className="flex items-center gap-1.5 font-medium">
+                  {entry?.hookTier === "IatCompat" ? (
+                    <span className="text-amber-600 dark:text-amber-400">🟡 IAT 导入表兼容模式 ({entry?.hookTierReason || "开启 ACG 动态代码写保护，已平稳降级"})</span>
+                  ) : entry?.hookTier === "NativeBypass" ? (
+                    <span className="text-sky-600 dark:text-sky-400">🔵 原生参数直通 ({entry?.hookTierReason || "沙盒或受限子进程，Hook 安全旁路"})</span>
+                  ) : entry?.hookTier === "Failed" ? (
+                    <span className="text-rose-600 dark:text-rose-400">🔴 接管异常 ({entry?.hookTierReason || "挂钩注入失败"})</span>
+                  ) : (
+                    <span className="text-emerald-600 dark:text-emerald-400">🟢 深度内联接管 (Winsock / DNS / CreateProcessW 完整就绪)</span>
+                  )}
+                </span>
+              </p>
             </div>
 
             {/* 命中流向列表 */}

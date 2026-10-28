@@ -15,8 +15,21 @@ async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Prom
   throw new Error("NOT_IN_TAURI");
 }
 
+export const LINUX_DO_URL = "https://linux.do/t/topic/2940957";
+export const LINUX_DO_MAINTENANCE_NOTICE = "仓库维护，点击前往 Linux 查看最新仓库地址";
+
+export const APP_UPDATE_CHANNELS = [
+  { name: "主通道 (jojhaa)", repo: "jojhaa/ProcWeaver", url: "https://github.com/jojhaa/ProcWeaver" },
+  { name: "镜像通道 (yunyin-boy)", repo: "yunyin-boy/ProcWeaver", url: "https://github.com/yunyin-boy/ProcWeaver" },
+];
+
+export const RULES_UPDATE_CHANNELS = [
+  { name: "主规则仓库 (jojhaa)", repo: "jojhaa/ProcWeaver-Rules", url: "https://github.com/jojhaa/ProcWeaver-Rules" },
+  { name: "镜像规则仓库 (yunyin-boy)", repo: "yunyin-boy/ProcWeaver-Rules", url: "https://github.com/yunyin-boy/ProcWeaver-Rules" },
+];
+
 /**
- * 检查客户端桌面版本更新 (主仓库: jojhaa/ProcWeaver)
+ * 检查客户端桌面版本更新 (主仓库: jojhaa/ProcWeaver，镜像: yunyin-boy/ProcWeaver)
  */
 export async function checkAppUpdate(): Promise<AppUpdateInfo> {
   if (isTauri()) {

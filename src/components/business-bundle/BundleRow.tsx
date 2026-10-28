@@ -193,6 +193,40 @@ export const BundleRow: React.FC<Props> = ({
               <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 shrink-0">
                 {def.packageVersion}
               </span>
+              {/* 接管深度全天候状态徽章 (方式 A) */}
+              {entry?.hookTier === "IatCompat" ? (
+                <span
+                  title={entry?.hookTierReason || "检测到目标开启 ACG/代码段保护，已安全降级为 IAT 导入表接管"}
+                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40 shrink-0 flex items-center gap-1 animate-pulse"
+                >
+                  <span className="w-1 h-1 rounded-full bg-amber-500" />
+                  IAT兼容
+                </span>
+              ) : entry?.hookTier === "NativeBypass" ? (
+                <span
+                  title={entry?.hookTierReason || "命中 Chromium 渲染沙盒或安全进程，Hook 安全旁路，原生代理参数直通"}
+                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/40 shrink-0 flex items-center gap-1"
+                >
+                  <span className="w-1 h-1 rounded-full bg-sky-500" />
+                  参数直通
+                </span>
+              ) : entry?.hookTier === "Failed" ? (
+                <span
+                  title={entry?.hookTierReason || "注入或挂钩异常，请查看详情诊断"}
+                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/40 shrink-0 flex items-center gap-1"
+                >
+                  <span className="w-1 h-1 rounded-full bg-rose-500" />
+                  接管异常
+                </span>
+              ) : (
+                <span
+                  title={entry?.hookTierReason || "内联 Hook 全功能就绪，网络拦截与防侧漏抓漏保护已全开"}
+                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 shrink-0 flex items-center gap-1"
+                >
+                  <span className="w-1 h-1 rounded-full bg-emerald-500" />
+                  深度接管
+                </span>
+              )}
               {/* 进阶防护策略微徽章 */}
               <button
                 type="button"
