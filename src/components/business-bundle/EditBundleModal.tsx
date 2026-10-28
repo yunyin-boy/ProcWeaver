@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { BundleLocalInstance, BusinessBundleDefinition, BundleFallback, BundleProcessBinding, BundleProcessBindings } from "../../types/businessBundle";
+import { BundleLocalInstance, BusinessBundleDefinition, BundleFallback, BundleProcessBinding, BundleProcessBindings, BundlePolicy } from "../../types/businessBundle";
 import { PRESET_BUNDLES_CATALOG } from "../../services/bundleStorage";
-import { Pencil, X, RotateCcw, Save } from "lucide-react";
+import { Pencil, X, RotateCcw, Save, Shield, ChevronDown, ChevronUp } from "lucide-react";
 import { usePlatform } from "../../context/PlatformContext";
 import { bundleProcesses, validAndroidPackage, matchingBindings, processMembers, processNames, validateProcessBindings } from "../../utils/bundlePlatform";
 import { BundleDiscoveryTools } from "./BundleDiscoveryTools";
+import { BundlePolicyForm } from "./BundlePolicyForm";
+import { defaultBundlePolicy, normalizeBundlePolicy } from "../../utils/bundlePolicy";
 
 interface Props {
   isOpen: boolean;
   bundleInstance: BundleLocalInstance | null;
-  onSave: (updatedDefinition: BusinessBundleDefinition, bindings?: BundleProcessBindings) => void;
+  onSave: (updatedDefinition: BusinessBundleDefinition, bindings?: BundleProcessBindings, policy?: BundlePolicy) => void;
   onCancel: () => void;
 }
 
@@ -28,6 +30,8 @@ export const EditBundleModal: React.FC<Props> = ({
   const [exesText, setExesText] = useState<string>("");
   const [domainsText, setDomainsText] = useState<string>("");
   const [bindings, setBindings] = useState<BundleProcessBinding[]>([]);
+  const [policy, setPolicy] = useState<BundlePolicy>(defaultBundlePolicy());
+  const [showPolicy, setShowPolicy] = useState<boolean>(true);
 
   useEffect(() => {
     if (bundleInstance) {
@@ -40,6 +44,7 @@ export const EditBundleModal: React.FC<Props> = ({
       setExesText(exes.join("\n"));
       setDomainsText((def.domains || []).join("\n"));
       setBindings(os === "android" ? [] : bundleInstance.processBindings?.[os] ?? []);
+      setPolicy(normalizeBundlePolicy(bundleInstance.policy ?? def.policy));
     }
   }, [bundleInstance, isOpen]);
 
@@ -59,6 +64,7 @@ export const EditBundleModal: React.FC<Props> = ({
     setExesText(bundleProcesses(originalPreset, os).map((p) => p.exe).join("\n"));
     setDomainsText((originalPreset.domains || []).join("\n"));
     setBindings([]);
+    setPolicy(normalizeBundlePolicy(originalPreset.policy));
   };
 
   const handleSave = () => {
@@ -99,9 +105,10 @@ export const EditBundleModal: React.FC<Props> = ({
       fallback,
       ...(os === "android" ? { androidPackages: rawExes } : os === "macos" ? { macosProcesses: processes } : { processes, additionalExes: rawExes }),
       domains: rawDomains,
+      policy,
     };
 
-    onSave(updatedDef, os === "android" ? bundleInstance.processBindings : { ...bundleInstance.processBindings, [os]: nextBindings });
+    onSave(updatedDef, os === "android" ? bundleInstance.processBindings : { ...bundleInstance.processBindings, [os]: nextBindings }, policy);
   };
 
   return (
@@ -254,6 +261,36 @@ export const EditBundleModal: React.FC<Props> = ({
               {mode === "sandbox" ? "进程与域名同时命中才使用本包出口；留空则所有请求按“未命中域名时”的策略处理。" : "强锁模式不受域名清单限制；此清单仅用于核心 DNS 策略。"}
               DNS 解析与网页连接分别匹配，应用自带加密 DNS 不由此自动接管。
             </p>
+          </div>
+
+          {/* 高级网络与接管防护策略 */}
+          <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50/50 dark:bg-slate-950/40">
+            <button
+              type="button"
+              onClick={() => setShowPolicy(!showPolicy)}
+              className="w-full px-3.5 py-2.5 flex items-center justify-between text-left hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
+            >
+              <div className="flex items-center space-x-2">
+                <Shield className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span className="font-bold text-slate-800 dark:text-slate-200 text-xs">
+                  接管与网络防护策略
+                </span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                  {policy.dnsMode === "fake_ip" ? "Fake-IP" : policy.dnsMode === "system_native" ? "原生DNS" : "纯净DNS"} · {policy.blockUdp ? "防QUIC" : policy.proxyUdp ? "UDP代理" : "UDP直连"}
+                </span>
+              </div>
+              {showPolicy ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+            </button>
+
+            {showPolicy && (
+              <div className="p-3.5 pt-1 border-t border-slate-200/60 dark:border-slate-800/60">
+                <BundlePolicyForm
+                  policy={policy}
+                  onChange={setPolicy}
+                  isHttpUpstream={bundleInstance.backend === "external"}
+                />
+              </div>
+            )}
           </div>
         </div>
 

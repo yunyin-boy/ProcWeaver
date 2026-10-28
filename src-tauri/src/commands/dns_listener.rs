@@ -31,7 +31,7 @@ fn cache_path() -> std::path::PathBuf {
     crate::storage::data_dir().join("config/dns-listener-runtime.json")
 }
 
-fn last_port() -> Option<u16> {
+pub fn last_port() -> Option<u16> {
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(cache_path()).ok()?).ok()?;
     let port = value["port"].as_u64().and_then(|p| u16::try_from(p).ok())?;
     (port > 1024).then_some(port)

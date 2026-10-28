@@ -45,7 +45,7 @@ fn same_path_instance_owners_reach_distinct_core_outlets_and_preserve_fallback()
             let path = format!(r"C:\{id}\app.exe");
             config.bundles.push(BundleRoute { id: id.into(), name: id.into(), main_exe: path.clone(), enabled: true,
                 main_target: Some(target(exit)), dns_target: None, port: ports[i], mode: "sandbox".into(),
-                domains: vec!["selected.example.test".into()], fallback: "rules".into() });
+                domains: vec!["selected.example.test".into()], fallback: "rules".into(), policy: None });
             config.process_rules.push(ProcessRule { id: format!("bundle-{id}-root"), enabled: true, label: id.into(),
                 match_kind: "path".into(), match_value: path, action: "proxy".into(), target: Some(target(exit)), include_descendants: true, rule_mode: Some("inherit".into()) });
         }

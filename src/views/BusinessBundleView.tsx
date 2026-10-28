@@ -25,11 +25,13 @@ import { BundleDetailModal } from "../components/business-bundle/BundleDetailMod
 import { ImportBundleModal } from "../components/business-bundle/ImportBundleModal";
 import { ExportBundleModal } from "../components/business-bundle/ExportBundleModal";
 import { EditBundleModal } from "../components/business-bundle/EditBundleModal";
+import { BundlePolicyModal } from "../components/business-bundle/BundlePolicyModal";
 import { BundleStudio } from "../components/business-bundle/BundleStudio";
 import { RepositoryCenter } from "../components/business-bundle/RepositoryCenter";
 import { useBundleRepositories } from "../hooks/useBundleRepositories";
 import { DEFAULT_REPOSITORY, repositoryPage } from "../services/bundleRepositories";
 import type { RepositoryPackage } from "../types/bundleRepository";
+import type { BundlePolicy } from "../types/businessBundle";
 import { usePlatform } from "../context/PlatformContext";
 import { bundleExes, processKey } from "../utils/bundlePlatform";
 import { toggleDnsGuard, getDnsGuardInfo, isTauri } from "../api";
@@ -78,8 +80,10 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   const [detailTarget, setDetailTarget] = useState<BundleLocalInstance | null>(null);
   const [exportTarget, setExportTarget] = useState<BundleLocalInstance | null>(null);
   const [editingTarget, setEditingTarget] = useState<BundleLocalInstance | null>(null);
+  const [policyTarget, setPolicyTarget] = useState<BundleLocalInstance | null>(null);
   const [isImportOpen, setIsImportOpen] = useState<boolean>(false);
   const [isModeGuideOpen, setIsModeGuideOpen] = useState<boolean>(false);
+  const [currentTrafficMode, setCurrentTrafficMode] = useState<string>("app_proxy");
 
   // 全局 DNS 护航与提示 (智能联动与托管状态)
   const [dnsGuardEnabled, setDnsGuardEnabled] = useState<boolean>(false);
@@ -248,17 +252,31 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   };
 
   // 保存二次编辑 (B03)
-  const handleSaveEdit = (updatedDef: BusinessBundleDefinition, processBindings?: BundleProcessBindings) => {
+  const handleSaveEdit = (updatedDef: BusinessBundleDefinition, processBindings?: BundleProcessBindings, policy?: BundlePolicy) => {
     if (!editingTarget) return;
     const next = updateBundleInstance(editingTarget.instanceId, (prev) => ({
       ...prev,
       definition: updatedDef,
       processBindings,
+      policy: policy !== undefined ? policy : (updatedDef.policy ?? prev.policy),
       isModified: true,
     }));
     persistAndSync(next);
     setEditingTarget(null);
-    showToast(`✏️ 规则包「${updatedDef.packageName}」定义已成功更新！`);
+    showToast(`✏️ 规则包「${updatedDef.packageName}」定义及接管防护策略已成功更新！`);
+  };
+
+  // 保存高级接管与防护策略
+  const handleSavePolicy = (newPolicy: BundlePolicy) => {
+    if (!policyTarget) return;
+    const next = updateBundleInstance(policyTarget.instanceId, (prev) => ({
+      ...prev,
+      policy: newPolicy,
+      isModified: true,
+    }));
+    persistAndSync(next);
+    setPolicyTarget(null);
+    showToast(`🛡️ 规则包「${policyTarget.definition.packageName}」接管防护策略已更新！`);
   };
 
   // 调整规则包在列表中的优先级次序 (B10)
@@ -374,11 +392,11 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
 
             <span className="h-3.5 w-px bg-slate-200 dark:bg-slate-700 hidden sm:inline-block" />
 
-            {/* 全局底层接管模式下拉选择器 (WinDivert / TUN / 智能双模式 / 纯应用层) */}
+            {/* 全局底层接管模式下拉选择器 (WinDivert / TUN / 智能双模式 / 纯应用层 / 用户态强接管) */}
             {platform.os === "windows" && (
               <TrafficModeSelector
                 variant="compact"
-                onModeChanged={() => { void bundleController.refresh(); }}
+                onModeChanged={(mode) => { setCurrentTrafficMode(mode); void bundleController.refresh(); }}
               />
             )}
 
@@ -686,6 +704,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                       onToggleSwitch={handleToggleSwitch}
                       onOpenSelectExit={openExit}
                       onOpenDetail={(inst) => setDetailTarget(inst)}
+                      onOpenPolicy={(inst) => setPolicyTarget(inst)}
                       onEdit={(inst) => setEditingTarget(inst)}
                       onExport={(inst) => setExportTarget(inst)}
                       onDelete={handleDeleteInstance}
@@ -777,12 +796,20 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         onCancel={() => setEditingTarget(null)}
       />
 
-      {/* 接管模式说明及 WinDivert 优缺点详解弹窗 */}
+      {/* 规则包高级防护策略弹窗 */}
+      <BundlePolicyModal
+        isOpen={Boolean(policyTarget)}
+        instance={policyTarget}
+        onSave={handleSavePolicy}
+        onCancel={() => setPolicyTarget(null)}
+      />
+
+      {/* 接管模式说明及各模式优缺点详解弹窗 */}
       <TrafficModeGuideModal
         isOpen={isModeGuideOpen}
         onClose={() => setIsModeGuideOpen(false)}
         onConfirm={() => setIsModeGuideOpen(false)}
-        currentMode="windivert_v1"
+        currentMode={currentTrafficMode}
       />
     </div>
   );

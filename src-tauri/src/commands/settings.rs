@@ -186,7 +186,7 @@ pub(crate) fn persist_general_settings(mut settings: GeneralSettings, state: &su
         settings.tun_mode = true;
     } else {
         settings.tun_mode = false;
-        if settings.traffic_mode != "smart_hybrid" && settings.traffic_mode != "windivert_v1" {
+        if settings.traffic_mode != "smart_hybrid" && settings.traffic_mode != "windivert_v1" && settings.traffic_mode != "user_mode" {
             settings.traffic_mode = "app_proxy".into();
         }
     }

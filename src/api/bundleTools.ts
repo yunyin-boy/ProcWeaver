@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-export interface LaunchRequest { instanceId: string; shortcutId?: string | null }
+export interface LaunchRequest { instanceId: string; shortcutId?: string | null; direct?: boolean }
 export interface LaunchOutcome { state: "launched" | "reused" | "restart_required" | "not_running"; message: string; confirmation: string | null; entry: string; processCount: number }
 export interface BundleShortcuts { desktop: string; executableFound: boolean; candidates: { path: string; label: string }[]; managed: { id: string; path: string; dedicated: boolean; verified: boolean; backup: string | null }[] }
 export interface ProcessMonitorChange { refreshAll: boolean; instanceIds: string[] }

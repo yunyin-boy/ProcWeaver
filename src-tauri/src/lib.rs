@@ -106,7 +106,8 @@ pub fn run() {
             tauri::async_runtime::spawn(capture::smart_arbiter::run_arbiter());
             app_lifecycle::setup(app)?;
             let preferences = commands::settings::get_general_settings();
-            if !proxy_recovery_ready || preferences.as_ref().map_or(true, |s| !s.silent_start) { app_lifecycle::show(app.handle()); }
+            let is_direct_launch = std::env::args().any(|a| a == "--direct" || a == "--shim" || a == "--quick");
+            if (!proxy_recovery_ready || preferences.as_ref().map_or(true, |s| !s.silent_start)) && !is_direct_launch { app_lifecycle::show(app.handle()); }
             if function_mode::core_features_enabled() && proxy_recovery_ready && preferences.as_ref().is_ok_and(|s| s.auto_run) {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

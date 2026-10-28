@@ -145,7 +145,7 @@ mod tests {
             let mut config = Overrides { process_enabled:true,dns_enabled:true,..Default::default() };
             config.process_rules.push(ProcessRule{id:"bundle-bound-main".into(),enabled:true,label:"测试应用".into(),match_kind:"name".into(),match_value:"fixture-browser.exe".into(),action:"proxy".into(),target:Some(target.clone()),include_descendants:false,rule_mode:Some("strict".into())});
             config.dns_rules.push(DnsRule{id:"manual-dns".into(),enabled:true,domain_kind:"exact".into(),domain:"bound.example.test".into(),resolver_url:"https://192.0.2.53/dns-query".into(),target:target.clone()});
-            config.bundles.push(BundleRoute{id:"bound".into(),name:"测试包".into(),main_exe:"fixture-browser.exe".into(),enabled:true,main_target:Some(target.clone()),dns_target:Some(target.clone()),port:entry,mode:"strict".into(),domains:vec![],fallback:"rules".into()});
+            config.bundles.push(BundleRoute{id:"bound".into(),name:"测试包".into(),main_exe:"fixture-browser.exe".into(),enabled:true,main_target:Some(target.clone()),dns_target:Some(target.clone()),port:entry,mode:"strict".into(),domains:vec![],fallback:"rules".into(),policy:None});
             fs::write(root.join("config/routing-overrides.json"),serde_json::to_vec(&config).unwrap()).unwrap();
             async fn probe(port:u16)->Result<String,String> {
                 let mut socket=tokio::net::TcpStream::connect(("127.0.0.1",port)).await.map_err(|e|e.to_string())?;

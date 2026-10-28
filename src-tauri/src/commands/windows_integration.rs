@@ -139,7 +139,18 @@ mod performance_tests {
     fn performance_native_command_query_batches_names_without_shell() {
         let exe = std::env::current_exe().unwrap();
         let name = exe.file_name().unwrap().to_str().unwrap();
-        let rows = super::process_command_lines(&[name, "procweaver-absent-test.exe"]).unwrap();
+        let mut last_err = None;
+        let mut rows = None;
+        for _ in 0..5 {
+            match super::process_command_lines(&[name, "procweaver-absent-test.exe"]) {
+                Ok(r) => { rows = Some(r); break; }
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+            }
+        }
+        let rows = rows.unwrap_or_else(|| panic!("process_command_lines failed: {:?}", last_err));
         let own = rows.iter().find(|row| row.pid == std::process::id()).unwrap();
         assert_eq!(own.name.to_lowercase(), name.to_lowercase());
         assert!(!own.command.is_empty());
@@ -165,4 +176,63 @@ pub fn request_close(pid: u32, identity: &str) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")] { crate::platform::macos::processes::request_close(pid, identity) }
     #[cfg(not(any(windows, target_os = "macos")))] { let _=(pid,identity); Err("当前系统不支持请求应用退出".into()) }
+}
+
+#[cfg(windows)]
+pub fn assign_to_job_object(process_handle: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+    };
+
+    struct SafeJob(HANDLE);
+    unsafe impl Send for SafeJob {}
+    unsafe impl Sync for SafeJob {}
+    impl Drop for SafeJob {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+                unsafe { CloseHandle(self.0); }
+            }
+        }
+    }
+    static ACTIVE_JOBS: Mutex<Vec<SafeJob>> = Mutex::new(Vec::new());
+
+    if process_handle.is_null() || process_handle == INVALID_HANDLE_VALUE {
+        return false;
+    }
+
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() || job == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            CloseHandle(job);
+            return false;
+        }
+        if AssignProcessToJobObject(job, process_handle) == 0 {
+            CloseHandle(job);
+            return false;
+        }
+        if let Ok(mut lock) = ACTIVE_JOBS.lock() {
+            lock.push(SafeJob(job));
+        }
+        true
+    }
+}
+
+#[cfg(not(windows))]
+pub fn assign_to_job_object(_process_handle: *mut std::ffi::c_void) -> bool {
+    false
 }

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Zap, Bot, Shield, X, Check, HelpCircle } from "lucide-react";
+import { Zap, Bot, Shield, X, Check, HelpCircle, Cpu } from "lucide-react";
 import { usePlatform } from "../context/PlatformContext";
 
 interface Props {
@@ -37,6 +37,26 @@ export const TrafficModeGuideModal: React.FC<Props> = ({
       ],
       icon: <Zap className="w-4 h-4 text-amber-500" />,
       tagColor: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
+    },
+    {
+      id: "user_mode",
+      title: "用户态强接管 (User-Hook · 免驱动)",
+      badge: "免驱动 · 注入 Hook · 路线 B 真实 DNS",
+      desc: "零驱动特权 · 进程级透明重定向 · 真实 DNS 解析",
+      detail:
+        "基于微软 Detours 轻量注入技术，透明拦截进程的网络连接与域名解析。向本地专用端口发起 SOCKS5 握手，无缝衔接业务包分流与出口插槽。",
+      pros: [
+        "免内核驱动与免管理员特权：零 .sys 驱动文件，无需 UAC 提权，无蓝屏风险，更少误报。",
+        "路线 B 真实 DNS 解析：通过本地 DNS 端口解析真实 IP，彻底避免 Fake-IP 带来的 IP 嗅探和环境兼容性问题。",
+        "精准单应用强力接管：直接从业务包卡片启动目标应用，即使应用本身不支持代理参数也能实现 100% 透明流量捕获。",
+        "极轻量双架构自蔓延：提供 32/64 位自适应 Hook DLL，自动追踪并注入子进程，开销低至微秒级。",
+      ],
+      cons: [
+        "当前优先覆盖 TCP 连接与 DNS 解析，UDP Associate 随后续需求扩展。",
+        "需由 ProcWeaver 业务包卡片拉起或显式注入，不主动拦截外部未关联程序。",
+      ],
+      icon: <Cpu className="w-4 h-4 text-emerald-500" />,
+      tagColor: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
     },
     {
       id: "smart_hybrid",
@@ -124,7 +144,7 @@ export const TrafficModeGuideModal: React.FC<Props> = ({
 
         {/* 模式特性卡片列表 */}
         <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-1">
-          {MODES.filter(item => item.id === "app_proxy" || (item.id === "windivert_v1" ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)).map((item) => {
+          {MODES.filter(item => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)).map((item) => {
             const isHighlight = currentMode === item.id;
             return (
               <div

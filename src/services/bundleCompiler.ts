@@ -133,6 +133,7 @@ export function compileBundleRoutes(instances: BundleLocalInstance[], previous: 
     port: previous.find(b => b.id === instance.instanceId)?.port || 0,
     mainTarget: instance.enabled && instance.slotBindings.main ? targetFor(instance, "main") : null,
     dnsTarget: instance.enabled && instance.slotBindings.main ? targetFor(instance, "dns") : null,
+    policy: instance.policy ?? instance.definition.policy,
   }));
 }
 function mainExecutable(instance: BundleLocalInstance, platform: BundlePlatform): string {
@@ -140,7 +141,7 @@ function mainExecutable(instance: BundleLocalInstance, platform: BundlePlatform)
   return (platform === "android" ? undefined : instance.processBindings?.[platform]?.find(b => processKey(b.exe, platform) === processKey(exe, platform))?.executablePath) ?? exe;
 }
 export const routeSignature = (routes: BundleRoute[] = []) => JSON.stringify(routes.map(r => [r.id, r.name, r.mainExe, r.enabled, r.mode, r.fallback ?? "rules", normalizedDomains(r.domains),
-  r.mainTarget && [r.mainTarget.profileId, r.mainTarget.kind, r.mainTarget.name], r.dnsTarget && [r.dnsTarget.profileId, r.dnsTarget.kind, r.dnsTarget.name]]));
+  r.mainTarget && [r.mainTarget.profileId, r.mainTarget.kind, r.mainTarget.name], r.dnsTarget && [r.dnsTarget.profileId, r.dnsTarget.kind, r.dnsTarget.name], r.policy]));
 
 export interface BundleSyncResult {
   success: boolean;

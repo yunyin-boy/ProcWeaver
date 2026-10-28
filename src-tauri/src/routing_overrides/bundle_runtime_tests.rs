@@ -45,12 +45,12 @@ fn native_bundle_entries_switch_only_one_selector_and_rollback() {
         let target=|name:&str|Target{profile_id:"default".into(),kind:"node".into(),name:name.into()};
         let mut config=Overrides{process_enabled:true,..Default::default()};
         for (id,node) in [("a","node-a"),("b","node-b"),("c","node-c")] {
-            config.bundles.push(BundleRoute{id:id.into(),name:format!("包{id}"),main_exe:format!("fixture-{id}.exe"),enabled:true,main_target:Some(target(node)),dns_target:Some(target(node)),port:0,mode:"strict".into(),domains:vec![],fallback:"rules".into()});
+            config.bundles.push(BundleRoute{id:id.into(),name:format!("包{id}"),main_exe:format!("fixture-{id}.exe"),enabled:true,main_target:Some(target(node)),dns_target:Some(target(node)),port:0,mode:"strict".into(),domains:vec![],fallback:"rules".into(),policy:None});
             config.process_rules.push(ProcessRule{id:format!("bundle-{id}-fixture-{id}.exe"),enabled:true,label:id.into(),match_kind:"name".into(),match_value:format!("fixture-{id}.exe"),action:"proxy".into(),target:Some(target(node)),include_descendants:false,rule_mode:Some("strict".into())});
         }
         let exe=std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().into_owned();
         for (id,main_exe,domains) in [("sandbox",exe,vec!["*.selected.example.test".into(),"exact.example.test".into()]),("empty","empty-fixture.exe".into(),vec![])] {
-            config.bundles.push(BundleRoute{id:id.into(),name:id.into(),main_exe:main_exe.clone(),enabled:true,main_target:Some(target("node-a")),dns_target:Some(target("node-a")),port:0,mode:"sandbox".into(),domains,fallback:"rules".into()});
+            config.bundles.push(BundleRoute{id:id.into(),name:id.into(),main_exe:main_exe.clone(),enabled:true,main_target:Some(target("node-a")),dns_target:Some(target("node-a")),port:0,mode:"sandbox".into(),domains,fallback:"rules".into(),policy:None});
             config.process_rules.push(ProcessRule{id:format!("bundle-{id}-main"),enabled:true,label:id.into(),match_kind:"name".into(),match_value:main_exe,action:"proxy".into(),target:Some(target("node-a")),include_descendants:false,rule_mode:Some("inherit".into())});
         }
         let saved=save(config,vec![]).await.unwrap();let ports:Vec<_>=saved.config.bundles.iter().map(|b|b.port).collect();

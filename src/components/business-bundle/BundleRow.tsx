@@ -15,6 +15,7 @@ import {
   ArrowUp,
   ArrowDown,
   ExternalLink,
+  Shield,
 } from "lucide-react";
 
 interface Props {
@@ -30,6 +31,7 @@ interface Props {
   onToggleSwitch: (instanceId: string, nextState: boolean) => void;
   onOpenSelectExit: (instance: BundleLocalInstance) => void;
   onOpenDetail: (instance: BundleLocalInstance) => void;
+  onOpenPolicy?: (instance: BundleLocalInstance) => void;
   onEdit: (instance: BundleLocalInstance) => void;
   onExport: (instance: BundleLocalInstance) => void;
   onDelete: (instanceId: string) => void;
@@ -52,6 +54,7 @@ export const BundleRow: React.FC<Props> = ({
   onToggleSwitch,
   onOpenSelectExit,
   onOpenDetail,
+  onOpenPolicy,
   onEdit,
   onExport,
   onDelete,
@@ -67,6 +70,7 @@ export const BundleRow: React.FC<Props> = ({
   );
 
   const def = instance.definition;
+  const policy = instance.policy ?? instance.definition.policy;
   const independent = instance.backend === "external";
   const boundNode = independent ? externalLabel || "未选择代理" : instance.slotBindings.main;
   const isRequested = instance.enabled && Boolean(boundNode);
@@ -189,6 +193,49 @@ export const BundleRow: React.FC<Props> = ({
               <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 shrink-0">
                 {def.packageVersion}
               </span>
+              {/* 进阶防护策略微徽章 */}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenPolicy?.(instance);
+                }}
+                className="inline-flex items-center gap-1 cursor-pointer group shrink-0 flex-wrap"
+                title="点击配置高级网络防护策略"
+              >
+                {policy?.dnsMode === "fake_ip" ? (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30 group-hover:border-sky-500">
+                    Fake-IP
+                  </span>
+                ) : policy?.dnsMode === "system_native" ? (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-slate-500/15 text-slate-700 dark:text-slate-300 border border-slate-500/30 group-hover:border-slate-500">
+                    原生DNS
+                  </span>
+                ) : (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 group-hover:border-indigo-500">
+                    纯净DNS
+                  </span>
+                )}
+                {policy?.blockIpv6 !== false && (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30">
+                    防IPv6
+                  </span>
+                )}
+                {policy?.blockUdp !== false ? (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">
+                    防QUIC
+                  </span>
+                ) : policy?.proxyUdp ? (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30">
+                    UDP代理
+                  </span>
+                ) : null}
+                {policy?.bypassLan !== false && (
+                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                    绕局域网
+                  </span>
+                )}
+              </button>
               {instance.isModified && (
                 <span className="text-[9px] px-1 py-0.2 rounded font-medium bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
                   自定义
@@ -388,6 +435,18 @@ export const BundleRow: React.FC<Props> = ({
               </button>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setContextMenuPos(null);
+              onOpenPolicy?.(instance);
+            }}
+            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer text-indigo-600 dark:text-indigo-400"
+          >
+            <Shield className="w-3.5 h-3.5" />
+            <span>接管与防护策略</span>
+          </button>
 
           <button
             type="button"

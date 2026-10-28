@@ -33,6 +33,58 @@ export type BundleFallback = "rules" | "system" | "direct";
 // 热替换单独选择；旧版 auto 继续只检测，不能升级为自动重启授权。
 export type BundleWatcherMode = "auto" | "hot_swap" | "notify" | "disabled";
 
+export type BundleDnsMode = "safe_pure" | "fake_ip" | "system_native";
+export type BundlePortFilterMode = "all" | "web_only" | "custom";
+export type BundleTargetFilterMode = "all" | "include" | "exclude";
+
+export interface BundlePolicy {
+  proxyTcp: boolean;               // 代理 TCP 连接 (默认 true)
+  blockIpv6: boolean;              // 阻止 IPv6 旁路泄露 (默认 true)
+  blockUdp: boolean;               // 禁止 UDP (最高优先，防 QUIC 延迟与 WebRTC 泄露，默认 true)
+  proxyUdp: boolean;               // 代理 UDP (仅 SOCKS5 支持，默认 false)
+  proxySubprocesses: boolean;      // 代理衍生子进程 (默认 true)
+  bypassLan: boolean;              // 绕过本地回环与局域网 (默认 true)
+  dnsMode: BundleDnsMode;          // DNS 解析模式 (默认 "safe_pure")
+  portFilterMode: BundlePortFilterMode; // 端口过滤模式 (默认 "all")
+  customPorts?: string;            // 自定义端口列表 (如 "80,443,8080")
+  targetFilterMode: BundleTargetFilterMode; // 目标域名/IP 过滤模式 (默认 "all")
+  targetRules?: string[];          // 目标过滤规则 (域名/IP)
+}
+
+export function defaultBundlePolicy(): BundlePolicy {
+  return {
+    proxyTcp: true,
+    blockIpv6: true,
+    blockUdp: true,
+    proxyUdp: false,
+    proxySubprocesses: true,
+    bypassLan: true,
+    dnsMode: "safe_pure",
+    portFilterMode: "all",
+    customPorts: "",
+    targetFilterMode: "all",
+    targetRules: [],
+  };
+}
+
+export function normalizeBundlePolicy(policy?: Partial<BundlePolicy> | null): BundlePolicy {
+  const defaults = defaultBundlePolicy();
+  if (!policy) return defaults;
+  return {
+    proxyTcp: policy.proxyTcp ?? defaults.proxyTcp,
+    blockIpv6: policy.blockIpv6 ?? defaults.blockIpv6,
+    blockUdp: policy.blockUdp ?? defaults.blockUdp,
+    proxyUdp: policy.proxyUdp ?? defaults.proxyUdp,
+    proxySubprocesses: policy.proxySubprocesses ?? defaults.proxySubprocesses,
+    bypassLan: policy.bypassLan ?? defaults.bypassLan,
+    dnsMode: policy.dnsMode ?? defaults.dnsMode,
+    portFilterMode: policy.portFilterMode ?? defaults.portFilterMode,
+    customPorts: policy.customPorts ?? defaults.customPorts,
+    targetFilterMode: policy.targetFilterMode ?? defaults.targetFilterMode,
+    targetRules: Array.isArray(policy.targetRules) ? policy.targetRules : defaults.targetRules,
+  };
+}
+
 export interface BusinessBundleDefinition {
   packageId: string;
   packageName: string;
@@ -40,6 +92,7 @@ export interface BusinessBundleDefinition {
   category: BundleCategory;
   mode: BundleTrafficMode;
   fallback?: BundleFallback; // 缺省保留旧包的原规则；system 仅跟随本软件系统代理开关
+  policy?: BundlePolicy;     // 规则包推荐接管与防护策略
   description: string;
   icon: string;
   slots: BundleSlot[];
@@ -63,6 +116,7 @@ export interface BundleLocalInstance {
   externalEndpointId?: string | null; // null / 缺省跟随独立代理默认出口
   externalFallback?: "direct" | "default";
   watcherMode: BundleWatcherMode;
+  policy?: BundlePolicy; // 本机实例专属策略 (缺省继承 definition.policy 或全局标准默认)
   isModified: boolean;
   createdAt: number;
   updatedAt: number;

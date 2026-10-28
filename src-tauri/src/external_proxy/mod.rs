@@ -243,7 +243,7 @@ pub fn route(id: &str) -> Result<Option<crate::routing_overrides::model::BundleR
     Ok(config.bundles.iter().find(|b| b.id == id).map(|b| launch_route(b, config.enabled)))
 }
 fn launch_route(b: &Bundle, enabled: bool) -> crate::routing_overrides::model::BundleRoute {
-    crate::routing_overrides::model::BundleRoute { id: b.id.clone(), name: b.name.clone(), main_exe: b.main_exe.clone(), enabled: b.enabled && enabled, main_target: None, dns_target: None, port: b.port, mode: b.mode.clone(), domains: b.domains.clone(), fallback: "direct".into() }
+    crate::routing_overrides::model::BundleRoute { id: b.id.clone(), name: b.name.clone(), main_exe: b.main_exe.clone(), enabled: b.enabled && enabled, main_target: None, dns_target: None, port: b.port, mode: b.mode.clone(), domains: b.domains.clone(), fallback: "direct".into(), policy: None }
 }
 pub fn routes() -> Vec<crate::routing_overrides::model::BundleRoute> {
     engine().map(|runtime| {

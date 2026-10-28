@@ -104,6 +104,7 @@ pub fn validate_traffic_mode(mode: &str, tun: bool) -> Result<(), String> {
 
 fn validate_traffic_mode_for(os: &str, mode: &str, tun: bool) -> Result<(), String> {
     if mode == "windivert_v1" && (os != "windows" || tun) { return Err("WinDivert 仅支持 Windows，且不能与 TUN 同时启用".into()); }
+    if mode == "user_mode" && (os != "windows" || tun) { return Err("用户态强接管仅支持 Windows，且不能与 TUN 同时启用".into()); }
     if os == "android" {
         return if mode == "tun" && tun { Ok(()) } else { Err("Android 使用系统 VPN 模式接管流量".into()) };
     }

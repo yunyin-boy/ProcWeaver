@@ -20,6 +20,57 @@ pub struct DnsRule {
     pub domain: String, pub resolver_url: String, pub target: Target,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundlePolicy {
+    #[serde(default = "default_true")]
+    pub proxy_tcp: bool,
+    #[serde(default = "default_true")]
+    pub block_ipv6: bool,
+    #[serde(default = "default_true")]
+    pub block_udp: bool,
+    #[serde(default = "default_false")]
+    pub proxy_udp: bool,
+    #[serde(default = "default_true")]
+    pub proxy_subprocesses: bool,
+    #[serde(default = "default_true")]
+    pub bypass_lan: bool,
+    #[serde(default = "default_dns_mode")]
+    pub dns_mode: String,
+    #[serde(default = "default_port_filter_mode")]
+    pub port_filter_mode: String,
+    #[serde(default)]
+    pub custom_ports: String,
+    #[serde(default = "default_target_filter_mode")]
+    pub target_filter_mode: String,
+    #[serde(default)]
+    pub target_rules: Vec<String>,
+}
+
+fn default_true() -> bool { true }
+fn default_false() -> bool { false }
+fn default_dns_mode() -> String { "safe_pure".into() }
+fn default_port_filter_mode() -> String { "all".into() }
+fn default_target_filter_mode() -> String { "all".into() }
+
+impl Default for BundlePolicy {
+    fn default() -> Self {
+        Self {
+            proxy_tcp: true,
+            block_ipv6: true,
+            block_udp: true,
+            proxy_udp: false,
+            proxy_subprocesses: true,
+            bypass_lan: true,
+            dns_mode: default_dns_mode(),
+            port_filter_mode: default_port_filter_mode(),
+            custom_ports: String::new(),
+            target_filter_mode: default_target_filter_mode(),
+            target_rules: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BundleRoute {
@@ -29,6 +80,7 @@ pub struct BundleRoute {
     #[serde(default)] pub mode: String,
     #[serde(default)] pub domains: Vec<String>,
     #[serde(default = "default_bundle_fallback")] pub fallback: String,
+    #[serde(default)] pub policy: Option<BundlePolicy>,
 }
 fn default_bundle_fallback() -> String { "rules".into() }
 
@@ -209,5 +261,47 @@ mod mobile_tests {
         assert!(mobile.process_enabled);
         assert_eq!(config.process_rules.len(), 3);
         assert!(config.bundles_enabled);
+    }
+
+    #[test]
+    fn bundle_route_backward_compatibility_and_policy() {
+        // 旧版本没有 policy 字段，反序列化必须成功且 policy 为 None
+        let legacy_json = r#"{
+            "id": "legacy-bundle",
+            "name": "旧规则包",
+            "mainExe": "legacy.exe",
+            "enabled": true,
+            "mainTarget": null,
+            "dnsTarget": null,
+            "port": 34001,
+            "mode": "strict",
+            "domains": []
+        }"#;
+        let route: BundleRoute = serde_json::from_str(legacy_json).expect("旧格式必须平滑反序列化");
+        assert_eq!(route.id, "legacy-bundle");
+        assert!(route.policy.is_none());
+
+        // 新版本携带 policy 字段，反序列化成功且默认值完整
+        let modern_json = r#"{
+            "id": "modern-bundle",
+            "name": "新规则包",
+            "mainExe": "modern.exe",
+            "enabled": true,
+            "mainTarget": null,
+            "dnsTarget": null,
+            "port": 34002,
+            "mode": "strict",
+            "domains": [],
+            "policy": {
+                "dnsMode": "fake_ip",
+                "blockUdp": true
+            }
+        }"#;
+        let modern_route: BundleRoute = serde_json::from_str(modern_json).expect("新格式必须正常解析");
+        let policy = modern_route.policy.expect("策略应存在");
+        assert_eq!(policy.dns_mode, "fake_ip");
+        assert!(policy.block_udp);
+        assert!(policy.proxy_tcp, "缺省项自动填充默认值");
+        assert!(policy.bypass_lan, "缺省项自动填充默认值");
     }
 }

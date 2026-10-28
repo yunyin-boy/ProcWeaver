@@ -5,6 +5,7 @@ import {
   BundleFallback,
   BundleTrafficMode,
   ExportableBundlePackage,
+  BundlePolicy,
 } from "../../types/businessBundle";
 import type { BundlePlatform } from "../../types/platform";
 import {
@@ -15,6 +16,8 @@ import {
   bundleExes,
 } from "../../utils/bundlePlatform";
 import { BundleDiscoveryTools } from "./BundleDiscoveryTools";
+import { BundlePolicyForm } from "./BundlePolicyForm";
+import { defaultBundlePolicy } from "../../utils/bundlePolicy";
 import { createCustomBundle } from "../../services/bundleStorage";
 import { saveTextFile } from "../../services/fileExport";
 import {
@@ -64,6 +67,8 @@ export const BundleStudio: React.FC<Props> = ({
   const [quickProcInput, setQuickProcInput] = useState<string>("");
   const [showSpecJson, setShowSpecJson] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
+  const [policy, setPolicy] = useState<BundlePolicy>(defaultBundlePolicy());
+  const [showPolicy, setShowPolicy] = useState<boolean>(false);
 
   // 解析当前填写的进程与域名列表
   const parsedExes = useMemo(() => processNames(exesText), [exesText]);
@@ -106,6 +111,7 @@ export const BundleStudio: React.FC<Props> = ({
       setExesText(os === "macos" ? "Cursor\nCode\nclaude" : "Cursor.exe\nCode.exe\nclaude.exe");
       setDomainsText("api.openai.com\nanthropic.com\ncursor.sh\noaistatic.com");
       setBindings([]);
+      setPolicy({ ...defaultBundlePolicy(), dnsMode: "safe_pure", blockIpv6: true, blockUdp: true, proxySubprocesses: true, bypassLan: true });
       showToast("⚡ 已套用「AI 编程伴侣」配置预设！");
     } else if (type === "business") {
       setIcon("💬");
@@ -116,6 +122,7 @@ export const BundleStudio: React.FC<Props> = ({
       setExesText(os === "macos" ? "Telegram\nSlack\nzoom.us" : "Telegram.exe\nslack.exe\nZoom.exe");
       setDomainsText("telegram.org\nt.me\nslack.com\nzoom.us");
       setBindings([]);
+      setPolicy({ ...defaultBundlePolicy(), dnsMode: "safe_pure", blockIpv6: true, blockUdp: true, proxySubprocesses: true, bypassLan: true });
       showToast("⚡ 已套用「跨国商务通讯」配置预设！");
     } else if (type === "game") {
       setIcon("🎮");
@@ -126,6 +133,7 @@ export const BundleStudio: React.FC<Props> = ({
       setExesText(os === "macos" ? "steam_osx" : "steam.exe\nsteamwebhelper.exe");
       setDomainsText("steampowered.com\nsteamcommunity.com\nsteamstatic.com");
       setBindings([]);
+      setPolicy({ ...defaultBundlePolicy(), dnsMode: "safe_pure", blockIpv6: false, blockUdp: false, proxyUdp: true, proxySubprocesses: true, bypassLan: true });
       showToast("⚡ 已套用「国际游戏专线」配置预设！");
     } else if (type === "dev") {
       setIcon("🧑‍💻");
@@ -136,6 +144,7 @@ export const BundleStudio: React.FC<Props> = ({
       setExesText(os === "macos" ? "git\ndocker" : "git.exe\ndocker.exe");
       setDomainsText("github.com\ngithubusercontent.com\ndocker.com\nregistry.npmjs.org");
       setBindings([]);
+      setPolicy({ ...defaultBundlePolicy(), dnsMode: "safe_pure", blockIpv6: true, blockUdp: true, proxySubprocesses: true, bypassLan: true });
       showToast("⚡ 已套用「全栈开发工具箱」配置预设！");
     }
   };
@@ -151,6 +160,8 @@ export const BundleStudio: React.FC<Props> = ({
     setDomainsText("");
     setBindings([]);
     setQuickProcInput("");
+    setPolicy(defaultBundlePolicy());
+    setShowPolicy(false);
     showToast("🔄 工坊表单已重置清空！");
   };
 
@@ -252,10 +263,11 @@ export const BundleStudio: React.FC<Props> = ({
           };
         }),
         domains: parsedDomains,
+        policy,
         author: "ProcWeaver Studio User",
       },
     };
-  }, [name, desc, icon, mode, fallback, parsedExes, parsedDomains, bindings, os]);
+  }, [name, desc, icon, mode, fallback, parsedExes, parsedDomains, bindings, policy, os]);
 
   // 复制脱敏 JSON
   const handleCopySpecJson = async () => {
@@ -300,6 +312,7 @@ export const BundleStudio: React.FC<Props> = ({
         mode,
         description: desc.trim(),
         fallback,
+        policy,
       }
     );
 
@@ -519,6 +532,35 @@ export const BundleStudio: React.FC<Props> = ({
                   </p>
                 </div>
               </button>
+            </div>
+
+            {/* 高级网络与接管防护策略 */}
+            <div className="border border-slate-200/80 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50/50 dark:bg-slate-950/40 mt-3">
+              <button
+                type="button"
+                onClick={() => setShowPolicy(!showPolicy)}
+                className="w-full px-3.5 py-2.5 flex items-center justify-between text-left hover:bg-slate-100/50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center space-x-2">
+                  <Shield className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span className="font-bold text-slate-800 dark:text-slate-200 text-xs">
+                    高级网络与接管防护策略
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                    {policy.dnsMode === "fake_ip" ? "Fake-IP" : policy.dnsMode === "system_native" ? "原生DNS" : "纯净DNS"} · {policy.blockUdp ? "防QUIC" : policy.proxyUdp ? "UDP代理" : "UDP直连"}
+                  </span>
+                </div>
+                {showPolicy ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+              </button>
+
+              {showPolicy && (
+                <div className="p-3.5 pt-1 border-t border-slate-200/60 dark:border-slate-800/60">
+                  <BundlePolicyForm
+                    policy={policy}
+                    onChange={setPolicy}
+                  />
+                </div>
+              )}
             </div>
           </div>
 

@@ -1,5 +1,6 @@
 //! Windows 纯应用层进程路由与状态管理。
 pub mod smart_arbiter;
+pub mod user_mode;
 #[cfg(windows)]
 pub mod windivert;
 use crate::routing_overrides::{model::*, tracker::ProcessEntry};
@@ -201,6 +202,11 @@ pub fn status() -> Status {
         s.unclassified = actual.unknown; s.failures = actual.failures;
         if let Some(error) = windivert::session::error() { s.active=false; s.last_error=Some(error.clone()); s.message=error; }
         else if s.active { s.message="WinDivert 已接管明确进程的新 TCP / UDP 连接；未知归属沿用原链路，域名规则依赖核心识别".into(); }
+    }
+    #[cfg(windows)]
+    if crate::commands::settings::get_general_settings().is_ok_and(|v| v.traffic_mode == user_mode::MODE) {
+        s.active = true;
+        s.message = "用户态强接管模式已就绪；由业务包卡片启动的应用将自动注入 Hook，免驱动并使用真实 DNS 解析".into();
     }
     s
 }

@@ -14,7 +14,7 @@ fn picked_program_files_path_preserves_rules_and_rejects_delimiters() {
     c.process_rules[0].label = "阅读器".into();
     c.process_rules[0].match_value = path.into();
     c.bundles.push(BundleRoute { id: "reader".into(), name: "阅读器".into(), main_exe: path.into(), enabled: true,
-        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "sandbox".into(), domains: vec!["example.test".into()], fallback: "rules".into() });
+        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "sandbox".into(), domains: vec!["example.test".into()], fallback: "rules".into(), policy: None });
     let text = composer::compose(RAW, &c, "default", &[]).unwrap();
     assert!(text.contains(path));
     let yaml: Value = serde_yaml::from_str(&text).unwrap();
@@ -45,7 +45,7 @@ fn bundle_master_and_manual_switches_are_independent() {
     let mut manual = rule(r"C:\apps\manual.exe"); manual.id = "bundle-unrelated-manual".into();
     c.process_rules.push(manual);
     c.bundles.push(BundleRoute { id: "browser".into(), name: "浏览器".into(), main_exe: "root.exe".into(), enabled: true,
-        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(), domains: vec![], fallback: "rules".into() });
+        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(), domains: vec![], fallback: "rules".into(), policy: None });
     for id in ["bundle-dns-browser-domain", "manual-dns"] {
         c.dns_rules.push(DnsRule { id: id.into(), enabled: true, domain_kind: "exact".into(), domain: "example.com".into(), resolver_url: "https://192.0.2.1/dns-query".into(), target: target("node") });
     }
@@ -215,7 +215,7 @@ fn validation_rejects_injection_duplicates_and_dns_credentials() {
 #[test]
 fn bundle_domain_scope_is_validated_and_inherited_by_children() {
     let mut c=config();c.process_rules[0].id="bundle-browser-main".into();c.process_rules[0].rule_mode=Some("inherit".into());
-    c.bundles.push(BundleRoute{id:"browser".into(),name:"测试".into(),main_exe:"root.exe".into(),enabled:true,main_target:Some(target("node")),dns_target:None,port:34000,mode:"sandbox".into(),domains:vec!["*.Example.NET.".into(),"*.example.net".into()],fallback:"rules".into()});
+    c.bundles.push(BundleRoute{id:"browser".into(),name:"测试".into(),main_exe:"root.exe".into(),enabled:true,main_target:Some(target("node")),dns_target:None,port:34000,mode:"sandbox".into(),domains:vec!["*.Example.NET.".into(),"*.example.net".into()],fallback:"rules".into(),policy:None});
     let normalized=normalize(c.clone()).unwrap();assert_eq!(normalized.bundles[0].domains,vec!["*.example.net"]);
     let mut child=c.process_rules[0].clone();child.id="derived:bundle-browser-main".into();child.match_value=r"C:\apps\child.exe".into();
     let parsed:Value=serde_yaml::from_str(&composer::compose(RAW,&c,"default",&[child]).unwrap()).unwrap();

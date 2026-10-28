@@ -6,7 +6,7 @@ import { toggleSystemProxy } from "../api";
 import { useCoreStatus } from "../hooks/useCoreStatus";
 import { usePlatform } from "../context/PlatformContext";
 
-export type TrafficModeType = "app_proxy" | "smart_hybrid" | "tun" | "windivert_v1";
+export type TrafficModeType = "app_proxy" | "user_mode" | "smart_hybrid" | "tun" | "windivert_v1";
 
 interface Props {
   onModeChanged?: (mode: TrafficModeType) => void;
@@ -104,6 +104,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
 
       const labelMap: Record<TrafficModeType, string> = {
         app_proxy: "纯应用层代理 (零驱动 · 极速免特权)",
+        user_mode: "用户态强接管 (免驱动 · 注入 Hook)",
         smart_hybrid: "智能双模式 (应用层为主 · 游戏自启 TUN)",
         tun: "全局网卡 (TUN 全接管)",
         windivert_v1: "进程接管 (WinDivert · TCP / UDP)",
@@ -136,6 +137,13 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
       icon: <Zap className="w-3.5 h-3.5 text-amber-500" />,
     },
     {
+      id: "user_mode",
+      title: "用户态接管",
+      subLabel: "User-Hook",
+      tooltip: "免驱动免提权！通过 Detours Hook 透明劫持进程网络连接与真实 DNS 解析，精准对接业务包出口",
+      icon: <Cpu className="w-3.5 h-3.5 text-emerald-500" />,
+    },
+    {
       id: "smart_hybrid",
       title: "智能双模式",
       subLabel: "Auto-Hybrid",
@@ -161,7 +169,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
   if (variant === "compact") {
     const activeModeItem = MODES.find((m) => m.id === currentMode) || MODES[0];
     const availableModes = MODES.filter(
-      (item) => item.id === "app_proxy" || (item.id === "windivert_v1" ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)
+      (item) => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)
     );
 
     return (
@@ -193,7 +201,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
               </span>
               <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-mono text-slate-600 dark:text-slate-300">
                 <span className={`w-1.5 h-1.5 rounded-full ${loading || loadError || !coreStatus.running ? "bg-slate-400" : activeDriver === "windivert_pending" ? "bg-amber-500" : activeDriver === "tun" ? "bg-blue-500" : "bg-emerald-500"}`} />
-                <span>{activeDriver === "tun" ? "TUN 就绪" : activeDriver === "windivert" ? "WinDivert 运行中" : activeDriver === "windivert_pending" ? "待授权" : "纯应用层"}</span>
+                <span>{activeDriver === "user_mode" ? "用户态 Hook 接管" : activeDriver === "tun" ? "TUN 就绪" : activeDriver === "windivert" ? "WinDivert 运行中" : activeDriver === "windivert_pending" ? "待授权" : "纯应用层"}</span>
               </span>
             </div>
 
@@ -230,7 +238,19 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
 
             {/* 说明小字 */}
             <div className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 space-y-1">
-              {currentMode === "windivert_v1" ? (
+              {currentMode === "user_mode" ? (
+                <>
+                  <div className="font-semibold text-slate-700 dark:text-slate-300">
+                    用户态强接管 (User-Hook · 免驱动)
+                  </div>
+                  <div className="text-emerald-600 dark:text-emerald-400">
+                    • 优势：免驱动、免管理员特权、真实 DNS 解析 (非 Fake-IP)、精准接管
+                  </div>
+                  <div className="text-slate-500 dark:text-slate-400">
+                    • 原理：采用微软 Detours 注入轻量 Hook，透明劫持目标进程网络连接至业务包出口
+                  </div>
+                </>
+              ) : currentMode === "windivert_v1" ? (
                 <>
                   <div className="font-semibold text-slate-700 dark:text-slate-300">
                     进程级驱动接管 (WinDivert)
@@ -291,7 +311,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
             <span className="text-slate-400">底层状态:</span>
             <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-mono text-[10px]">
               <span className={`w-1.5 h-1.5 rounded-full ${loading || loadError || !coreStatus.running ? "bg-slate-400" : activeDriver === "windivert_pending" ? "bg-amber-500" : activeDriver === "tun" ? "bg-blue-500" : "bg-emerald-500"}`} />
-              <span>{loading ? "读取中…" : loadError ? "状态未确认" : !coreStatus.running ? "核心未运行" : activeDriver === "tun" ? "Wintun 虚拟网卡" : activeDriver === "windivert" ? "WinDivert 已启用" : activeDriver === "windivert_pending" ? "WinDivert 尚未接管" : "纯应用层代理 (零驱动)"}</span>
+              <span>{loading ? "读取中…" : loadError ? "状态未确认" : !coreStatus.running ? "核心未运行" : activeDriver === "user_mode" ? "用户态 Hook 接管" : activeDriver === "tun" ? "Wintun 虚拟网卡" : activeDriver === "windivert" ? "WinDivert 已启用" : activeDriver === "windivert_pending" ? "WinDivert 尚未接管" : "纯应用层代理 (零驱动)"}</span>
             </span>
           </div>
 
@@ -305,7 +325,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
 
         {/* 右侧：紧凑分段药丸选择器 (Segmented Control) */}
         <div className="flex flex-wrap items-center p-1 rounded-xl bg-slate-100/90 dark:bg-slate-800/80 border border-slate-200/60 dark:border-slate-700/60 text-xs w-full sm:w-auto justify-between sm:justify-start">
-          {MODES.filter(item => item.id === "app_proxy" || (item.id === "windivert_v1" ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)).map((item) => {
+          {MODES.filter(item => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)).map((item) => {
             const isSelected = currentMode === item.id;
             return (
               <button
@@ -336,6 +356,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
       </div>}
 
       {!platform.tun && <p className="mt-2 text-xs text-slate-500">macOS TUN 尚未启用；当前应用代理的实际接入请核对连接与出口。</p>}
+      {currentMode === "user_mode" && <p className="mt-2 text-xs text-slate-500">免驱动 · 零特权 · 强接管。通过轻量 Detours Hook 透明劫持进程网络连接与真实 DNS 解析，精准对接业务包出口，兼顾受限权限与反作弊环境。</p>}
       {currentMode === "windivert_v1" && <p className="mt-2 text-xs text-slate-500">首次启用时解压官方组件并请求管理员授权；停用后释放本程序句柄，保留校验通过的缓存。仅接管已明确的进程新连接；系统 DNS 代查、已有连接及无法确认归属的流量不保证接管。使用前请关闭有驱动限制的游戏。</p>}
       {/* 极简协同小建议 */}
       {currentMode === "app_proxy" && coreStatus.systemProxy?.state === "disabled" && (

@@ -1,4 +1,4 @@
-import {
+import type {
   BusinessBundleDefinition,
   BundleLocalInstance,
   ExportableBundlePackage,
@@ -6,10 +6,27 @@ import {
   BundleProcessMember,
   BundleCategory,
   BundleFallback,
+  BundlePolicy,
 } from "../types/businessBundle";
 import type { BundlePlatform } from "../types/platform";
 import { validAndroidPackage, processMembers, validateProcessBindings } from "../utils/bundlePlatform";
 import type { BundleRepositoryOrigin } from "../types/bundleRepository";
+
+function normalizeInstancePolicy(policy?: Partial<BundlePolicy> | null): BundlePolicy {
+  return {
+    proxyTcp: policy?.proxyTcp ?? true,
+    blockIpv6: policy?.blockIpv6 ?? true,
+    blockUdp: policy?.blockUdp ?? true,
+    proxyUdp: policy?.proxyUdp ?? false,
+    proxySubprocesses: policy?.proxySubprocesses ?? true,
+    bypassLan: policy?.bypassLan ?? true,
+    dnsMode: policy?.dnsMode ?? "safe_pure",
+    portFilterMode: policy?.portFilterMode ?? "all",
+    customPorts: policy?.customPorts ?? "",
+    targetFilterMode: policy?.targetFilterMode ?? "all",
+    targetRules: Array.isArray(policy?.targetRules) ? policy.targetRules : [],
+  };
+}
 
 const STORAGE_KEY = "netbox_business_bundles_instances_v1";
 let installSerial = 0;
@@ -133,9 +150,17 @@ export function getBundleInstances(): BundleLocalInstance[] {
     });
     return { list, changed };
   };
-  const prepare = (instances: BundleLocalInstance[]): BundleLocalInstance[] => independent
-    ? instances.map(i => i.backend === "external" ? i : { ...i, backend: "external", enabled: false, slotBindings: { main: null, dns: "FOLLOW_MAIN" }, slotTargets: undefined, externalEndpointId: null })
-    : instances;
+  const prepare = (instances: BundleLocalInstance[]): BundleLocalInstance[] => {
+    return instances.map(i => {
+      const base = independent && i.backend !== "external"
+        ? { ...i, backend: "external" as const, enabled: false, slotBindings: { main: null, dns: "FOLLOW_MAIN" }, slotTargets: undefined, externalEndpointId: null }
+        : i;
+      return {
+        ...base,
+        policy: normalizeInstancePolicy(base.policy ?? base.definition.policy),
+      };
+    });
+  };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -267,6 +292,7 @@ export function createCustomBundle(
     category?: BundleCategory;
     description?: string;
     fallback?: BundleFallback;
+    policy?: BundlePolicy;
   }
 ): BundleLocalInstance {
   const instances = getBundleInstances();
@@ -290,12 +316,14 @@ export function createCustomBundle(
     macosProcesses: platform === "macos" ? processMembers(exes, [], bindings, platform) : undefined,
     androidPackages: platform === "android" ? exes : undefined,
     domains,
+    policy: options?.policy,
   };
 
   const newInstance: BundleLocalInstance = {
     instanceId: `inst-${packageId}`,
     definition,
     processBindings,
+    policy: options?.policy,
     enabled: false, // 默认停用 (跟随系统默认)
     slotBindings: { main: null, dns: "FOLLOW_MAIN" },
     watcherMode: mode === "sandbox" ? "notify" : "auto",
@@ -340,6 +368,7 @@ export function exportBundlePackage(instance: BundleLocalInstance): ExportableBu
     additionalExes: def.additionalExes ? [...def.additionalExes] : undefined,
     domains: def.domains ? [...def.domains] : undefined,
     author: def.author || "Net-Box User",
+    ...(instance.policy ? { policy: instance.policy } : def.policy ? { policy: def.policy } : {}),
   };
 
   return {

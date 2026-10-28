@@ -101,7 +101,7 @@ fn native_local_nodes_validate_apply_rename_switch_and_rollback() {
         let saved = save_local_nodes(0, vec![draft(None, "自定义入口")], vec![]).await.unwrap();
         assert!(!saved.running); let node = read().unwrap().nodes[0].clone();
         let mut rules = Overrides::default();
-        rules.bundles.push(routing_overrides::model::BundleRoute { id: "local-test".into(), name: "测试包".into(), main_exe: "fixture.exe".into(), enabled: true, main_target: Some(node.target()), dns_target: None, port: 0, mode: "strict".into(), domains: vec![], fallback: "rules".into() });
+        rules.bundles.push(routing_overrides::model::BundleRoute { id: "local-test".into(), name: "测试包".into(), main_exe: "fixture.exe".into(), enabled: true, main_target: Some(node.target()), dns_target: None, port: 0, mode: "strict".into(), domains: vec![], fallback: "rules".into(), policy: None });
         let rules = routing_overrides::save(rules, vec![]).await.unwrap(); let port = rules.config.bundles[0].port;
         process::start_core_transaction(Some("compatible".into()), &state).await.unwrap();
         async fn verify(port: u16) {

@@ -8,7 +8,7 @@ fn rule(id: &str, path: &str) -> ProcessRule {
 }
 fn bundle(id: &str) -> BundleRoute {
     BundleRoute { id: id.into(), name: id.into(), main_exe: format!("{id}.exe"), enabled: true,
-        main_target: rule("", "").target, dns_target: None, port: 34000, mode: "strict".into(), domains: vec![], fallback: "rules".into() }
+        main_target: rule("", "").target, dns_target: None, port: 34000, mode: "strict".into(), domains: vec![], fallback: "rules".into(), policy: None }
 }
 fn child(pid: u32, root: &str) -> ProcessEntry {
     ProcessEntry { identity: format!("{pid}:100"), pid, created_at: 100, parent_pid: 8, parent_identity: Some("8:90".into()),

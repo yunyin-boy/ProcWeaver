@@ -16,7 +16,7 @@ export interface GeneralSettings {
   silentStart: boolean;
   autoRun: boolean;
   onlyProxyTraffic: boolean;
-  trafficMode?: "app_proxy" | "tun" | "smart_hybrid" | "windivert_v1";
+  trafficMode?: "app_proxy" | "user_mode" | "tun" | "smart_hybrid" | "windivert_v1";
   routingPriority?: "domain_first" | "process_first" | "direct_first";
   speedTestUrl?: string;
   speedTestConcurrency?: number;

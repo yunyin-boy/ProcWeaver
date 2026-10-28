@@ -9,13 +9,13 @@ import { ProcessMaintenanceView } from "./views/ProcessMaintenanceView";
 import { bundleController } from "./services/bundleRuntime";
 import { configureDesktopContextMenu } from "./utils/desktopContextMenu";
 
-bundleController.setFunctionMode("process_proxy");
 document.documentElement.dataset.edition = "process";
 const root = ReactDOM.createRoot(document.getElementById("root")!);
 async function bootstrap() {
   root.render(<p role="status" className="p-8">正在打开独立进程版…</p>);
   try {
     const platform = await initializePlatform();
+    bundleController.setFunctionMode("process_proxy");
     document.documentElement.dataset.platform = platform.os;
     configureDesktopContextMenu(platform.os !== "android");
     root.render(<React.StrictMode><PlatformContext.Provider value={platform}><ThemeProvider>

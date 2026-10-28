@@ -51,10 +51,10 @@ pub async fn get_bundle_shortcuts(instance_id:String)->Result<Status,String> {
     }).await.map_err(|_|"快捷方式检测任务失败")?
 }
 fn managed_link(original:&Link,executable:&Path,bundle_id:&str,id:&str)->Link {
-    Link{target:executable.to_string_lossy().into(),arguments:format!("--launch-bundle {bundle_id} --shortcut {id}"),
+    Link{target:executable.to_string_lossy().into(),arguments:format!("--launch-bundle {bundle_id} --shortcut {id} --direct"),
         directory:executable.parent().unwrap_or(executable).to_string_lossy().into(),
         icon:if original.icon.is_empty(){original.target.clone()}else{original.icon.clone()}, icon_index:original.icon_index,
-        description:format!("由 {} 按业务包启动，保留应用原有用户资料", crate::edition::NAME)}
+        description:format!("由 {} 按业务包直接启动，免开主界面，保留原有用户资料", crate::edition::NAME)}
 }
 fn write_verified(path:&Path,link:&Link,preserve:bool)->Result<(),String> {
     native::write_link(path,link,preserve)?;
