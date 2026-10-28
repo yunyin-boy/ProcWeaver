@@ -306,7 +306,7 @@ export const SmartGroupModal: React.FC<Props> = ({
         else if (event.shiftKey && event.target === first) { event.preventDefault(); last.focus(); }
         else if (!event.shiftKey && event.target === last) { event.preventDefault(); first.focus(); }
       }
-    }} className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+    }} className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in font-sans" data-no-drag>
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">

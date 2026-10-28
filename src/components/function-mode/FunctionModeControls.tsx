@@ -206,7 +206,8 @@ export function FunctionModeConfirmation({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-in fade-in duration-150 font-sans"
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-in fade-in duration-150 font-sans"
+      data-no-drag
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !state.pending) onCancel();
       }}

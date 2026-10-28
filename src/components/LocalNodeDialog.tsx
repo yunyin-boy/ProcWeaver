@@ -263,9 +263,10 @@ export function LocalNodeDialog(props: Props) {
       }}
       className={
         mobile
-          ? "fixed inset-0 z-50 w-full h-full max-w-none max-h-none m-0 p-0 border-0 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 flex flex-col"
-          : "m-auto w-[min(42rem,calc(100vw-2rem))] max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-0 text-slate-800 dark:text-slate-200 shadow-xl backdrop:bg-slate-950/40"
+          ? "fixed inset-0 z-[9999] w-full h-full max-w-none max-h-none m-0 p-0 border-0 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 flex flex-col font-sans"
+          : "m-auto w-[min(42rem,calc(100vw-2rem))] max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-0 text-slate-800 dark:text-slate-200 shadow-xl backdrop:bg-slate-950/40 font-sans"
       }
+      data-no-drag
     >
       {/* 弹窗头部 */}
       <header className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 px-5 py-4 shrink-0 bg-white dark:bg-slate-900">

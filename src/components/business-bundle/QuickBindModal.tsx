@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { BundleLocalInstance } from "../../types/businessBundle";
 import { Lightbulb, X, Check } from "lucide-react";
 
@@ -32,8 +33,8 @@ export const QuickBindModal: React.FC<Props> = ({
 
   const def = bundleInstance.definition;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 font-sans" data-no-drag>
       <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in duration-150">
         
         {/* 弹窗头部 */}
@@ -115,6 +116,7 @@ export const QuickBindModal: React.FC<Props> = ({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

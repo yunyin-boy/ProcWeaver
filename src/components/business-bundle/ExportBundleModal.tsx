@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { saveTextFile } from "../../services/fileExport";
 import { BundleLocalInstance } from "../../types/businessBundle";
 import { exportBundlePackage } from "../../services/bundleStorage";
@@ -25,8 +26,8 @@ export const ExportBundleModal: React.FC<Props> = ({ isOpen, instance, onClose }
     } catch (error) { setExportError(String(error)); }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 font-sans" data-no-drag>
       <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in duration-150">
         {exportError && <p role="alert" className="text-sm text-rose-600">{exportError}</p>}
         
@@ -90,6 +91,7 @@ export const ExportBundleModal: React.FC<Props> = ({ isOpen, instance, onClose }
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

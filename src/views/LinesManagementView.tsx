@@ -2141,10 +2141,11 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
           ref={subDrawer}
           aria-labelledby="subscription-drawer-title"
           aria-busy={subLoading}
+          data-no-drag
           onCancel={event => { event.preventDefault(); closeSubscriptionDialog(false); }}
           onPointerDown={event => { backdropPressed.current = event.target; }}
           onClick={event => closeSubscriptionBackdrop(event, false)}
-          className="fixed inset-0 m-0 ml-auto h-[100dvh] max-h-none w-full max-w-md p-0 overflow-hidden bg-transparent text-slate-800 dark:text-slate-100 backdrop:bg-slate-900/50"
+          className="fixed inset-0 z-[9999] m-0 ml-auto h-[100dvh] max-h-none w-full max-w-md p-0 overflow-hidden bg-transparent text-slate-800 dark:text-slate-100 backdrop:bg-slate-900/50 font-sans"
         >
           <div className="w-full max-w-md bg-white dark:bg-slate-900 h-full shadow-2xl flex flex-col justify-between border-l border-slate-200 dark:border-slate-800 animate-in slide-in-from-right duration-200">
             {/* 抽屉顶部 */}

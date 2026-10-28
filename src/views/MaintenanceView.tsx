@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useMobileBack } from "../utils/mobileBack";
 import { version as appVersion } from "../../package.json";
 import {
@@ -1299,107 +1300,115 @@ export const MaintenanceView: React.FC = () => {
         </div>
       )}
 
-      {/* 编辑 URL 弹窗 Modal */}
-      {editingRes && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-lg p-5 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Edit3 className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
-                编辑 {editingRes.name} 同步链接
-              </h3>
-              <button
-                type="button"
-                onClick={() => setEditingRes(null)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <div className="text-slate-600 dark:text-slate-400">
-                文件名称: <span className="text-slate-900 dark:text-slate-200 font-mono font-medium">{editingRes.fileName}</span>
-              </div>
-              <div>
-                <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">下载 / 同步源地址 (URL)</label>
-                <input
-                  type="text"
-                  value={editUrl}
-                  onChange={(e) => setEditUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 font-mono shadow-sm"
-                />
+      {/* 编辑 URL 弹窗 Modal (通过 Portal 挂载至 document.body) */}
+      {editingRes &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`编辑 ${editingRes.name} 同步链接`}
+            data-no-drag
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 font-sans animate-in fade-in duration-150"
+          >
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-lg p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Edit3 className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                  编辑 {editingRes.name} 同步链接
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setEditingRes(null)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
 
-              {/* 常用高速源快捷填入 */}
-              <div className="pt-2">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400 block mb-1.5 font-medium">推荐下载源预设：</span>
-                <div className="flex flex-wrap gap-1.5">
+              <div className="space-y-2 text-xs">
+                <div className="text-slate-600 dark:text-slate-400">
+                  文件名称: <span className="text-slate-900 dark:text-slate-200 font-mono font-medium">{editingRes.fileName}</span>
+                </div>
+                <div>
+                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">下载 / 同步源地址 (URL)</label>
+                  <input
+                    type="text"
+                    value={editUrl}
+                    onChange={(e) => setEditUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 font-mono shadow-sm"
+                  />
+                </div>
+
+                {/* 常用高速源快捷填入 */}
+                <div className="pt-2">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 block mb-1.5 font-medium">推荐下载源预设：</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={restoreDefaultUrl}
+                      className="px-2 py-1 rounded-lg text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 transition cursor-pointer"
+                    >
+                      GitHub 官方原源
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const base = {
+                          mmdb: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+                          asn: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
+                          geoip: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+                          geosite: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+                        }[editingRes.id];
+                        if (base) setEditUrl(base);
+                      }}
+                      className="px-2 py-1 rounded-lg text-[11px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:hover:bg-indigo-500/25 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 transition cursor-pointer"
+                    >
+                      极速镜像 1 (ghfast)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const base = {
+                          mmdb: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+                          asn: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
+                          geoip: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+                          geosite: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+                        }[editingRes.id];
+                        if (base) setEditUrl(base);
+                      }}
+                      className="px-2 py-1 rounded-lg text-[11px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:hover:bg-indigo-500/25 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 transition cursor-pointer"
+                    >
+                      极速镜像 2 (ghproxy)
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-xs">
+                <span className="text-[11px] text-slate-400">若直连下载慢，可一键切换为国内极速镜像</span>
+
+                <div className="flex items-center space-x-2">
                   <button
                     type="button"
-                    onClick={restoreDefaultUrl}
-                    className="px-2 py-1 rounded-lg text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 transition cursor-pointer"
+                    onClick={() => setEditingRes(null)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:border-transparent transition cursor-pointer"
                   >
-                    GitHub 官方原源
+                    取消
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      const base = {
-                        mmdb: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
-                        asn: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
-                        geoip: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
-                        geosite: "https://ghfast.top/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
-                      }[editingRes.id];
-                      if (base) setEditUrl(base);
-                    }}
-                    className="px-2 py-1 rounded-lg text-[11px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:hover:bg-indigo-500/25 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 transition cursor-pointer"
+                    onClick={saveEditUrl}
+                    className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition shadow-md shadow-indigo-600/20 cursor-pointer"
                   >
-                    极速镜像 1 (ghfast)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const base = {
-                        mmdb: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
-                        asn: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb",
-                        geoip: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
-                        geosite: "https://mirror.ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
-                      }[editingRes.id];
-                      if (base) setEditUrl(base);
-                    }}
-                    className="px-2 py-1 rounded-lg text-[11px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:hover:bg-indigo-500/25 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 transition cursor-pointer"
-                  >
-                    极速镜像 2 (ghproxy)
+                    保存
                   </button>
                 </div>
               </div>
             </div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-xs">
-              <span className="text-[11px] text-slate-400">若直连下载慢，可一键切换为国内极速镜像</span>
-
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setEditingRes(null)}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:border-transparent transition cursor-pointer"
-                >
-                  取消
-                </button>
-                <button
-                  type="button"
-                  onClick={saveEditUrl}
-                  className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition shadow-md shadow-indigo-600/20 cursor-pointer"
-                >
-                  保存
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

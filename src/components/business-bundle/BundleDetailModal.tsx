@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { BundleLocalInstance, BundleWatcherMode } from "../../types/businessBundle";
 import type { BundleStatus } from "../../utils/bundleController";
 import type { BundleEntryState } from "../../api/bundleTools";
@@ -82,8 +83,8 @@ export const BundleDetailModal: React.FC<Props> = ({
     platform.os === "android" ? "android" : platform.os === "macos" ? "macos" : "windows"
   );
 
-  return (
-    <div className={`fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex ${drawer ? "justify-end" : "items-center justify-center p-4"}`} onMouseDown={e => { if (drawer && e.target === e.currentTarget) onClose(); }}>
+  return createPortal(
+    <div className={`fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex font-sans ${drawer ? "justify-end" : "items-center justify-center p-4"}`} onMouseDown={e => { if (drawer && e.target === e.currentTarget) onClose(); }} data-no-drag>
       <div ref={panel} tabIndex={-1} data-bundle-detail role="dialog" aria-modal="true" aria-label="业务包详情" className={`w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col outline-none ${drawer ? "h-full" : "rounded-2xl max-h-[90vh]"} animate-in fade-in duration-150`}>
         
         {/* 头部 */}
@@ -473,6 +474,7 @@ export const BundleDetailModal: React.FC<Props> = ({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

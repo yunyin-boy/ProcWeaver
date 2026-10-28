@@ -79,7 +79,8 @@ export function ExternalProxyDialog({ open, bundleName, state: s, onClose, onCor
 
   const content = (
     <div
-      className={inline ? "h-full min-h-0 flex flex-col" : "fixed inset-0 z-[95] bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"}
+      className={inline ? "h-full min-h-0 flex flex-col" : "fixed inset-0 z-[9999] bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150 font-sans"}
+      data-no-drag
       onMouseDown={(e) => {
         if (!inline && e.target === e.currentTarget && !s.busy) onClose();
       }}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import type { BundleLocalInstance, BundlePolicy } from "../../types/businessBundle";
 import { defaultBundlePolicy, normalizeBundlePolicy } from "../../utils/bundlePolicy";
 import { Shield, RotateCcw, Check, X } from "lucide-react";
@@ -38,8 +39,8 @@ export const BundlePolicyModal: React.FC<Props> = ({
     onSave(policy);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs font-sans" data-no-drag>
       <div
         className="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden max-h-[90vh] animate-in fade-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
@@ -110,6 +111,7 @@ export const BundlePolicyModal: React.FC<Props> = ({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

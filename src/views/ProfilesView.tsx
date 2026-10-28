@@ -830,7 +830,8 @@ export const ProfilesView: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="添加订阅配置"
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            data-no-drag
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150 font-sans"
           >
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">添加订阅配置</h3>
@@ -892,7 +893,8 @@ export const ProfilesView: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="编辑订阅配置"
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            data-no-drag
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150 font-sans"
           >
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between">
@@ -989,7 +991,8 @@ export const ProfilesView: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="编辑配置文件"
-            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            data-no-drag
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150 font-sans"
           >
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 w-full max-w-4xl shadow-2xl space-y-4 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between">
@@ -1070,7 +1073,8 @@ export const ProfilesView: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="分享订阅配置"
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150"
+            data-no-drag
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-150 font-sans"
           >
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-5 text-center animate-in zoom-in-95 duration-150">
               <div className="flex items-center justify-between">

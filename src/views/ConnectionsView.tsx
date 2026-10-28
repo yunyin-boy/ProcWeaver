@@ -1,6 +1,7 @@
 import { androidAppsApi } from "../api/android";
 import { useMobileBack } from "../utils/mobileBack";
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import {
   Activity,
   ArrowDown,
@@ -622,145 +623,161 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = React.memo(({ con
         </div>
       )}
 
-      {/* 一键断开全部连接确认弹窗 */}
-      {showCloseAllConfirm && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center space-x-3 text-rose-500">
-              <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20">
-                <AlertCircle className="w-6 h-6" />
-              </div>
-              <div>
-                <h4 className="text-sm font-bold text-slate-900 dark:text-white">断开全部活跃连接</h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">此操作将掐断当前所有 {activeConnections.length} 个会话</p>
-              </div>
-            </div>
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              正在进行的下载、视频播放或流媒体会话可能会被瞬间中断。新发起的网络请求将自动重连并分配节点。是否确认执行？
-            </p>
-            <div className="flex items-center justify-end space-x-2 pt-2">
-              <button
-                onClick={() => setShowCloseAllConfirm(false)}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleCloseAll}
-                className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition-colors"
-              >
-                确认断开
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 单条连接详情模态弹窗 (Detail Modal) */}
-      {selectedConnection && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div className="flex items-center space-x-2">
-                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                  <Activity className="w-4 h-4" />
+      {/* 一键断开全部连接确认弹窗 (通过 Portal 挂载至 document.body) */}
+      {showCloseAllConfirm &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="断开全部活跃连接"
+            data-no-drag
+            className="fixed inset-0 z-[9999] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 font-sans animate-in fade-in duration-150"
+          >
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-sm w-full p-5 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+              <div className="flex items-center space-x-3 text-rose-500">
+                <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                  <AlertCircle className="w-6 h-6" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-slate-900 dark:text-white">连接元数据详情</h4>
-                  <p className="text-xs font-mono text-slate-400 truncate max-w-[320px]">{selectedConnection.id}</p>
+                  <h4 className="text-sm font-bold text-slate-900 dark:text-white">断开全部活跃连接</h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">此操作将掐断当前所有 {activeConnections.length} 个会话</p>
                 </div>
               </div>
-              <button
-                onClick={() => setSelectedConnection(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                正在进行的下载、视频播放或流媒体会话可能会被瞬间中断。新发起的网络请求将自动重连并分配节点。是否确认执行？
+              </p>
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                <button
+                  onClick={() => setShowCloseAllConfirm(false)}
+                  className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleCloseAll}
+                  className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition-colors cursor-pointer"
+                >
+                  确认断开
+                </button>
+              </div>
             </div>
+          </div>,
+          document.body
+        )}
 
-            <div className="space-y-2 text-xs font-mono">
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">目标主机 (Host):</span>
-                <span className="text-slate-800 dark:text-slate-200 font-semibold">{selectedConnection.metadata.host || "-"}</span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">目的地址 (Dest):</span>
-                <span className="text-slate-800 dark:text-slate-200">
-                  {selectedConnection.metadata.destinationIP}:{selectedConnection.metadata.destinationPort}
-                </span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">源地址 (Source):</span>
-                <span className="text-slate-800 dark:text-slate-200">
-                  {selectedConnection.metadata.sourceIP}:{selectedConnection.metadata.sourcePort}
-                </span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">网络类型:</span>
-                <span className="uppercase text-indigo-600 dark:text-indigo-400 font-bold">
-                  {selectedConnection.metadata.network} ({selectedConnection.metadata.type})
-                </span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">命中规则:</span>
-                <span className="text-emerald-600 dark:text-emerald-400">
-                  {selectedConnection.rule} {selectedConnection.rulePayload && `(${selectedConnection.rulePayload})`}
-                </span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">出口链路:</span>
-                <span className="text-slate-800 dark:text-slate-200 font-semibold">
-                  {(selectedConnection.chains || []).join(" ➔ ") || "DIRECT"}
-                </span>
-              </div>
-              {selectedConnection.metadata.process && (
-                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                  <span className="text-slate-500 font-sans">{mobile ? "应用包名:" : "触发进程:"}</span>
-                  <span className="text-slate-800 dark:text-slate-200">{selectedConnection.metadata.process}</span>
+      {/* 单条连接详情模态弹窗 (Detail Modal，通过 Portal 挂载至 document.body) */}
+      {selectedConnection &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="连接元数据详情"
+            data-no-drag
+            className="fixed inset-0 z-[9999] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 font-sans animate-in fade-in duration-150"
+          >
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div className="flex items-center space-x-2">
+                  <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                    <Activity className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 dark:text-white">连接元数据详情</h4>
+                    <p className="text-xs font-mono text-slate-400 truncate max-w-[320px]">{selectedConnection.id}</p>
+                  </div>
                 </div>
-              )}
-              {!mobile && selectedConnection.metadata.processPath && (
-                <div className="py-1 border-b border-slate-100 dark:border-slate-800/60">
-                  <span className="text-slate-500 font-sans block mb-1">进程完整路径:</span>
-                  <span className="text-[11px] text-slate-600 dark:text-slate-400 break-all">
-                    {selectedConnection.metadata.processPath}
+                <button
+                  onClick={() => setSelectedConnection(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="space-y-2 text-xs font-mono">
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">目标主机 (Host):</span>
+                  <span className="text-slate-800 dark:text-slate-200 font-semibold">{selectedConnection.metadata.host || "-"}</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">目的地址 (Dest):</span>
+                  <span className="text-slate-800 dark:text-slate-200">
+                    {selectedConnection.metadata.destinationIP}:{selectedConnection.metadata.destinationPort}
                   </span>
                 </div>
-              )}
-              <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
-                <span className="text-slate-500 font-sans">下行/上行流量:</span>
-                <span className="text-slate-800 dark:text-slate-200">
-                  ↓ {formatBytes(selectedConnection.download)} / ↑ {formatBytes(selectedConnection.upload)}
-                </span>
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">源地址 (Source):</span>
+                  <span className="text-slate-800 dark:text-slate-200">
+                    {selectedConnection.metadata.sourceIP}:{selectedConnection.metadata.sourcePort}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">网络类型:</span>
+                  <span className="uppercase text-indigo-600 dark:text-indigo-400 font-bold">
+                    {selectedConnection.metadata.network} ({selectedConnection.metadata.type})
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">命中规则:</span>
+                  <span className="text-emerald-600 dark:text-emerald-400">
+                    {selectedConnection.rule} {selectedConnection.rulePayload && `(${selectedConnection.rulePayload})`}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">出口链路:</span>
+                  <span className="text-slate-800 dark:text-slate-200 font-semibold">
+                    {(selectedConnection.chains || []).join(" ➔ ") || "DIRECT"}
+                  </span>
+                </div>
+                {selectedConnection.metadata.process && (
+                  <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                    <span className="text-slate-500 font-sans">{mobile ? "应用包名:" : "触发进程:"}</span>
+                    <span className="text-slate-800 dark:text-slate-200">{selectedConnection.metadata.process}</span>
+                  </div>
+                )}
+                {!mobile && selectedConnection.metadata.processPath && (
+                  <div className="py-1 border-b border-slate-100 dark:border-slate-800/60">
+                    <span className="text-slate-500 font-sans block mb-1">进程完整路径:</span>
+                    <span className="text-[11px] text-slate-600 dark:text-slate-400 break-all">
+                      {selectedConnection.metadata.processPath}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between py-1 border-b border-slate-100 dark:border-slate-800/60">
+                  <span className="text-slate-500 font-sans">下行/上行流量:</span>
+                  <span className="text-slate-800 dark:text-slate-200">
+                    ↓ {formatBytes(selectedConnection.download)} / ↑ {formatBytes(selectedConnection.upload)}
+                  </span>
+                </div>
+                <div className="flex justify-between py-1">
+                  <span className="text-slate-500 font-sans">建立时间:</span>
+                  <span className="text-slate-800 dark:text-slate-200">{new Date(selectedConnection.start).toLocaleString()}</span>
+                </div>
               </div>
-              <div className="flex justify-between py-1">
-                <span className="text-slate-500 font-sans">建立时间:</span>
-                <span className="text-slate-800 dark:text-slate-200">{new Date(selectedConnection.start).toLocaleString()}</span>
-              </div>
-            </div>
 
-            <div className="flex items-center justify-end space-x-2 pt-2">
-              {viewMode === "active" && (
+              <div className="flex items-center justify-end space-x-2 pt-2">
+                {viewMode === "active" && (
+                  <button
+                    onClick={() => {
+                      handleCloseOne(selectedConnection.id);
+                      setSelectedConnection(null);
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30 transition-colors cursor-pointer"
+                  >
+                    掐断此会话
+                  </button>
+                )}
                 <button
-                  onClick={() => {
-                    handleCloseOne(selectedConnection.id);
-                    setSelectedConnection(null);
-                  }}
-                  className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30 transition-colors"
+                  onClick={() => setSelectedConnection(null)}
+                  className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
                 >
-                  掐断此会话
+                  关闭
                 </button>
-              )}
-              <button
-                onClick={() => setSelectedConnection(null)}
-                className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors"
-              >
-                关闭
-              </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 });

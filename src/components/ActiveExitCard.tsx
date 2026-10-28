@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useMobileBack } from "../utils/mobileBack";
 import { useExitIpHealth } from "../hooks/useExitIpHealth";
 import { getPersistedHealthCache, savePersistedHealthCache } from "../api/nodeHealth";
@@ -190,8 +191,8 @@ export const ActiveExitCard: React.FC<Props> = ({ proxyPort, corePid, activeNode
       </div>
 
       {/* 完整体检报告弹窗 */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+      {modalOpen && createPortal(
+        <div className="fixed inset-0 z-[9999] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 font-sans" data-no-drag>
           <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center space-x-2">
@@ -303,7 +304,8 @@ export const ActiveExitCard: React.FC<Props> = ({ proxyPort, corePid, activeNode
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

@@ -1,4 +1,5 @@
 import React, { useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { BusinessBundleDefinition } from "../../types/businessBundle";
 import { validateAndParseBundlePackage } from "../../services/bundleStorage";
 import { Download, X, Upload, CheckCircle2, AlertCircle } from "lucide-react";
@@ -54,8 +55,8 @@ export const ImportBundleModal: React.FC<Props> = ({
     onCancel();
   };
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 font-sans" data-no-drag>
       <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-3xl p-6 shadow-2xl space-y-4 animate-in fade-in duration-150">
         
         {/* 标题栏 */}
@@ -201,6 +202,7 @@ export const ImportBundleModal: React.FC<Props> = ({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

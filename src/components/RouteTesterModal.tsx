@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Search, Sparkles, CheckCircle2, ArrowRight } from "lucide-react";
 import { cleanDomain, isDomainCovered } from "../utils/ruleConflictDetector";
 import { BusinessChannelConfig } from "../types/smartGroup";
@@ -363,8 +364,8 @@ export const RouteTesterModal: React.FC<Props> = ({
     setMatchResult(result);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200 font-sans" data-no-drag>
       <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col">
         {/* 标题栏 */}
         <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
@@ -491,6 +492,7 @@ export const RouteTesterModal: React.FC<Props> = ({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

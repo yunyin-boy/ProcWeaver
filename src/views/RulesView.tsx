@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useMobileBack } from "../utils/mobileBack";
 import { useLocalRulePlan } from "../hooks/useLocalRulePlan";
 import { useExclusions } from "../hooks/useExclusions";
@@ -1670,114 +1671,122 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
         </div>
       )}
 
-      {/* 自定义添加规则集弹窗 Modal */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <form
-            onSubmit={handleAddCustom}
-            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl"
+      {/* 自定义添加规则集弹窗 Modal (通过 Portal 挂载至 document.body) */}
+      {isAddModalOpen &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="添加自定义外部规则集"
+            data-no-drag
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 font-sans animate-in fade-in duration-150"
           >
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
-                添加自定义外部规则集
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsAddModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 transition"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">规则集唯一名称 (英文标识)</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="如 my-custom-rules"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
-                />
+            <form
+              onSubmit={handleAddCustom}
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                  添加自定义外部规则集
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
 
-              <div>
-                <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">规则订阅源地址 (URL)</label>
-                <input
-                  type="url"
-                  required
-                  placeholder="https://..."
-                  value={customUrl}
-                  onChange={(e) => setCustomUrl(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3 text-xs">
                 <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">匹配类型 (Behavior)</label>
-                  <select
-                    value={customBehavior}
-                    onChange={(e) => setCustomBehavior(e.target.value as any)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="domain">domain (纯域名)</option>
-                    <option value="classical">classical (综合规则)</option>
-                    <option value="ipcidr">ipcidr (IP网段)</option>
-                  </select>
+                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">规则集唯一名称 (英文标识)</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="如 my-custom-rules"
+                    value={customName}
+                    onChange={(e) => setCustomName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
                 </div>
 
                 <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">文件格式</label>
-                  <select
-                    aria-label="规则文件格式"
-                    value={customFormat}
-                    onChange={e => setCustomFormat(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white mb-3 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="auto">自动识别</option>
-                    <option value="yaml">YAML（payload 列表）</option>
-                    <option value="text">Text（每行一条）</option>
-                    <option value="mrs">MRS（二进制）</option>
-                  </select>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">分流目标 (Target)</label>
-                  <select
-                    value={customTarget}
-                    onChange={(e) => setCustomTarget(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="🔰 节点选择">本地方案·节点选择</option>
-                    <option value="DIRECT">DIRECT (直连)</option>
-                    <option value="REJECT">REJECT (拦截)</option>
-                    {["AI", "流媒体", "通信", "开发", "游戏", "微软"].map(name => <option key={name} value={`本地方案·${name}`}>{`本地方案·${name}`}</option>)}
-                  </select>
+                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">规则订阅源地址 (URL)</label>
+                  <input
+                    type="url"
+                    required
+                    placeholder="https://..."
+                    value={customUrl}
+                    onChange={(e) => setCustomUrl(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">匹配类型 (Behavior)</label>
+                    <select
+                      value={customBehavior}
+                      onChange={(e) => setCustomBehavior(e.target.value as any)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="domain">domain (纯域名)</option>
+                      <option value="classical">classical (综合规则)</option>
+                      <option value="ipcidr">ipcidr (IP网段)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">文件格式</label>
+                    <select
+                      aria-label="规则文件格式"
+                      value={customFormat}
+                      onChange={e => setCustomFormat(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white mb-3 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="auto">自动识别</option>
+                      <option value="yaml">YAML（payload 列表）</option>
+                      <option value="text">Text（每行一条）</option>
+                      <option value="mrs">MRS（二进制）</option>
+                    </select>
+                    <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">分流目标 (Target)</label>
+                    <select
+                      value={customTarget}
+                      onChange={(e) => setCustomTarget(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="🔰 节点选择">本地方案·节点选择</option>
+                      <option value="DIRECT">DIRECT (直连)</option>
+                      <option value="REJECT">REJECT (拦截)</option>
+                      {["AI", "流媒体", "通信", "开发", "游戏", "微软"].map(name => <option key={name} value={`本地方案·${name}`}>{`本地方案·${name}`}</option>)}
+                    </select>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setIsAddModalOpen(false)}
-                className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs transition"
-              >
-                取消
-              </button>
-              <button
-                type="submit"
-                disabled={operatingProvider !== null}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-1"
-              >
-                {operatingProvider ? <RotateCw className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
-                <span>{operatingProvider ? "正在添加..." : "保存并启用"}</span>
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs transition cursor-pointer"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={operatingProvider !== null}
+                  className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-1 cursor-pointer"
+                >
+                  {operatingProvider ? <RotateCw className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                  <span>{operatingProvider ? "正在添加..." : "保存并启用"}</span>
+                </button>
+              </div>
+            </form>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

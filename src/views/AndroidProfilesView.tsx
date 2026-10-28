@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ProfileItem } from "../types";
 import {
   getProfiles,
@@ -954,101 +955,122 @@ export function AndroidProfilesView() {
         </MobileFormDialog>
       )}
 
-      {/* 弹窗 3：YAML 在线编辑 */}
-      {yamlTarget && (
-        <div className="fixed inset-0 z-50 bg-white dark:bg-slate-950 flex flex-col">
-          <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-            <div>
-              <h3 className="text-xs font-bold text-slate-900 dark:text-white">
-                编辑配置 · {yamlTarget.name}
-              </h3>
-              <p className="text-[10px] text-slate-400">在线修改 YAML，保存后将重新解析规则与节点</p>
-            </div>
-            <div className="flex items-center space-x-2">
-              <button
-                type="button"
-                disabled={yamlSaving}
-                onClick={() => { if (yamlContent === yamlOriginal || window.confirm("YAML 配置尚未保存，确定要退出编辑吗？")) setYamlTarget(null); }}
-                className="px-3 py-1.5 rounded-xl text-xs text-slate-500 hover:bg-slate-100"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={yamlSaving || yamlLoading}
-                onClick={() => void handleSaveYaml()}
-                className="px-3.5 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
-              >
-                {yamlSaving ? "保存中…" : "保存配置"}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 p-3">
-            {yamlLoading ? (
-              <div className="flex items-center justify-center h-full text-xs text-slate-400 space-x-2">
-                <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
-                <span>正在加载 YAML…</span>
+      {/* 弹窗 3：YAML 在线编辑 (通过 Portal 挂载至 document.body) */}
+      {yamlTarget &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`编辑配置 · ${yamlTarget.name}`}
+            data-no-drag
+            className="fixed inset-0 z-[9999] bg-white dark:bg-slate-950 flex flex-col font-sans animate-in fade-in duration-150"
+          >
+            <div className="p-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                  编辑配置 · {yamlTarget.name}
+                </h3>
+                <p className="text-[10px] text-slate-400">在线修改 YAML，保存后将重新解析规则与节点</p>
               </div>
-            ) : (
-              <textarea
-                value={yamlContent}
-                onChange={(e) => setYamlContent(e.target.value)}
-                spellCheck={false}
-                className="w-full h-full p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed"
-              />
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 弹窗 4：二维码分享 */}
-      {shareTarget && (
-        <>
-          <div className="mobile-drawer-backdrop open" onClick={() => setShareTarget(null)} />
-          <div className="fixed inset-x-6 top-1/2 -translate-y-1/2 z-50 p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl space-y-4 shadow-2xl text-center animate-in zoom-in-95 duration-150">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              分享订阅 · {shareTarget.name}
-            </h3>
-
-            {qrCodeUrl ? (
-              <div className="p-3 bg-white rounded-2xl border border-slate-200 inline-block shadow-xs">
-                <img src={qrCodeUrl} alt="订阅二维码" className="w-48 h-48 mx-auto" />
-              </div>
-            ) : (
-              <p className="text-xs text-slate-400 py-8">本地配置文件暂无在线订阅链接</p>
-            )}
-
-            {shareTarget.url && (
-              <div className="space-y-2">
-                <p className="text-[11px] font-mono text-slate-400 break-all bg-slate-50 dark:bg-slate-800 p-2.5 rounded-xl">
-                  {shareTarget.url}
-                </p>
+              <div className="flex items-center space-x-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(shareTarget.url || "");
-                    setCopiedShare(true);
-                    setTimeout(() => setCopiedShare(false), 2000);
-                  }}
-                  className="w-full py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-xs flex items-center justify-center space-x-1 shadow-md"
+                  disabled={yamlSaving}
+                  onClick={() => { if (yamlContent === yamlOriginal || window.confirm("YAML 配置尚未保存，确定要退出编辑吗？")) setYamlTarget(null); }}
+                  className="px-3 py-1.5 rounded-xl text-xs text-slate-500 hover:bg-slate-100"
                 >
-                  {copiedShare ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  <span>{copiedShare ? "链接已复制" : "复制订阅链接"}</span>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={yamlSaving || yamlLoading}
+                  onClick={() => void handleSaveYaml()}
+                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-xs disabled:opacity-50"
+                >
+                  {yamlSaving ? "保存中…" : "保存配置"}
                 </button>
               </div>
-            )}
+            </div>
 
-            <button
-              type="button"
-              onClick={() => setShareTarget(null)}
-              className="text-xs text-slate-400 hover:text-slate-600 pt-1"
+            <div className="flex-1 p-3">
+              {yamlLoading ? (
+                <div className="flex items-center justify-center h-full text-xs text-slate-400 space-x-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
+                  <span>正在加载 YAML…</span>
+                </div>
+              ) : (
+                <textarea
+                  value={yamlContent}
+                  onChange={(e) => setYamlContent(e.target.value)}
+                  spellCheck={false}
+                  className="w-full h-full p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed"
+                />
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* 弹窗 4：二维码分享 (通过 Portal 挂载至 document.body) */}
+      {shareTarget &&
+        createPortal(
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`分享订阅 · ${shareTarget.name}`}
+            data-no-drag
+            className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs font-sans animate-in fade-in duration-150"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShareTarget(null);
+            }}
+          >
+            <div
+              className="w-full max-w-xs p-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl space-y-4 shadow-2xl text-center animate-in zoom-in-95 duration-150"
+              onClick={(e) => e.stopPropagation()}
             >
-              关闭
-            </button>
-          </div>
-        </>
-      )}
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                分享订阅 · {shareTarget.name}
+              </h3>
+
+              {qrCodeUrl ? (
+                <div className="p-3 bg-white rounded-2xl border border-slate-200 inline-block shadow-xs">
+                  <img src={qrCodeUrl} alt="订阅二维码" className="w-48 h-48 mx-auto" />
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 py-8">本地配置文件暂无在线订阅链接</p>
+              )}
+
+              {shareTarget.url && (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-mono text-slate-400 break-all bg-slate-50 dark:bg-slate-800 p-2.5 rounded-xl">
+                    {shareTarget.url}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(shareTarget.url || "");
+                      setCopiedShare(true);
+                      setTimeout(() => setCopiedShare(false), 2000);
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-xs flex items-center justify-center space-x-1 shadow-md"
+                  >
+                    {copiedShare ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedShare ? "链接已复制" : "复制订阅链接"}</span>
+                  </button>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setShareTarget(null)}
+                className="text-xs text-slate-400 hover:text-slate-600 pt-1"
+              >
+                关闭
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* 轻量 Toast 提示 */}
       {toastMsg && (

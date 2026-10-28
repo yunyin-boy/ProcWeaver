@@ -297,7 +297,8 @@ function DiscoveryDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[90] bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150"
+      className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150 font-sans"
+      data-no-drag
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

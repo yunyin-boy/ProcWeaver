@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { Search, RefreshCw, X, Cpu, ArrowRight, Laptop } from "lucide-react";
 import { routingApi } from "../api/routingOverrides";
 import { ProcessEntry } from "../types/routingOverrides";
@@ -161,8 +162,8 @@ export const RunningProcessPickerModal: React.FC<Props> = ({ isOpen, onClose, on
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-200">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-200 font-sans" data-no-drag>
       <div className="w-full max-w-xl max-h-[85vh] rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
           <div className="flex items-center space-x-2.5">
@@ -338,6 +339,7 @@ export const RunningProcessPickerModal: React.FC<Props> = ({ isOpen, onClose, on
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

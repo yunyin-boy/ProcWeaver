@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { BundleLocalInstance, BusinessBundleDefinition, BundleFallback, BundleProcessBinding, BundleProcessBindings, BundlePolicy } from "../../types/businessBundle";
 import { PRESET_BUNDLES_CATALOG } from "../../services/bundleStorage";
 import { Pencil, X, RotateCcw, Save, Shield, ChevronDown, ChevronUp } from "lucide-react";
@@ -111,8 +112,8 @@ export const EditBundleModal: React.FC<Props> = ({
     onSave(updatedDef, os === "android" ? bundleInstance.processBindings : { ...bundleInstance.processBindings, [os]: nextBindings }, policy);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 font-sans" data-no-drag>
       <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4 animate-in fade-in duration-150 max-h-[90vh] overflow-y-auto">
         {/* 弹窗头部 */}
         <div className="flex items-start justify-between">
@@ -329,6 +330,7 @@ export const EditBundleModal: React.FC<Props> = ({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

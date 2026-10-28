@@ -577,7 +577,7 @@ function FullApp({ functionModeControl }: { functionModeControl?: React.ReactNod
           data-tauri-drag-region
           onMouseDown={mobile ? undefined : handleWindowDrag}
           onDoubleClick={mobile ? undefined : () => windowToggleMaximize()}
-          className="h-14 border-b border-slate-200 dark:border-slate-800/80 pl-8 pr-3 flex items-center justify-between bg-white/70 dark:bg-slate-900/40 backdrop-blur-md shrink-0 transition-colors duration-200 select-none cursor-default relative z-50"
+          className="h-14 border-b border-slate-200 dark:border-slate-800/80 pl-8 pr-3 flex items-center justify-between bg-white/70 dark:bg-slate-900/40 backdrop-blur-md shrink-0 transition-colors duration-200 select-none cursor-default relative z-10"
         >
           <div className="flex items-center space-x-2 min-w-0">
             {mobile && (
@@ -637,7 +637,7 @@ function FullApp({ functionModeControl }: { functionModeControl?: React.ReactNod
         </header>
 
         {/* 内容主体：对高级视窗采用吸顶 Tab 架构，对常规单页保留居中流动排版 */}
-        <div className="flex-1 overflow-hidden relative z-0">
+        <div className="flex-1 overflow-hidden relative">
           <div key={activeTab} className={tabAnimation ? "h-full animate-in fade-in duration-150" : "h-full"}>
             <ErrorBoundary>
               {activeTab === "proxies" && <ChannelDispatcherView />}

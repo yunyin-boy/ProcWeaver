@@ -178,7 +178,8 @@ export function ProcessCaptureControls({
       {state.requested &&
         createPortal(
           <div
-            className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+            data-no-drag
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/60 backdrop-blur-xs p-4 animate-in fade-in duration-150 font-sans"
             onMouseDown={(e) => {
               if (e.target === e.currentTarget && !state.pending) onCancel();
             }}

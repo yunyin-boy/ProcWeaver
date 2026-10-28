@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { useMobileBack } from "../utils/mobileBack";
 import {
   ScrollText,
@@ -635,15 +636,49 @@ export const LogsView: React.FC<LogsViewProps> = React.memo(({ controllerPort = 
           )}
         </div>
       </div>
-      {selectedLog && <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-6"
-        onClick={() => setSelectedLog(null)} onKeyDown={e => { if (e.key === "Escape") setSelectedLog(null); }}>
-        <div role="dialog" aria-modal="true" aria-label="日志详情" className="bg-white dark:bg-slate-900 rounded-xl p-5 max-w-3xl w-full" onClick={e => e.stopPropagation()}>
-          <div className="flex justify-between mb-3"><strong>日志详情 · {selectedLog.time}</strong>
-            <button autoFocus onClick={() => setSelectedLog(null)} aria-label="关闭日志详情"><X className="w-5 h-5" /></button></div>
-          <pre className="text-xs whitespace-pre-wrap break-all max-h-[65vh] overflow-auto">{selectedLog.payload}</pre>
-          <button className="mt-3 text-indigo-600" onClick={() => handleCopyLog(selectedLog)}>复制日志</button>
-        </div>
-      </div>}
+      {selectedLog &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-6 font-sans animate-in fade-in duration-150"
+            data-no-drag
+            onClick={() => setSelectedLog(null)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setSelectedLog(null);
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="日志详情"
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-3xl w-full shadow-2xl animate-in zoom-in-95 duration-150"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex justify-between items-center mb-3">
+                <strong className="text-sm font-bold text-slate-900 dark:text-white">日志详情 · {selectedLog.time}</strong>
+                <button
+                  autoFocus
+                  onClick={() => setSelectedLog(null)}
+                  aria-label="关闭日志详情"
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <pre className="text-xs font-mono whitespace-pre-wrap break-all max-h-[65vh] overflow-auto p-4 rounded-xl bg-slate-950 text-slate-200 border border-slate-800 leading-relaxed">
+                {selectedLog.payload}
+              </pre>
+              <div className="flex justify-end pt-3">
+                <button
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md transition-colors cursor-pointer"
+                  onClick={() => handleCopyLog(selectedLog)}
+                >
+                  复制日志
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 });
