@@ -100,11 +100,26 @@ pub async fn set_function_mode(mode: FunctionMode, expected_mode: FunctionMode, 
     view()
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProcessPreferences { auto_start: bool, minimize_on_close: bool, silent_start: bool }
+pub struct ProcessPreferences {
+    pub auto_start: bool,
+    pub minimize_on_close: bool,
+    pub silent_start: bool,
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
+}
+fn default_close_action() -> String { "ask".into() }
+
 impl From<&settings::GeneralSettings> for ProcessPreferences {
-    fn from(s: &settings::GeneralSettings) -> Self { Self { auto_start: s.auto_start, minimize_on_close: s.minimize_on_close, silent_start: s.silent_start } }
+    fn from(s: &settings::GeneralSettings) -> Self {
+        Self {
+            auto_start: s.auto_start,
+            minimize_on_close: s.minimize_on_close,
+            silent_start: s.silent_start,
+            close_action: s.close_action.clone(),
+        }
+    }
 }
 #[tauri::command]
 pub fn get_process_preferences() -> Result<ProcessPreferences, String> { settings::get_general_settings().map(|s| ProcessPreferences::from(&s)) }
@@ -113,7 +128,10 @@ pub async fn save_process_preferences(settings: ProcessPreferences, state: tauri
     let _lifecycle = process::LIFECYCLE.lock().await;
     if current() != FunctionMode::ProcessProxy { return Err("功能模式已改变，请重新读取设置".into()); }
     let mut next = settings::get_general_settings()?;
-    next.auto_start = settings.auto_start; next.minimize_on_close = settings.minimize_on_close; next.silent_start = settings.silent_start;
+    next.auto_start = settings.auto_start;
+    next.close_action = settings.close_action.clone();
+    next.minimize_on_close = settings.close_action == "minimize" || settings.minimize_on_close;
+    next.silent_start = settings.silent_start;
     settings::persist_general_settings(next, &state).map(|s| ProcessPreferences::from(&s))
 }
 

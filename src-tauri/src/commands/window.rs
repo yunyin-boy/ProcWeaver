@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 fn get_main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     app.get_webview_window("main")
@@ -47,9 +47,37 @@ pub fn window_is_maximized(app: AppHandle) -> Result<bool, String> {
 #[tauri::command]
 pub fn window_close(app: AppHandle) -> Result<(), String> {
     let window = get_main_window(&app)?;
-    if window.label() == "main" && crate::commands::settings::get_general_settings().is_ok_and(|s| s.minimize_on_close) {
-        window.hide().map_err(|e| e.to_string())
+    if window.label() == "main" {
+        let settings = crate::commands::settings::get_general_settings().unwrap_or_default();
+        match settings.close_action.as_str() {
+            "minimize" => {
+                window.hide().map_err(|e| e.to_string())
+            }
+            "exit" => {
+                crate::shutdown::request(&app, 0);
+                Ok(())
+            }
+            _ => {
+                // "ask"
+                let _ = window.emit("request-close-action", ());
+                Ok(())
+            }
+        }
     } else {
         window.close().map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub fn window_execute_close(app: AppHandle, action: String, remember: Option<bool>) -> Result<(), String> {
+    if remember.unwrap_or(false) && (action == "minimize" || action == "exit") {
+        let _ = crate::commands::settings::update_persisted_close_action(&action);
+    }
+    let window = get_main_window(&app)?;
+    if action == "minimize" {
+        window.hide().map_err(|e| e.to_string())
+    } else {
+        crate::shutdown::request(&app, 0);
+        Ok(())
     }
 }

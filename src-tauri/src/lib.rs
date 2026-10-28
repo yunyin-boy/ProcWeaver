@@ -134,8 +134,20 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" && !shutdown::ready() {
                     api.prevent_close();
-                    if commands::settings::get_general_settings().is_ok_and(|s| s.minimize_on_close) && window.hide().is_ok() { return; }
-                    shutdown::request(window.app_handle(), 0);
+                    let settings = commands::settings::get_general_settings().unwrap_or_default();
+                    match settings.close_action.as_str() {
+                        "minimize" => {
+                            if window.hide().is_ok() { return; }
+                        }
+                        "exit" => {
+                            shutdown::request(window.app_handle(), 0);
+                            return;
+                        }
+                        _ => {
+                            use tauri::Emitter;
+                            let _ = window.emit("request-close-action", ());
+                        }
+                    }
                 }
             }
         })
@@ -228,6 +240,7 @@ pub fn run() {
             commands::profile::sync_smart_groups_to_core,
             commands::settings::get_general_settings,
             commands::settings::save_general_settings,
+            commands::settings::set_close_action,
             commands::settings::get_active_traffic_driver,
             commands::dns::get_dns_settings,
             commands::dns::save_dns_settings,
@@ -243,6 +256,7 @@ pub fn run() {
             commands::window::window_toggle_maximize,
             commands::window::window_is_maximized,
             commands::window::window_close,
+            commands::window::window_execute_close,
             commands::unlock_probe::probe_unlock_matrix,
             commands::system::check_is_admin,
             commands::system::restart_elevated,
@@ -284,6 +298,28 @@ pub fn run() {
             if window.label() == "tray-menu" {
                 if let tauri::WindowEvent::Focused(false) = event {
                     let _ = window.hide();
+                }
+            } else if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    let settings = crate::commands::settings::get_general_settings().unwrap_or_default();
+                    match settings.close_action.as_str() {
+                        "minimize" => {
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
+                        "exit" => {
+                            api.prevent_close();
+                            crate::shutdown::request(window.app_handle(), 0);
+                        }
+                        _ => {
+                            use tauri::Emitter;
+                            api.prevent_close();
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.emit("request-close-action", ());
+                        }
+                    }
                 }
             }
         })

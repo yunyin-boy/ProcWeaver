@@ -13,6 +13,7 @@ export interface GeneralSettings {
   tcpConcurrent: boolean;
   geoLowMemory: boolean;
   minimizeOnClose: boolean;
+  closeAction?: "ask" | "minimize" | "exit";
   silentStart: boolean;
   autoRun: boolean;
   onlyProxyTraffic: boolean;

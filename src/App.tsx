@@ -19,6 +19,7 @@ import { useCoreMode } from "./hooks/useCoreMode";
 import { useBundleRuntime } from "./hooks/useBusinessBundles";
 import { useBundleTools } from "./hooks/useBundleTools";
 import { BundleToolsDialog } from "./components/business-bundle/BundleToolsDialog";
+import { CloseConfirmModal } from "./components/CloseConfirmModal";
 import { useCoreStatus } from "./hooks/useCoreStatus";
 import { appendAppLog } from "./api/logs";
 import { getGeneralSettings } from "./api/settings";
@@ -120,6 +121,7 @@ function FullApp() {
   useBundleRuntime();
   const bundleTools = useBundleTools();
   const [activeTab, setActiveTab] = useState("dashboard");
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [profileCount, setProfileCount] = useState<number | null>(null);
   const [localNodeSummaries, setLocalNodeSummaries] = useState<LocalNodeSummary[] | null>(null);
   const { status: coreStatus, refresh: refreshCoreStatus } = useCoreStatus();
@@ -270,8 +272,18 @@ function FullApp() {
         listen<boolean>("netbox-process-master-changed", (event) => {
           window.dispatchEvent(new CustomEvent("netbox-process-master-changed", { detail: event.payload }));
         }).then((un) => unlisteners.push(un));
+
+        // 7. 关闭窗口动作询问联动
+        listen("request-close-action", () => {
+          setShowCloseConfirm(true);
+        }).then((un) => unlisteners.push(un));
       });
     }
+
+    const onDirectRequestClose = () => {
+      setShowCloseConfirm(true);
+    };
+    window.addEventListener("netbox-request-close", onDirectRequestClose);
 
     let settingsRead = 0;
     let settingsDisposed = false;
@@ -293,6 +305,7 @@ function FullApp() {
       window.removeEventListener("procweaver-navigate-tab", onNavigateTab);
       window.removeEventListener("netbox-navigate-tab", onNavigateTab);
       window.removeEventListener("netbox-settings-saved", onSettingsSaved);
+      window.removeEventListener("netbox-request-close", onDirectRequestClose);
       unlisteners.forEach((un) => un());
     };
   }, []);
@@ -788,6 +801,7 @@ function FullApp() {
       )}
     </main>
     <BundleToolsDialog {...bundleTools} />
+    <CloseConfirmModal isOpen={showCloseConfirm} onClose={() => setShowCloseConfirm(false)} />
     </div>
   );
 }

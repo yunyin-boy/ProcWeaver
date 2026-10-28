@@ -5,8 +5,8 @@ import type { ProcessPreferences } from "../types/functionMode";
 import { useProcessCapture } from "./useProcessCapture";
 import { externalProxyApi } from "../api/externalProxy";
 
-export type ProcessTab = "bundles" | "external" | "diagnostics" | "settings" | "maintenance";
-const navigation: Record<string, ProcessTab> = { bundles: "bundles", external: "external", diagnostics: "diagnostics", routing: "bundles", dashboard: "bundles", connections: "diagnostics", logs: "diagnostics", settings: "settings", maintenance: "maintenance", updates: "maintenance" };
+export type ProcessTab = "bundles" | "external" | "diagnostics" | "settings";
+const navigation: Record<string, ProcessTab> = { bundles: "bundles", external: "external", diagnostics: "diagnostics", routing: "bundles", dashboard: "bundles", connections: "diagnostics", logs: "diagnostics", settings: "settings", maintenance: "settings", updates: "settings" };
 export function useProcessWorkspace() {
   const bundles = useBusinessBundles();
   const capture = useProcessCapture();

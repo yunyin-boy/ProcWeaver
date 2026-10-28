@@ -42,7 +42,7 @@ export const SettingsView: React.FC = () => {
   const [autoCloseConnections, setAutoCloseConnections] = useState(true);
   const [trafficMode, setTrafficMode] = useState<string>("app_proxy");
   const [autoStart, setAutoStart] = useState(false);
-  const [minimizeOnClose, setMinimizeOnClose] = useState(false);
+  const [closeAction, setCloseAction] = useState<"ask" | "minimize" | "exit">("ask");
   const [silentStart, setSilentStart] = useState(false);
   const [autoRun, setAutoRun] = useState(true);
   const [onlyProxyTraffic, setOnlyProxyTraffic] = useState(true);
@@ -90,7 +90,9 @@ export const SettingsView: React.FC = () => {
       setTrafficMode(s.trafficMode || (s.tunMode ? "tun" : "app_proxy"));
       setAutoStart(s.autoStart);
       setUnifiedDelay(s.unifiedDelay ?? true); setTcpConcurrent(s.tcpConcurrent ?? false); setGeoLowMemory(s.geoLowMemory ?? true);
-      setMinimizeOnClose(s.minimizeOnClose ?? false); setSilentStart(s.silentStart ?? false);
+      const ca = (s.closeAction as "ask" | "minimize" | "exit") || (s.minimizeOnClose ? "minimize" : "ask");
+      setCloseAction(ca);
+      setSilentStart(s.silentStart ?? false);
       setAutoRun(s.autoRun ?? true); setOnlyProxyTraffic(s.onlyProxyTraffic ?? true);
       if (s.speedTestUrl) setSpeedTestUrl(s.speedTestUrl);
       if (s.speedTestConcurrency) setSpeedTestConcurrency(s.speedTestConcurrency);
@@ -125,7 +127,8 @@ export const SettingsView: React.FC = () => {
         unifiedDelay,
         tcpConcurrent,
         geoLowMemory,
-        minimizeOnClose,
+        closeAction,
+        minimizeOnClose: closeAction === "minimize",
         silentStart,
         autoRun,
         onlyProxyTraffic,
@@ -679,18 +682,81 @@ export const SettingsView: React.FC = () => {
             </div>
           )}
           {subTab === "app" && <div className="space-y-5 rounded-xl border border-slate-300 bg-white p-5 text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
-            {[
-              { label: "退出时最小化", description: "点击窗口关闭按钮时收起到托盘；从托盘菜单选择“退出 NetBox”可完全退出。", value: minimizeOnClose, set: setMinimizeOnClose },
-              { label: "静默启动", description: "下次打开应用时隐藏主窗口，通过托盘重新打开。", value: silentStart, set: setSilentStart },
-              { label: "自动运行", description: "下次打开应用时自动启动核心；关闭后由你手动启动。", value: autoRun, set: setAutoRun },
-              { label: "自动关闭连接", description: "切换出站节点或路由模式后自动关闭存量连接，防止旧长连接延迟切换或遗留。", value: autoCloseConnections, set: setAutoCloseConnections },
-              { label: "仅统计代理", description: "首页仅统计代理连接的采样流量，排除直连。短连接可能漏计，应用或核心重启后重新累计。", value: onlyProxyTraffic, set: setOnlyProxyTraffic },
-              { label: "选项卡动画", description: "在切换主导航视图或设置子页时启用平滑过渡动效；关闭后页面将瞬间切换。", value: tabAnimation, set: setTabAnimation },
-              { label: "日志捕获", description: "向内核订阅控制台实时输出与日志流；关闭可降低内存与后台 IPC 通信负荷。", value: logCapture, set: setLogCapture },
-            ].map(option => <label key={option.label} className="flex items-center justify-between gap-4">
-              <span><span className="block text-sm font-semibold">{option.label}</span><span className="block text-xs text-slate-600 dark:text-slate-400">{option.description}</span></span>
-              <input type="checkbox" role="switch" checked={option.value} disabled={saving || !settingsReady} onChange={e => {option.set(e.target.checked); setSaved(false);}} className="h-5 w-5 shrink-0 accent-indigo-600" />
-            </label>)}
+            {/* 关闭主窗口行为 */}
+            <div className="space-y-2.5 pb-2">
+              <div>
+                <span className="block text-sm font-semibold">关闭主窗口行为</span>
+                <span className="block text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                  点击主窗口右上角“X”或按快捷键关闭窗口时的执行动作。
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                {[
+                  {
+                    id: "ask" as const,
+                    title: "每次询问",
+                    badge: "默认推荐",
+                    desc: "弹出对话框由您决定最小化或退出",
+                  },
+                  {
+                    id: "minimize" as const,
+                    title: "最小化到系统托盘",
+                    badge: null,
+                    desc: "收起到后台托盘，代理持续守护",
+                  },
+                  {
+                    id: "exit" as const,
+                    title: "完全退出程序",
+                    badge: null,
+                    desc: "停止核心并完全退出应用程序",
+                  },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setCloseAction(item.id);
+                      setSaved(false);
+                    }}
+                    disabled={saving || !settingsReady}
+                    className={`flex flex-col p-3 rounded-xl border text-left transition cursor-pointer ${
+                      closeAction === item.id
+                        ? "border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-900 dark:text-indigo-200 ring-1 ring-indigo-600"
+                        : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-semibold text-xs mb-1">
+                      <div className="flex items-center space-x-1.5">
+                        <span>{item.title}</span>
+                        {item.badge && (
+                          <span className="px-1 py-0.2 text-[9px] rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300 font-normal">
+                            {item.badge}
+                          </span>
+                        )}
+                      </div>
+                      {closeAction === item.id && <Check className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />}
+                    </div>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {item.desc}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 space-y-4">
+              {[
+                { label: "静默启动", description: "下次打开应用时隐藏主窗口，通过托盘重新打开。", value: silentStart, set: setSilentStart },
+                { label: "自动运行", description: "下次打开应用时自动启动核心；关闭后由你手动启动。", value: autoRun, set: setAutoRun },
+                { label: "自动关闭连接", description: "切换出站节点或路由模式后自动关闭存量连接，防止旧长连接延迟切换或遗留。", value: autoCloseConnections, set: setAutoCloseConnections },
+                { label: "仅统计代理", description: "首页仅统计代理连接的采样流量，排除直连。短连接可能漏计，应用或核心重启后重新累计。", value: onlyProxyTraffic, set: setOnlyProxyTraffic },
+                { label: "选项卡动画", description: "在切换主导航视图或设置子页时启用平滑过渡动效；关闭后页面将瞬间切换。", value: tabAnimation, set: setTabAnimation },
+                { label: "日志捕获", description: "向内核订阅控制台实时输出与日志流；关闭可降低内存与后台 IPC 通信负荷。", value: logCapture, set: setLogCapture },
+              ].map(option => <label key={option.label} className="flex items-center justify-between gap-4">
+                <span><span className="block text-sm font-semibold">{option.label}</span><span className="block text-xs text-slate-600 dark:text-slate-400">{option.description}</span></span>
+                <input type="checkbox" role="switch" checked={option.value} disabled={saving || !settingsReady} onChange={e => {option.set(e.target.checked); setSaved(false);}} className="h-5 w-5 shrink-0 accent-indigo-600" />
+              </label>)}
+            </div>
 
             {/* 托盘菜单交互风格 */}
             <div className="pt-4 border-t border-slate-200/80 dark:border-slate-800/80 space-y-3">

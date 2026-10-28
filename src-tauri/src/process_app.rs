@@ -82,16 +82,31 @@ pub fn run() {
             commands::window::window_minimize, commands::window::window_start_dragging,
             commands::window::window_toggle_maximize, commands::window::window_is_maximized,
             commands::window::window_close, commands::window::window_monitor_visible,
+            commands::window::window_execute_close,
+            commands::settings::set_close_action,
             commands::system::check_is_admin,
             crate::process_update::check_process_update, crate::process_update::download_process_update,
+            crate::process_update::open_process_update_folder,
             commands::maintenance::restart_app,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if !crate::shutdown::ready() {
                     api.prevent_close();
-                    if commands::settings::get_general_settings().is_ok_and(|s| s.minimize_on_close) && window.hide().is_ok() { return; }
-                    crate::shutdown::request(window.app_handle(), 0);
+                    let settings = commands::settings::get_general_settings().unwrap_or_default();
+                    match settings.close_action.as_str() {
+                        "minimize" => {
+                            if window.hide().is_ok() { return; }
+                        }
+                        "exit" => {
+                            crate::shutdown::request(window.app_handle(), 0);
+                            return;
+                        }
+                        _ => {
+                            use tauri::Emitter;
+                            let _ = window.emit("request-close-action", ());
+                        }
+                    }
                 }
             }
         })

@@ -22,6 +22,8 @@ pub struct GeneralSettings {
     pub geo_low_memory: bool,
     #[serde(default = "default_minimize_on_close")]
     pub minimize_on_close: bool,
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
     #[serde(default)]
     pub silent_start: bool,
     #[serde(default = "default_geo_low_memory")]
@@ -64,6 +66,7 @@ fn default_shim_mode() -> String { "disabled".into() }
 fn default_enable_controller_port() -> bool { true }
 fn default_true() -> bool { true }
 fn default_minimize_on_close() -> bool { crate::edition::PROCESS }
+fn default_close_action() -> String { "ask".into() }
 fn default_tray_menu_style() -> String { if cfg!(target_os = "macos") { "classic".into() } else { "modern".into() } }
 fn default_find_process_mode() -> String { "auto".into() }
 fn default_auto_close_connections() -> bool { true }
@@ -106,6 +109,7 @@ impl Default for GeneralSettings {
             auto_dns_guard_with_bundle: true,
             shim_mode: default_shim_mode(),
             run_mode: default_run_mode(),
+            close_action: default_close_action(),
         }
     }
 }
@@ -118,11 +122,31 @@ pub fn update_persisted_run_mode(mode: &str) -> Result<(), String> {
     crate::storage::replace(&path, &bytes)?;
     Ok(())
 }
+pub fn update_persisted_close_action(action: &str) -> Result<(), String> {
+    let path = crate::storage::data_dir().join("config/preferences.json");
+    let mut settings = get_general_settings()?;
+    settings.close_action = action.to_string();
+    settings.minimize_on_close = action == "minimize";
+    let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
+    crate::storage::replace(&path, &bytes)?;
+    Ok(())
+}
+#[tauri::command]
+pub fn set_close_action(action: String) -> Result<(), String> {
+    update_persisted_close_action(&action)
+}
 #[tauri::command]
 pub fn get_general_settings() -> Result<GeneralSettings, String> {
     let path = crate::storage::data_dir().join("config/preferences.json");
     if !path.exists() { return Ok(GeneralSettings::default()); }
-    let mut settings: GeneralSettings = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?).map_err(|_| "偏好设置损坏，请恢复备份")?;
+    let raw_bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let raw_val: serde_json::Value = serde_json::from_slice(&raw_bytes).unwrap_or_default();
+    let mut settings: GeneralSettings = serde_json::from_value(raw_val.clone()).map_err(|_| "偏好设置损坏，请恢复备份")?;
+    if raw_val.get("closeAction").is_none() && raw_val.get("close_action").is_none() {
+        if settings.minimize_on_close {
+            settings.close_action = "minimize".into();
+        }
+    }
     if !crate::platform::supports_tun() { settings.traffic_mode = "app_proxy".into(); settings.tun_mode = false; }
     if cfg!(target_os = "macos") { settings.tray_menu_style = "classic".into(); }
     if cfg!(target_os = "android") {
@@ -210,6 +234,11 @@ pub(crate) fn persist_general_settings(mut settings: GeneralSettings, state: &su
         if settings.traffic_mode != "windivert_v1" && settings.traffic_mode != "user_mode" {
             settings.traffic_mode = "app_proxy".into();
         }
+    }
+    if settings.close_action == "minimize" {
+        settings.minimize_on_close = true;
+    } else if settings.close_action == "exit" || settings.close_action == "ask" {
+        settings.minimize_on_close = false;
     }
     let mut core = state.lock().map_err(|e| e.to_string())?;
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;

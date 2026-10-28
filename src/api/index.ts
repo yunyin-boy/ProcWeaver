@@ -474,6 +474,18 @@ export async function windowClose(): Promise<void> {
         console.error("关闭窗口失败:", err);
       }
     }
+  } else {
+    window.dispatchEvent(new CustomEvent("netbox-request-close"));
+  }
+}
+
+export async function windowExecuteClose(action: "minimize" | "exit", remember?: boolean): Promise<void> {
+  if (isTauri()) {
+    try {
+      return await invokeTauri<void>("window_execute_close", { action, remember: !!remember });
+    } catch (err) {
+      console.error("执行窗口关闭动作失败:", err);
+    }
   }
 }
 

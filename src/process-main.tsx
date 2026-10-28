@@ -5,7 +5,6 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { PlatformContext } from "./context/PlatformContext";
 import { initializePlatform } from "./services/platform";
 import { ProcessProxyView } from "./views/ProcessProxyView";
-import { ProcessMaintenanceView } from "./views/ProcessMaintenanceView";
 import { bundleController } from "./services/bundleRuntime";
 import { configureDesktopContextMenu } from "./utils/desktopContextMenu";
 
@@ -19,7 +18,7 @@ async function bootstrap() {
     document.documentElement.dataset.platform = platform.os;
     configureDesktopContextMenu(platform.os !== "android");
     root.render(<React.StrictMode><PlatformContext.Provider value={platform}><ThemeProvider>
-      <ProcessProxyView standalone maintenance={<ProcessMaintenanceView />} capability={{
+      <ProcessProxyView standalone capability={{
         mode: "process_proxy", coreRunning: false, independentWinDivert: true,
         winDivertReason: "WinDivert 需管理员权限；与完整版同时运行时请使用纯应用层",
       }} />

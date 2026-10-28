@@ -14,4 +14,5 @@ export interface ProcessPreferences {
   autoStart: boolean;
   minimizeOnClose: boolean;
   silentStart: boolean;
+  closeAction?: "ask" | "minimize" | "exit";
 }

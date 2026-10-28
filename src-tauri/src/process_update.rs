@@ -108,6 +108,28 @@ pub async fn download_process_update() -> Result<String, String> {
     if result.is_err() { let _ = tokio::fs::remove_file(part).await; }
     result
 }
+
+#[tauri::command]
+pub async fn open_process_update_folder(app: tauri::AppHandle, path: Option<String>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let target = if let Some(p) = path.as_deref().filter(|s| !s.trim().is_empty()) {
+        std::path::PathBuf::from(p)
+    } else {
+        crate::storage::data_dir().join("downloads")
+    };
+    let dir = if target.is_file() {
+        target.parent().map(|p| p.to_path_buf()).unwrap_or(target)
+    } else {
+        target
+    };
+    if !dir.exists() {
+        let _ = tokio::fs::create_dir_all(&dir).await;
+    }
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| format!("打开下载目录失败: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

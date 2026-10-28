@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Package, Radio, Activity, Settings, Wrench } from "lucide-react";
+import { Package, Radio, Activity, Settings } from "lucide-react";
 import { useBundleRuntime } from "../hooks/useBusinessBundles";
 import { useBundleTools } from "../hooks/useBundleTools";
 import { useExternalProxyEditor } from "../hooks/useExternalProxyEditor";
@@ -10,6 +10,7 @@ import { BundleToolsDialog } from "../components/business-bundle/BundleToolsDial
 import { ProcessAccessBar, ProcessDiagnostics, ProcessSettings } from "../components/function-mode/ProcessWorkspacePanels";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { WindowControls } from "../components/WindowControls";
+import { CloseConfirmModal } from "../components/CloseConfirmModal";
 import type { FunctionModeView } from "../types/functionMode";
 import { windowStartDragging, windowToggleMaximize } from "../api";
 import appIcon from "../assets/app-icon.png";
@@ -19,13 +20,12 @@ export function ProcessProxyView({
   capability,
   onFull,
   standalone = false,
-  maintenance,
 }: {
   modeControl?: ReactNode;
   capability: FunctionModeView;
   onFull?: () => void;
   standalone?: boolean;
-  maintenance: ReactNode;
+  maintenance?: ReactNode;
 }) {
   useBundleRuntime();
   const tools = useBundleTools();
@@ -37,7 +37,6 @@ export function ProcessProxyView({
     { id: "external", label: "外部代理", icon: <Radio className="w-3.5 h-3.5" /> },
     { id: "diagnostics", label: "连接与诊断", icon: <Activity className="w-3.5 h-3.5" /> },
     { id: "settings", label: "偏好设置", icon: <Settings className="w-3.5 h-3.5" /> },
-    { id: "maintenance", label: "版本维护", icon: <Wrench className="w-3.5 h-3.5" />, badge: "更新" },
   ];
 
   return (
@@ -119,19 +118,12 @@ export function ProcessProxyView({
           <ProcessSettings
             state={state}
             standalone={standalone}
-            onOpenMaintenance={() => state.actions.setTab("maintenance")}
           />
-        )}
-        {state.tab === "maintenance" && (
-          <div className="h-full overflow-y-auto p-5 sm:p-8">
-            <div className="max-w-5xl mx-auto space-y-6">
-              {maintenance}
-            </div>
-          </div>
         )}
       </main>
 
       <BundleToolsDialog {...tools} />
+      <CloseConfirmModal appName={standalone ? "ProcWeaver Process" : "ProcWeaver"} />
     </div>
   );
 }
