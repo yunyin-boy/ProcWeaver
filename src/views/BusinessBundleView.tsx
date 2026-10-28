@@ -19,8 +19,6 @@ import { BundleRow } from "../components/business-bundle/BundleRow";
 import { TrafficModeSelector } from "../components/TrafficModeSelector";
 import { TrafficModeGuideModal } from "../components/TrafficModeGuideModal";
 import { SelectExitModal } from "../components/business-bundle/SelectExitModal";
-import { ExternalProxyDialog } from "../components/business-bundle/ExternalProxyDialog";
-import { useExternalProxyEditor } from "../hooks/useExternalProxyEditor";
 import { BundleDetailModal } from "../components/business-bundle/BundleDetailModal";
 import { ImportBundleModal } from "../components/business-bundle/ImportBundleModal";
 import { ExportBundleModal } from "../components/business-bundle/ExportBundleModal";
@@ -41,8 +39,6 @@ import {
   Download,
   Sparkles,
   HelpCircle,
-  Network,
-  Settings2,
 } from "lucide-react";
 
 interface Props {
@@ -57,11 +53,6 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   const entryStates = useBundleEntries();
   const { instances } = bundleState;
   const [search, setSearch] = useState("");
-  const externalLabel = (instance: BundleLocalInstance) => {
-    const id = instance.externalEndpointId || bundleState.external?.defaultEndpointId;
-    const proxy = bundleState.external?.endpoints.find(e => e.id === id);
-    return proxy ? `${proxy.name} · ${proxy.protocol.toUpperCase()}` : "未选择代理";
-  };
   const availableProxies = (bundleState.view?.targets || []).map(target => target.name);
   const [activeTab, setActiveTab] = useState<"installed" | "presets" | "studio">("installed");
   const repositories = useBundleRepositories(activeTab === "presets");
@@ -70,12 +61,8 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
 
   // 弹窗状态
   const [selectExitTarget, setSelectExitTarget] = useState<BundleLocalInstance | null>(null);
-  const [externalOpen, setExternalOpen] = useState(false);
-  const [externalTarget, setExternalTarget] = useState<BundleLocalInstance | null>(null);
-  const externalEditor = useExternalProxyEditor(externalOpen, externalTarget, () => setExternalOpen(false));
   const openExit = (instance: BundleLocalInstance) => {
-    if (platform.os === "windows") { setExternalTarget(instance); setExternalOpen(true); }
-    else setSelectExitTarget(instance);
+    setSelectExitTarget(instance);
   };
   const [detailTarget, setDetailTarget] = useState<BundleLocalInstance | null>(null);
   const [exportTarget, setExportTarget] = useState<BundleLocalInstance | null>(null);
@@ -502,89 +489,9 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
             </div>
           </div>
         </header>}
-        {!processOnly && platform.os === "windows" && (
-          <section className="rounded-2xl border border-slate-200/90 dark:border-slate-800/90 bg-white dark:bg-slate-900/90 shadow-2xs p-3.5 sm:px-4 sm:py-3 flex flex-wrap justify-between items-center gap-3 text-xs transition">
-            {/* 左侧：图标 + 标题 + 就绪徽标 + 说明 */}
-            <div className="flex items-center space-x-3 min-w-0">
-              <div className="w-8 h-8 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-100 dark:border-indigo-900/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400 shrink-0 shadow-2xs">
-                <Network className="w-4 h-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center space-x-2">
-                  <strong className="text-slate-800 dark:text-slate-100 font-bold text-xs">独立外部代理</strong>
-                  <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-[10px] text-slate-600 dark:text-slate-300 font-mono">
-                    <span className={`w-1.5 h-1.5 rounded-full ${(bundleState.external?.states.filter(s => s.ready).length || 0) > 0 ? "bg-emerald-500" : "bg-slate-400"}`} />
-                    <span>{(bundleState.external?.states.filter(s => s.ready).length || 0) > 0 ? `已就绪 ${bundleState.external?.states.filter(s => s.ready).length || 0} 个入口` : "未就绪"}</span>
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                  HTTP / SOCKS5 · 核心关闭也可独立运行 · 业务专属隔离
-                </p>
-                {bundleState.externalReadError && (
-                  <p role="alert" className="text-[11px] text-red-600 dark:text-red-400 mt-1 font-medium">
-                    {bundleState.externalReadError}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* 右侧：胶囊滑动开关 + 代理设置与连接记录按钮 */}
-            <div className="flex items-center space-x-2">
-              <button
-                type="button"
-                role="switch"
-                aria-label="独立代理总开关"
-                aria-checked={bundleState.external?.enabled === true}
-                disabled={!bundleState.external || bundleState.pending || Boolean(bundleState.externalReadError)}
-                onClick={() => void bundleController.setExternalEnabled(!bundleState.external?.enabled)}
-                className={`h-8 px-3 rounded-xl border text-xs font-medium flex items-center space-x-2.5 transition shadow-2xs select-none disabled:opacity-50 disabled:cursor-not-allowed ${
-                  bundleState.external?.enabled
-                    ? "bg-emerald-50/80 hover:bg-emerald-100/90 dark:bg-emerald-950/30 dark:hover:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800/60 cursor-pointer"
-                    : "bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 cursor-pointer"
-                }`}
-              >
-                {/* 滑动胶囊 */}
-                <span
-                  aria-hidden="true"
-                  className={`relative inline-flex items-center w-7 h-4 rounded-full shrink-0 transition-colors duration-200 ${
-                    bundleState.external?.enabled ? "bg-emerald-500 shadow-xs" : "bg-slate-300 dark:bg-slate-600"
-                  }`}
-                >
-                  <span
-                    className={`inline-block w-3 h-3 rounded-full bg-white shadow-xs transition-transform duration-200 ${
-                      bundleState.external?.enabled ? "translate-x-[14px]" : "translate-x-0.5"
-                    }`}
-                  />
-                </span>
-
-                {/* 状态小圆点 */}
-                <span
-                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    bundleState.external?.enabled ? "bg-emerald-500 ring-2 ring-emerald-500/20" : "bg-slate-400"
-                  }`}
-                />
-
-                {/* 说明文字 */}
-                <span>
-                  独立代理 · {bundleState.external?.enabled ? "已开启" : "已暂停"}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => { setExternalTarget(null); setExternalOpen(true); }}
-                className="h-8 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100/80 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800/60 text-xs font-medium flex items-center space-x-1.5 transition shadow-2xs cursor-pointer focus-visible:ring-2 focus-visible:ring-indigo-500"
-              >
-                <Settings2 className="w-3.5 h-3.5" />
-                <span>代理设置与记录</span>
-              </button>
-            </div>
-          </section>
-        )}
-
         {!processOnly && bundleState.view?.config.bundlesEnabled === false && (
           <p className="text-xs text-amber-600 dark:text-amber-400 px-1">
-            核心业务包已暂停，单包设置与快捷方式保留；独立代理由上方独立总开关控制。已有核心连接可能继续使用原出口。
+            业务规则包总开关已暂停，单包设置与快捷方式保留。已有核心连接可能继续使用原出口。
           </p>
         )}
 
@@ -696,7 +603,6 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                       status={getBundleStatus(instance, bundleState)}
                       entry={entryStates[instance.instanceId]}
                       proxyLabels={bundleState.view?.targetLabels}
-                      externalLabel={externalLabel(instance)}
                       unavailable={processOnly && instance.backend !== "external"}
                       compact={processOnly}
                       onLaunch={() => void bundleTools.launch({ instanceId: instance.instanceId })}
@@ -751,9 +657,6 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         onCancel={() => setSelectExitTarget(null)}
       />
 
-      <ExternalProxyDialog open={externalOpen} bundleName={externalTarget?.definition.packageName} state={externalEditor}
-        onClose={() => setExternalOpen(false)} onCore={processOnly ? undefined : () => { setExternalOpen(false); setSelectExitTarget(externalTarget); }} />
-
       {/* 业务包详情与运行状态审计弹窗 (原第二张图信息) */}
       <BundleDetailModal
         isOpen={Boolean(detailTarget)}
@@ -761,7 +664,6 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         status={detailTarget ? getBundleStatus(instances.find(i => i.instanceId === detailTarget.instanceId) || detailTarget, bundleState) : undefined}
         entry={detailTarget ? entryStates[detailTarget.instanceId] : undefined}
         proxyLabels={bundleState.view?.targetLabels}
-        externalLabel={detailTarget ? externalLabel(instances.find(i => i.instanceId === detailTarget.instanceId) || detailTarget) : undefined}
         drawer={processOnly}
         unavailable={processOnly && detailTarget?.backend !== "external"}
         onChangeWatcherMode={handleChangeWatcherMode}

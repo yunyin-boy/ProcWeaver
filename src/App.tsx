@@ -93,35 +93,20 @@ class ErrorBoundary extends React.Component<
 
 import { TrayContextMenuView } from "./views/TrayContextMenuView";
 import { usePlatform } from "./context/PlatformContext";
-import { useFunctionMode } from "./hooks/useFunctionMode";
-import { FunctionModeSelector, FunctionModeConfirmation } from "./components/function-mode/FunctionModeControls";
-import { ProcessProxyView } from "./views/ProcessProxyView";
 
 function DesktopTrayRuntime(props: Parameters<typeof useTrayManager>[0]) { useTrayManager(props); return null; }
 
 export function App() {
-  const platform = usePlatform();
-  const tray = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("window") === "tray-menu";
-  if (platform.os !== "windows" || tray || !isTauri()) return <FullApp />;
-  return <ErrorBoundary><FunctionModeApp /></ErrorBoundary>;
+  const isTrayMenuWindow = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("window") === "tray-menu";
+  if (isTrayMenuWindow) return <TrayContextMenuView />;
+  return (
+    <ErrorBoundary>
+      <FullApp />
+    </ErrorBoundary>
+  );
 }
 
-function FunctionModeApp() {
-  const { state, actions } = useFunctionMode();
-  if (!state.view) return <div className="h-screen bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 flex flex-col">
-    <div className="flex justify-end p-2"><WindowControls /></div>
-    <div className="m-auto p-6 text-center space-y-4"><p role={state.error ? "alert" : "status"}>{state.error || "正在读取功能模式…"}</p>
-      {!state.loading && <button className="rounded-lg bg-indigo-600 text-white px-4 py-2" onClick={() => void actions.load()}>重新读取</button>}
-    </div>
-  </div>;
-  const control = <FunctionModeSelector mode={state.view.mode} disabled={state.pending} onChange={actions.request} />;
-  return <>
-    {state.view.mode === "full" ? <FullApp functionModeControl={control} /> : <ProcessProxyView maintenance={<MaintenanceView />} modeControl={control} capability={state.view} onFull={() => actions.request("full")} />}
-    <FunctionModeConfirmation state={state} onCancel={actions.cancel} onConfirm={() => void actions.confirm()} />
-  </>;
-}
-
-function FullApp({ functionModeControl }: { functionModeControl?: React.ReactNode }) {
+function FullApp() {
   const platform = usePlatform();
   const mobile = platform.os === "android";
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -619,9 +604,6 @@ function FullApp({ functionModeControl }: { functionModeControl?: React.ReactNod
                 ))}
               </div>
             )}
-
-            {/* 顶栏功能模式切换 */}
-            {!mobile && functionModeControl}
 
             {/* 顶栏快速主题切换 */}
             <ThemeToggle compact={false} />

@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { BundleLocalInstance } from "../../types/businessBundle";
-import { Network, X, Search, Check, Shield } from "lucide-react";
+import { Network, X, Search, Check, Shield, Zap, ShieldCheck } from "lucide-react";
+import { testDelay, getPreferredSpeedTestUrl } from "../../api/mihomo";
+import { getPersistedHealthCache, probeNodeHealthBatch, savePersistedHealthCache } from "../../api/nodeHealth";
+import type { IpHealthInfo } from "../../types";
 
 interface Props {
   isOpen: boolean;
@@ -25,6 +28,14 @@ export const SelectExitModal: React.FC<Props> = ({
   const [followMainDns, setFollowMainDns] = useState<boolean>(true);
   const [selectedDns, setSelectedDns] = useState<string | null>(null);
 
+  // 延迟测速状态 (套用节点管理)
+  const [delayMap, setDelayMap] = useState<Record<string, number | null>>({});
+  const [testingNodes, setTestingNodes] = useState<Record<string, boolean>>({});
+
+  // 健康分与体检状态 (套用节点管理)
+  const [healthMap, setHealthMap] = useState<Record<string, IpHealthInfo>>({});
+  const [probingNodes, setProbingNodes] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
     if (instance && isOpen) {
       const currentMain = instance.slotBindings.main || null;
@@ -38,8 +49,64 @@ export const SelectExitModal: React.FC<Props> = ({
         setSelectedDns(currentDns);
       }
       setSearchQuery("");
+
+      // 弹窗打开时加载本地持久化健康分缓存
+      void getPersistedHealthCache().then((cache) => {
+        if (cache) setHealthMap(cache);
+      });
     }
   }, [instance, isOpen]);
+
+  // 监听全局体检结果更新事件，保持跨界面实时同步
+  useEffect(() => {
+    const handleHealthUpdated = (e: any) => {
+      const { node, health } = e.detail || {};
+      if (node && health) {
+        setHealthMap((prev) => ({ ...prev, [node]: health }));
+      }
+    };
+    window.addEventListener("netbox-node-health-updated", handleHealthUpdated);
+    return () => {
+      window.removeEventListener("netbox-node-health-updated", handleHealthUpdated);
+    };
+  }, []);
+
+  // 单节点延迟测试
+  const handleTestDelay = async (nodeName: string) => {
+    if (testingNodes[nodeName]) return;
+    setTestingNodes((prev) => ({ ...prev, [nodeName]: true }));
+    try {
+      const endpoint = getPreferredSpeedTestUrl();
+      const delay = await testDelay(nodeName, endpoint, 3000);
+      setDelayMap((prev) => ({ ...prev, [nodeName]: delay ?? 0 }));
+    } catch {
+      setDelayMap((prev) => ({ ...prev, [nodeName]: 0 }));
+    } finally {
+      setTestingNodes((prev) => ({ ...prev, [nodeName]: false }));
+    }
+  };
+
+  // 单节点健康分体检
+  const handleProbeHealth = async (nodeName: string) => {
+    if (probingNodes[nodeName]) return;
+    setProbingNodes((prev) => ({ ...prev, [nodeName]: true }));
+    try {
+      await probeNodeHealthBatch([nodeName], (node, result) => {
+        if (result) {
+          setHealthMap((prev) => {
+            const next = { ...prev, [node]: result };
+            void savePersistedHealthCache(next);
+            return next;
+          });
+          window.dispatchEvent(new CustomEvent("netbox-node-health-updated", { detail: { node, health: result } }));
+        }
+      });
+    } catch (err) {
+      console.warn("单节点体检失败:", err);
+    } finally {
+      setProbingNodes((prev) => ({ ...prev, [nodeName]: false }));
+    }
+  };
 
   // 过滤后的节点列表
   const filteredProxies = useMemo(() => {
@@ -154,6 +221,32 @@ export const SelectExitModal: React.FC<Props> = ({
               const isSelected = selectedMain === proxy;
               const label = proxyLabels[proxy] || proxy;
 
+              // 延迟状态与样式 (套用节点管理)
+              const delay = delayMap[proxy] ?? null;
+              const isTesting = Boolean(testingNodes[proxy]);
+              const delayText = isTesting ? "测速中" : delay === null ? "未测速" : delay <= 0 ? "超时" : `${delay}ms`;
+              const delayColor =
+                delay === null
+                  ? "text-slate-400 dark:text-slate-500"
+                  : delay <= 0 || delay >= 500
+                  ? "text-rose-500 font-bold"
+                  : delay < 200
+                  ? "text-emerald-600 dark:text-emerald-400 font-bold"
+                  : "text-amber-600 dark:text-amber-400 font-semibold";
+
+              // 健康分状态与样式 (套用节点管理)
+              const health = healthMap[proxy];
+              const isProbing = Boolean(probingNodes[proxy]);
+              const fraudScore = health?.fraudScore;
+              const scoreBadgeClass =
+                fraudScore == null
+                  ? ""
+                  : fraudScore <= 25
+                  ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-300/80"
+                  : fraudScore <= 60
+                  ? "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-300/80"
+                  : "bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 border-rose-300/80";
+
               return (
                 <div
                   key={proxy}
@@ -165,7 +258,8 @@ export const SelectExitModal: React.FC<Props> = ({
                       : "bg-white dark:bg-slate-900/60 border-slate-200/70 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-700 dark:text-slate-300"
                   }`}
                 >
-                  <div className="flex items-center space-x-2.5 truncate mr-2">
+                  {/* 左侧：状态圆点 + 节点标签 */}
+                  <div className="flex items-center space-x-2.5 truncate mr-2 min-w-0">
                     <div
                       className={`w-2 h-2 rounded-full shrink-0 ${
                         isSelected ? "bg-emerald-500 ring-2 ring-emerald-500/20" : "bg-slate-300 dark:bg-slate-600"
@@ -174,9 +268,59 @@ export const SelectExitModal: React.FC<Props> = ({
                     <span className="truncate font-mono text-xs">{label}</span>
                   </div>
 
+                  {/* 右侧：延迟 + 健康分 + 操作图标 (方案 B：仅行内图标，双击防误触) */}
                   <div className="flex items-center space-x-2 shrink-0">
+                    {/* 健康分徽标 (若有数据) */}
+                    {fraudScore != null && (
+                      <span
+                        className={`text-[10px] font-mono px-1.5 py-0.2 rounded-md border font-semibold ${scoreBadgeClass}`}
+                        title={`欺诈风险分: ${fraudScore}${health?.country ? ` (${health.country})` : ""}`}
+                      >
+                        {fraudScore}分
+                      </span>
+                    )}
+
+                    {/* 延迟数值展示 */}
+                    <span className={`text-[11px] font-mono flex items-center space-x-0.5 ${delayColor}`}>
+                      <Zap className={`w-3 h-3 ${isTesting ? "animate-bounce text-amber-500" : ""}`} />
+                      <span>{delayText}</span>
+                    </span>
+
+                    {/* 行内单测延迟图标按钮 (严格阻断冒泡防误触) */}
+                    <button
+                      type="button"
+                      title={isTesting ? "测速中…" : "测此节点延迟"}
+                      disabled={isTesting}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleTestDelay(proxy);
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      className="p-1 rounded-lg text-slate-400 hover:text-amber-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
+                    >
+                      <Zap className={`w-3.5 h-3.5 ${isTesting ? "animate-spin text-amber-500" : ""}`} />
+                    </button>
+
+                    {/* 行内单测健康分体检图标按钮 (严格阻断冒泡防误触) */}
+                    <button
+                      type="button"
+                      title={isProbing ? "体检中…" : "检测 IP 风险与健康分"}
+                      disabled={isProbing}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleProbeHealth(proxy);
+                      }}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      className="p-1 rounded-lg text-slate-400 hover:text-indigo-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
+                    >
+                      <ShieldCheck className={`w-3.5 h-3.5 ${isProbing ? "animate-pulse text-indigo-500" : ""}`} />
+                    </button>
+
+                    {/* 已选指示标签 */}
                     {isSelected && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-indigo-600 text-white flex items-center space-x-0.5 shadow-xs">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-indigo-600 text-white flex items-center space-x-0.5 shadow-xs ml-1">
                         <Check className="w-3 h-3" />
                         <span>已选</span>
                       </span>
