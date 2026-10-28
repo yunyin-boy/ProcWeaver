@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Zap, Bot, Shield, X, Check, HelpCircle, Cpu } from "lucide-react";
+import { Zap, Shield, X, Check, HelpCircle, Cpu } from "lucide-react";
 import { usePlatform } from "../context/PlatformContext";
 
 interface Props {
@@ -57,22 +57,6 @@ export const TrafficModeGuideModal: React.FC<Props> = ({
       ],
       icon: <Cpu className="w-4 h-4 text-emerald-500" />,
       tagColor: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20",
-    },
-    {
-      id: "smart_hybrid",
-      title: "智能双模式 (Auto-Hybrid)",
-      badge: "智能感知 · 极客推荐",
-      desc: "平时 0 网卡轻量巡航 · 启动游戏自动升维 TUN",
-      detail:
-        "优先使用应用代理；当启动 CS2、Apex、外服无代理配置游戏时自动唤醒 TUN，退出后平滑归位。",
-      pros: [
-        "动静结合：日常办公零网卡开销，启动大型外服游戏时自动拥有全协议接管能力。",
-      ],
-      cons: [
-        "依赖 TUN 虚拟网卡环境，首次启动游戏时会有虚拟网卡短暂初始化握手。",
-      ],
-      icon: <Bot className="w-4 h-4 text-indigo-500" />,
-      tagColor: "bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20",
     },
     {
       id: "windivert_v1",
@@ -144,7 +128,7 @@ export const TrafficModeGuideModal: React.FC<Props> = ({
 
         {/* 模式特性卡片列表 */}
         <div className="space-y-3 max-h-[62vh] overflow-y-auto pr-1">
-          {MODES.filter(item => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)).map((item) => {
+          {MODES.filter(item => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : platform.tun)).map((item) => {
             const isHighlight = currentMode === item.id;
             return (
               <div

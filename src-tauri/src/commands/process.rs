@@ -321,7 +321,11 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
         let raw = std::fs::read_to_string(&core_config).map_err(|_| "读取核心启动配置失败")?;
         super::dns_runtime::confirm(&raw, child.id()).await?;
         crate::routing_overrides::bundles::select(&raw).await?;
-        crate::capture::confirm_runtime_for_core(&raw, child.id()).await
+        crate::capture::confirm_runtime_for_core(&raw, child.id()).await?;
+        if preferences.run_mode != "rule" {
+            let _ = super::mihomo_api::set_mihomo_mode(preferences.run_mode.clone()).await;
+        }
+        Ok(())
     }.await;
     if let Err(error) = ready {
         return Err(abort_spawned_core(&mut child, error));

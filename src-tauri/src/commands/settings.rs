@@ -56,7 +56,10 @@ pub struct GeneralSettings {
     pub auto_dns_guard_with_bundle: bool,
     #[serde(default = "default_shim_mode")]
     pub shim_mode: String,
+    #[serde(default = "default_run_mode")]
+    pub run_mode: String,
 }
+fn default_run_mode() -> String { "rule".into() }
 fn default_shim_mode() -> String { "disabled".into() }
 fn default_enable_controller_port() -> bool { true }
 fn default_true() -> bool { true }
@@ -102,8 +105,18 @@ impl Default for GeneralSettings {
             tray_menu_style: default_tray_menu_style(),
             auto_dns_guard_with_bundle: true,
             shim_mode: default_shim_mode(),
+            run_mode: default_run_mode(),
         }
     }
+}
+pub fn update_persisted_run_mode(mode: &str) -> Result<(), String> {
+    let path = crate::storage::data_dir().join("config/preferences.json");
+    if !path.exists() { return Ok(()); }
+    let mut settings = get_general_settings()?;
+    settings.run_mode = mode.to_ascii_lowercase();
+    let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
+    crate::storage::replace(&path, &bytes)?;
+    Ok(())
 }
 #[tauri::command]
 pub fn get_general_settings() -> Result<GeneralSettings, String> {
@@ -194,7 +207,7 @@ pub(crate) fn persist_general_settings(mut settings: GeneralSettings, state: &su
         settings.tun_mode = true;
     } else {
         settings.tun_mode = false;
-        if settings.traffic_mode != "smart_hybrid" && settings.traffic_mode != "windivert_v1" && settings.traffic_mode != "user_mode" {
+        if settings.traffic_mode != "windivert_v1" && settings.traffic_mode != "user_mode" {
             settings.traffic_mode = "app_proxy".into();
         }
     }
@@ -325,7 +338,6 @@ fn prepare_with_runtime(raw: &str, settings: &GeneralSettings, os: &str, dns_set
     let tun = map.entry(serde_yaml::Value::from("tun")).or_insert(serde_yaml::Value::Mapping(Default::default()));
     let tun_enable = match settings.traffic_mode.as_str() {
         "tun" => true,
-        "smart_hybrid" => crate::capture::smart_arbiter::is_tun_escalated(),
         "app_proxy" => false,
         _ => settings.tun_mode,
     };

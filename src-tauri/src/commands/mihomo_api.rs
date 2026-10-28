@@ -311,9 +311,6 @@ pub async fn get_mihomo_rules() -> Result<Value, String> {
 #[tauri::command]
 pub async fn set_mihomo_mode(mode: String) -> Result<bool, String> {
     let _lifecycle = super::process::LIFECYCLE.lock().await;
-    if mode.to_lowercase() != "rule" && crate::routing_overrides::read()?.process_enabled {
-        return Err("进程接管使用独立规则入口，请先关闭进程接管，再切换全局或直连模式".into());
-    }
     let client = controller_client()
         .timeout(std::time::Duration::from_secs(3))
         .build()
@@ -344,6 +341,9 @@ pub async fn set_mihomo_mode(mode: String) -> Result<bool, String> {
     }
     }
 
+    // 模式持久化保存至首选项，重启后自动记忆恢复
+    let _ = super::settings::update_persisted_run_mode(&standard_mode);
+
     // 切换模式后，根据设置断开所有旧的活动连接，使流量立刻按新模式路由
     if super::settings::get_general_settings().map(|s| s.auto_close_connections).unwrap_or(true) {
         let _ = client
@@ -359,7 +359,7 @@ pub async fn set_mihomo_mode(mode: String) -> Result<bool, String> {
                 if let Some(proxies_map) = json.get("proxies").and_then(|p| p.as_object()) {
                     let current_selected = proxies_map.iter().find_map(|(k, v)| {
                         let k_low = k.to_lowercase();
-                        if k_low.contains("节点选择") || k_low == "proxy" {
+                        if k_low.contains("节点选择") || k_low == "proxy" || k_low == "select" || k_low == "proxies" {
                             v.get("now").and_then(|n| n.as_str()).map(|s| s.to_string())
                         } else {
                             None

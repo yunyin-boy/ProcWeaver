@@ -159,6 +159,7 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     };
     let bundle_derived: Vec<_> = state.derived.iter().filter(|r| bundles::owner(&r.id, &config.bundles).is_some()).cloned().collect();
     let base = composer::compose(&base, &bundles, profile_id, &bundle_derived)?;
+    let base = bundles::compose_bundle_rules(&base, config)?;
     let base = finish(&base)?;
     #[cfg(windows)]
     let base = crate::commands::dns_listener::compose(&base, config)?;

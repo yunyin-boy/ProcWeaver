@@ -263,9 +263,8 @@ pub async fn confirm_runtime_for_core(raw: &str, _core_pid:u32) -> Result<(), St
     let plan: Plan = serde_yaml::from_value(yaml["netbox-capture"].clone()).map_err(|_| "接管计划无效")?;
     let port = crate::commands::settings::get_general_settings()?.controller_port;
     let client = crate::commands::mihomo_api::controller_client().timeout(std::time::Duration::from_secs(2)).build().map_err(|_| "核心连接失败")?;
-    let actual: serde_json::Value = client.get(format!("http://127.0.0.1:{port}/configs")).send().await.map_err(|_| "核心未就绪")?
+    let _actual: serde_json::Value = client.get(format!("http://127.0.0.1:{port}/configs")).send().await.map_err(|_| "核心未就绪")?
         .error_for_status().map_err(|_| "核心拒绝状态核验")?.json().await.map_err(|_| "核心状态无效")?;
-    if plan.config.process_enabled && actual["mode"].as_str() != Some("rule") { return Err("进程分流需要规则模式，请切回规则模式".into()); }
     let mut checks = tokio::task::JoinSet::new();
     for bundle in &plan.config.bundles {
         let port = bundle.port;

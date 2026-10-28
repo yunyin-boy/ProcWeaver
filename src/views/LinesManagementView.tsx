@@ -1555,6 +1555,28 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
 
       {/* 主工作区滚动面板 */}
       <VirtualGridScroller className={`${mobile ? "mobile-node-scroller " : ""}flex-1 min-h-0 overflow-y-auto p-6 space-y-6`} resetKey={`${search}:${hideTimeout}:${sourceFilter}`}>
+        {/* 全局 / 直连模式状态横幅 */}
+        {coreMode === "global" && (
+          <div className="p-3.5 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/80 text-xs text-indigo-800 dark:text-indigo-200 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <span className="font-bold flex items-center gap-1.5">🌐 全局代理模式 (Global)</span>
+              <span className="text-[11px] text-indigo-600/90 dark:text-indigo-300">常规全网出站强锁主出口；业务套件优先保留独立专属出口 (选项 A)</span>
+            </div>
+            <div className="flex items-center gap-2 font-mono text-[11px]">
+              <span className="text-slate-500 dark:text-slate-400 font-sans">当前全局出口:</span>
+              <span className="font-bold bg-indigo-100 dark:bg-indigo-900/60 px-2.5 py-0.5 rounded-lg border border-indigo-200 dark:border-indigo-800">{activeNodeName || "未就绪"}</span>
+            </div>
+          </div>
+        )}
+        {coreMode === "direct" && (
+          <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between gap-2 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <span className="font-bold flex items-center gap-1.5">⚡ 直接连接模式 (Direct)</span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">所有出站流量均不走代理直接通信</span>
+            </div>
+          </div>
+        )}
+
         {/* 节点订阅账号状态看板 (由伪节点提炼为纯净看板) */}
         {!mobile && (subMeta.remainingTraffic || subMeta.expireDate || subMeta.resetDays) && (
           <div className={mobile

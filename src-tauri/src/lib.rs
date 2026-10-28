@@ -103,7 +103,6 @@ pub fn run() {
                 let _ = monitor_app.emit("procweaver-processes-changed", change);
             }));
             tauri::async_runtime::spawn(capture::run());
-            tauri::async_runtime::spawn(capture::smart_arbiter::run_arbiter());
             app_lifecycle::setup(app)?;
             let preferences = commands::settings::get_general_settings();
             let is_direct_launch = std::env::args().any(|a| a == "--direct" || a == "--shim" || a == "--quick");

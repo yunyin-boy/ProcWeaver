@@ -646,3 +646,67 @@ fn native_save_revision_rollback_and_dns_proxy_egress() {
 
 trait ErrorText { fn unwrap_err_string(self) -> String; }
 impl ErrorText for Result<View, String> { fn unwrap_err_string(self) -> String { match self { Ok(_) => panic!("应失败"), Err(e) => e } } }
+
+#[test]
+fn test_bundle_domains_and_processes_compose_for_tun_and_global() {
+    let mut c = config();
+    let bundle_id = "test-openai";
+    let group_name = bundles::group(bundle_id, "main");
+    c.bundles_enabled = true;
+    c.bundles.push(BundleRoute {
+        id: bundle_id.into(),
+        name: "OpenAI套件".into(),
+        main_exe: "ChatGPT.exe".into(),
+        enabled: true,
+        main_target: Some(target("node-us")),
+        dns_target: None,
+        port: 34010,
+        mode: "strict".into(),
+        domains: vec!["openai.com".into(), "*.chatgpt.com".into()],
+        fallback: "rules".into(),
+        policy: Some(BundlePolicy {
+            block_udp: true,
+            ..BundlePolicy::default()
+        }),
+    });
+    c.process_rules.push(ProcessRule {
+        id: format!("bundle-{bundle_id}-chatgpt"),
+        enabled: true,
+        label: "ChatGPT".into(),
+        match_kind: "name".into(),
+        match_value: "ChatGPT.exe".into(),
+        action: "proxy".into(),
+        target: Some(Target { profile_id: "default".into(), kind: "group".into(), name: group_name.clone() }),
+        include_descendants: false,
+        rule_mode: Some("strict".into()),
+    });
+    let raw = r#"
+proxies:
+  - name: node-us
+    type: http
+    server: 1.2.3.4
+    port: 8080
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [node-us]
+rules:
+  - MATCH,PROXY
+"#;
+    let (with_group, mapped) = bundles::materialize(raw, &c, "default").unwrap();
+    let composed = composer::compose(&with_group, &mapped, "default", &[]).unwrap();
+    let final_yaml = bundles::compose_bundle_rules(&composed, &mapped).unwrap();
+    let val: Value = serde_yaml::from_str(&final_yaml).unwrap();
+    let rules = val["rules"].as_sequence().unwrap();
+    let rules_str: Vec<_> = rules.iter().filter_map(|r| r.as_str()).collect();
+
+    // 1. 验证业务包域名及 UDP 防护规则位于顶层
+    assert!(rules_str.iter().any(|r| *r == format!("AND,((NETWORK,UDP),(DOMAIN,openai.com)),REJECT")));
+    assert!(rules_str.iter().any(|r| *r == format!("DOMAIN,openai.com,{group_name}")));
+    assert!(rules_str.iter().any(|r| *r == format!("AND,((NETWORK,UDP),(DOMAIN-SUFFIX,chatgpt.com)),REJECT")));
+    assert!(rules_str.iter().any(|r| *r == format!("DOMAIN-SUFFIX,chatgpt.com,{group_name}")));
+
+    // 2. 验证业务包进程及 UDP 防护规则同样生效
+    assert!(rules_str.iter().any(|r| *r == "AND,((NETWORK,UDP),(PROCESS-NAME,ChatGPT.exe)),REJECT"));
+    assert!(rules_str.iter().any(|r| *r == format!("PROCESS-NAME,ChatGPT.exe,{group_name}")));
+}

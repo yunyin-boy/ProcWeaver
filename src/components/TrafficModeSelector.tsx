@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Zap, Bot, Shield, RefreshCw, Cpu, Check, ChevronDown } from "lucide-react";
+import { Zap, Shield, RefreshCw, Cpu, Check, ChevronDown } from "lucide-react";
 import { getGeneralSettings, saveGeneralSettings, getActiveTrafficDriver, GeneralSettings } from "../api/settings";
 import { toggleSystemProxy } from "../api";
 
 import { useCoreStatus } from "../hooks/useCoreStatus";
 import { usePlatform } from "../context/PlatformContext";
 
-export type TrafficModeType = "app_proxy" | "user_mode" | "smart_hybrid" | "tun" | "windivert_v1";
+export type TrafficModeType = "app_proxy" | "user_mode" | "tun" | "windivert_v1";
 
 interface Props {
   onModeChanged?: (mode: TrafficModeType) => void;
@@ -105,7 +105,6 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
       const labelMap: Record<TrafficModeType, string> = {
         app_proxy: "纯应用层代理 (零驱动 · 极速免特权)",
         user_mode: "用户态强接管 (免驱动 · 注入 Hook)",
-        smart_hybrid: "智能双模式 (应用层为主 · 游戏自启 TUN)",
         tun: "全局网卡 (TUN 全接管)",
         windivert_v1: "进程接管 (WinDivert · TCP / UDP)",
       };
@@ -144,13 +143,6 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
       icon: <Cpu className="w-3.5 h-3.5 text-emerald-500" />,
     },
     {
-      id: "smart_hybrid",
-      title: "智能双模式",
-      subLabel: "Auto-Hybrid",
-      tooltip: "平时保持应用层轻量巡航；启动 CS2/Apex/外服无代理配置游戏时自动唤醒 TUN，退出后平滑归位",
-      icon: <Bot className="w-3.5 h-3.5 text-indigo-500" />,
-    },
-    {
       id: "windivert_v1",
       title: "WinDivert",
       subLabel: "进程接管 · 实验",
@@ -169,7 +161,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
   if (variant === "compact") {
     const activeModeItem = MODES.find((m) => m.id === currentMode) || MODES[0];
     const availableModes = MODES.filter(
-      (item) => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)
+      (item) => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : platform.tun)
     );
 
     return (
@@ -267,11 +259,6 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
                   <div className="font-semibold text-slate-700 dark:text-slate-300">全局网卡模式 (TUN)</div>
                   <div>全系统所有协议流量及 DNS 经虚拟网卡接管，适合复杂网络或无法设代理的应用。</div>
                 </>
-              ) : currentMode === "smart_hybrid" ? (
-                <>
-                  <div className="font-semibold text-slate-700 dark:text-slate-300">智能双模式 (Auto-Hybrid)</div>
-                  <div>日常保持 0 网卡轻量应用层代理，启动外服游戏或无代理程序时自启 TUN。</div>
-                </>
               ) : (
                 <>
                   <div className="font-semibold text-slate-700 dark:text-slate-300">纯应用层代理 (App-Proxy)</div>
@@ -325,7 +312,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
 
         {/* 右侧：紧凑分段药丸选择器 (Segmented Control) */}
         <div className="flex flex-wrap items-center p-1 rounded-xl bg-slate-100/90 dark:bg-slate-800/80 border border-slate-200/60 dark:border-slate-700/60 text-xs w-full sm:w-auto justify-between sm:justify-start">
-          {MODES.filter(item => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : item.id === "tun" ? platform.tun : platform.smartHybrid)).map((item) => {
+          {MODES.filter(item => item.id === "app_proxy" || ((item.id === "user_mode" || item.id === "windivert_v1") ? platform.os === "windows" : platform.tun)).map((item) => {
             const isSelected = currentMode === item.id;
             return (
               <button

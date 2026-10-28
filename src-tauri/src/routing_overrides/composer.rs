@@ -51,8 +51,13 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
             let dest = destination(rule, &available);
             if let Some(bundle)=super::bundles::owner(&rule.id,&config.bundles).filter(|b|b.mode=="sandbox") {
                 if !bundle.enabled {continue;}
+                let block_udp = bundle.policy.as_ref().map_or(true, |p| p.block_udp);
                 for pattern in &bundle.domains {
-                    let condition=format!("AND,(({process}),({}))",super::bundles::domain_condition(pattern));
+                    let d_cond = super::bundles::domain_condition(pattern);
+                    let condition=format!("AND,(({process}),({d_cond}))");
+                    if block_udp {
+                        prefix.push(format!("AND,((NETWORK,UDP),({condition})),REJECT").into());
+                    }
                     prefix.push(format!("{condition},{dest}").into());
                     if dest!="REJECT" && dest!="DIRECT" {prefix.push(format!("{condition},REJECT").into());}
                 }
@@ -75,6 +80,12 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
                 subrules.insert(Value::from(sub_name.clone()), Value::Sequence(sub_rules_list));
                 prefix.push(Value::from(format!("SUB-RULE,({process}),{sub_name}")));
             } else {
+                if let Some(bundle) = super::bundles::owner(&rule.id, &config.bundles) {
+                    let block_udp = bundle.policy.as_ref().map_or(true, |p| p.block_udp);
+                    if block_udp {
+                        prefix.push(Value::from(format!("AND,((NETWORK,UDP),({process})),REJECT")));
+                    }
+                }
                 prefix.push(Value::from(format!("{process},{dest}")));
                 // 不支持 UDP 的代理可能被核心跳过：同一匹配项随后拒绝，禁止落入原有直连。
                 if dest != "DIRECT" && dest != "REJECT" { prefix.push(Value::from(format!("{process},REJECT"))); }

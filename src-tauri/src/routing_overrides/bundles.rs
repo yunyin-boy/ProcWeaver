@@ -69,6 +69,32 @@ pub fn map_process(rule: &mut ProcessRule, bundles: &[BundleRoute], profile_id: 
 pub fn domain_condition(pattern: &str) -> String {
     match pattern.strip_prefix("*.") { Some(domain)=>format!("DOMAIN-SUFFIX,{domain}"), None=>format!("DOMAIN,{pattern}") }
 }
+pub fn compose_bundle_rules(raw: &str, config: &Overrides) -> Result<String, String> {
+    if !config.bundles_enabled { return Ok(raw.into()); }
+    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
+    let mut prefix: Vec<Value> = Vec::new();
+    for bundle in config.bundles.iter().filter(|b| b.enabled) {
+        if bundle.mode == "sandbox" { continue; }
+        let dest = group(&bundle.id, "main");
+        let block_udp = bundle.policy.as_ref().map_or(true, |p| p.block_udp);
+        for pattern in &bundle.domains {
+            let cond = domain_condition(pattern);
+            if block_udp {
+                prefix.push(Value::from(format!("AND,((NETWORK,UDP),({cond})),REJECT")));
+            }
+            prefix.push(Value::from(format!("{cond},{dest}")));
+            if dest != "DIRECT" && dest != "REJECT" {
+                prefix.push(Value::from(format!("{cond},REJECT")));
+            }
+        }
+    }
+    if !prefix.is_empty() {
+        let rules = yaml.as_mapping_mut().ok_or("配置须为对象")?.entry(Value::from("rules"))
+            .or_insert(Value::Sequence(vec![])).as_sequence_mut().ok_or("rules 须为数组")?;
+        rules.splice(0..0, prefix);
+    }
+    serde_yaml::to_string(&yaml).map_err(|_| "生成业务包分流规则失败".into())
+}
 pub fn add_listeners(yaml: &mut Value, config: &Overrides, prefix: &Value, fallback: &[Value]) -> Result<(), String> {
     for bundle in &config.bundles {
         if bundle.port == 0 { return Err("业务包入口尚未分配，请重新应用".into()); }

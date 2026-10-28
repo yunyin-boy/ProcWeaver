@@ -547,7 +547,9 @@ function FullApp({ functionModeControl }: { functionModeControl?: React.ReactNod
         <div className="p-3 rounded-xl bg-slate-100/90 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 text-xs">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-slate-500 dark:text-slate-400">运行模式</span>
-            <span title={coreMode.error || undefined} className="text-indigo-600 dark:text-indigo-400 font-semibold uppercase">{mode ?? "未就绪"}</span>
+            <span title={coreMode.error || undefined} className="text-indigo-600 dark:text-indigo-400 font-semibold text-[11px]">
+              {mode === "rule" ? "规则分流" : mode === "global" ? "全局代理" : mode === "direct" ? "直接连接" : "未就绪"}
+            </span>
           </div>
           <div className="flex rounded-lg bg-slate-200/60 dark:bg-slate-900 p-0.5 border border-slate-300/60 dark:border-slate-800">
             {(["rule", "global", "direct"] as const).map((m) => (

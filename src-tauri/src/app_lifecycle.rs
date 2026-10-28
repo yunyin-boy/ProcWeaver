@@ -240,16 +240,17 @@ pub fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         }
         "set_mode:rule" | "set_mode:global" | "set_mode:direct" => {
             let target_mode = id.trim_start_matches("set_mode:").to_string();
-            if let Ok(mut guard) = CURRENT_TRAY_PAYLOAD.lock() {
-                if let Some(payload) = guard.as_mut() {
-                    payload.mode = target_mode.clone();
-                }
-            }
-            rebuild_tray_in_place(app);
             let app_handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = crate::commands::mihomo_api::set_mihomo_mode(target_mode).await;
-                let _ = app_handle.emit("netbox-route-changed", ());
+                if crate::commands::mihomo_api::set_mihomo_mode(target_mode.clone()).await.is_ok() {
+                    if let Ok(mut guard) = CURRENT_TRAY_PAYLOAD.lock() {
+                        if let Some(payload) = guard.as_mut() {
+                            payload.mode = target_mode;
+                        }
+                    }
+                    rebuild_tray_in_place(&app_handle);
+                    let _ = app_handle.emit("netbox-route-changed", ());
+                }
             });
         }
         "select_fastest_node" => {
@@ -988,8 +989,13 @@ pub async fn get_tray_payload(app: tauri::AppHandle) -> Option<TrayMenuPayload> 
     let cur_dir = CURRENT_DIRECTION.lock().ok().map(|d| d.to_string()).unwrap_or_else(|| "left".into());
     payload.direction = Some(cur_dir);
 
-    // 6. 若核心正在运行，主动向 Mihomo 探测活跃节点、延迟与国家地区分组
+    // 6. 若核心正在运行，主动向 Mihomo 探测模式、活跃节点、延迟与国家地区分组
     if payload.running {
+        if let Ok(cfg) = crate::commands::mihomo_api::get_mihomo_config().await {
+            if let Some(m) = cfg.get("mode").and_then(|v| v.as_str()) {
+                payload.mode = m.to_ascii_lowercase();
+            }
+        }
         if let Ok(res) = crate::commands::mihomo_api::get_mihomo_proxies().await {
             if let Some(proxies) = res.get("proxies").and_then(|p| p.as_object()) {
                 for group_name in ["节点选择", "🚀 节点选择", "PROXY", "GLOBAL"] {

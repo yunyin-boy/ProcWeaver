@@ -19,7 +19,6 @@ pub struct Capabilities {
     pub label: String,
     pub app_proxy: bool,
     pub tun: bool,
-    pub smart_hybrid: bool,
     pub system_proxy: bool,
     pub dns_guard: bool,
     pub process_tree: bool,
@@ -41,7 +40,7 @@ pub fn capabilities_for(os: &str, arch: &str) -> Capabilities {
             ("windows", "x86_64") => "Windows · x64".into(),
             _ => format!("{os} · {arch}"),
         },
-        app_proxy: windows || macos, tun: windows || os == "android", smart_hybrid: windows, system_proxy: windows || macos,
+        app_proxy: windows || macos, tun: windows || os == "android", system_proxy: windows || macos,
         dns_guard: windows, process_tree: windows || macos, process_watcher: windows,
         shortcut_management: windows, autostart: windows || macos, elevation: windows,
         core_modes: if windows { vec!["auto", "v3", "compatible", "standard"] } else { vec!["auto", "standard"] }
@@ -55,7 +54,6 @@ pub fn get_platform_capabilities() -> Capabilities {
 }
 
 pub fn supports_tun() -> bool { cfg!(any(windows, target_os = "android")) }
-pub fn supports_smart_hybrid() -> bool { cfg!(windows) }
 
 #[tauri::command]
 pub async fn get_android_applications() -> Result<serde_json::Value, String> {
@@ -108,8 +106,8 @@ fn validate_traffic_mode_for(os: &str, mode: &str, tun: bool) -> Result<(), Stri
     if os == "android" {
         return if mode == "tun" && tun { Ok(()) } else { Err("Android 使用系统 VPN 模式接管流量".into()) };
     }
-    if mode == "smart_hybrid" && os != "windows" {
-        return Err("智能混合模式目前仅支持 Windows；macOS TUN 需要独立的授权与网络恢复".into());
+    if mode == "smart_hybrid" {
+        return Err("智能双模式已弃用，请使用 TUN 模式或 WinDivert 模式".into());
     }
     if (tun || mode == "tun") && os != "windows" {
         return Err("macOS TUN 尚未就绪：需要独立管理员授权、路由和 DNS 恢复及实机验收；未修改当前网络".into());
@@ -209,7 +207,7 @@ mod tests {
             assert!(core_names_for("macos", arch, "v3", true).is_err());
             let capabilities = capabilities_for("macos", arch);
             assert!(capabilities.app_proxy && capabilities.process_tree);
-            assert!(!capabilities.tun && !capabilities.smart_hybrid && !capabilities.dns_guard && !capabilities.elevation);
+            assert!(!capabilities.tun && !capabilities.dns_guard && !capabilities.elevation);
         }
         assert!(core_names_for("macos", "arm", "auto", false).is_err());
     }
@@ -218,7 +216,6 @@ mod tests {
         assert_eq!(core_names_for("windows", "x86_64", "auto", true).unwrap()[0], "mihomo-v3.exe");
         assert_eq!(core_names_for("windows", "x86_64", "auto", false).unwrap()[0], "mihomo-compatible.exe");
         assert!(capabilities_for("windows", "x86_64").tun);
-        assert!(capabilities_for("windows", "x86_64").smart_hybrid);
     }
     #[test]
     fn windows_legacy_standard_prefers_compatible_and_keeps_old_install_fallback() {
@@ -260,9 +257,9 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
     #[test]
-    fn macos_tun_and_windows_only_hybrid_are_rejected_before_settings_change() {
+    fn macos_tun_and_deprecated_hybrid_are_rejected_before_settings_change() {
         assert!(validate_traffic_mode_for("macos", "tun", true).unwrap_err().contains("未修改当前网络"));
-        assert!(validate_traffic_mode_for("macos", "smart_hybrid", false).unwrap_err().contains("仅支持 Windows"));
+        assert!(validate_traffic_mode_for("macos", "smart_hybrid", false).is_err());
         assert!(validate_traffic_mode_for("macos", "app_proxy", true).is_err());
         assert!(validate_traffic_mode_for("macos", "app_proxy", false).is_ok());
         assert!(validate_traffic_mode_for("windows", "tun", true).is_ok());

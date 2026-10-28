@@ -5,7 +5,7 @@ use tauri::{Emitter, Manager};
 #[tauri::command]
 fn get_platform_capabilities() -> crate::platform::Capabilities {
     let mut c = crate::platform::capabilities_for(std::env::consts::OS, std::env::consts::ARCH);
-    c.tun = false; c.smart_hybrid = false; c.system_proxy = false; c.dns_guard = false;
+    c.tun = false; c.system_proxy = false; c.dns_guard = false;
     c.process_watcher = false; c.core_modes.clear();
     c
 }
