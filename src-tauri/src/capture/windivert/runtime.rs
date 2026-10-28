@@ -24,6 +24,16 @@ use tokio::{
     sync::{mpsc, Semaphore},
 };
 
+fn is_fake_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let b = v4.octets();
+            b[0] == 198 && (b[1] == 18 || b[1] == 19)
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Stats {
@@ -411,9 +421,9 @@ fn network(s: Arc<Shared>) {
         );
         // SOCKET is asynchronous. Hold a bounded first packet briefly; neither
         // scan all processes nor claim guaranteed coverage after this deadline.
-        if owner.is_none() {
-            for _ in 0..3 {
-                std::thread::sleep(Duration::from_millis(1));
+        if owner.is_none() && (packet.syn || flow.protocol == 17) {
+            for _ in 0..2 {
+                std::thread::yield_now();
                 owner = s.owners.lock().unwrap().resolve(
                     flow.source,
                     flow.destination,
@@ -424,6 +434,16 @@ fn network(s: Arc<Shared>) {
                 if owner.is_some() {
                     break;
                 }
+            }
+            if owner.is_none() && packet.syn {
+                std::thread::sleep(Duration::from_micros(200));
+                owner = s.owners.lock().unwrap().resolve(
+                    flow.source,
+                    flow.destination,
+                    flow.protocol,
+                    address.timestamp,
+                    Identity::inspect,
+                );
             }
             // 双轨备援：若 WFP 异步事件延迟或未到达，直接通过 Windows 系统连接表即时反查 PID
             if owner.is_none() {
@@ -450,7 +470,7 @@ fn network(s: Arc<Shared>) {
                 Err(_)=>{s.failures.fetch_add(1,Ordering::Relaxed);continue;}
             }
         } else {None};
-        let choice = if s.external {external.as_ref().map(|_|0)} else {owner
+        let matched_port = if s.external {external.as_ref().map(|_|0)} else {owner
             .as_ref()
             .filter(|_| !is_excluded)
             .and_then(|o| {
@@ -460,6 +480,17 @@ fn network(s: Arc<Shared>) {
                     o.identity.created_at,
                 )
             })};
+        let choice = if let Some(port) = matched_port {
+            Some(port)
+        } else if !is_excluded && !s.external && is_fake_ip(flow.destination.ip()) {
+            // 方案 B：底层安全兜底门禁
+            // 若数据包的目的地址属于 Fake-IP (198.18.0.0/15)，说明此前已被内核 DNS 记录；
+            // 绝对不可作为普通流量直连丢给物理网卡（物理网卡无法路由必然超时断网）。
+            // 兜底定向到首个可用的规则入口端口，交由内核依据 Fake-IP 映射还原原始域名并分流出站！
+            s.plan.read().unwrap().entries.first().map(|e| e.port)
+        } else {
+            None
+        };
         let Some(port) = choice else {
             if !is_excluded && !s.external && flow.protocol == 17 && flow.destination.port() == 53 {
                 let payload = &data[packet.payload..];

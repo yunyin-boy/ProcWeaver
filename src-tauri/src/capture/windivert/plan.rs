@@ -213,21 +213,33 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
             entries.push(entry); compiled.push(rules);
         }
     }
-    let dns_domains: Vec<DnsDomain> = if config.dns_enabled {
-        config
-            .dns_rules
-            .iter()
-            .filter(|r| r.enabled)
-            .map(|r| DnsDomain {
-                domain: r.domain.trim_end_matches('.').to_ascii_lowercase(),
-                suffix: r.domain_kind == "suffix",
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let dns_all = crate::commands::dns_adapter::is_windivert_dns_guard_active();
-    let dns_port = if (!dns_domains.is_empty() || dns_all)
+    let mut domains_set = BTreeSet::new();
+    let mut dns_domains = Vec::new();
+    if config.dns_enabled {
+        for r in config.dns_rules.iter().filter(|r| r.enabled) {
+            let domain = r.domain.trim_end_matches('.').to_ascii_lowercase();
+            let suffix = r.domain_kind == "suffix";
+            if domains_set.insert((domain.clone(), suffix)) {
+                dns_domains.push(DnsDomain { domain, suffix });
+            }
+        }
+    }
+    if config.bundles_enabled {
+        for b in config.bundles.iter().filter(|b| b.enabled) {
+            for d in &b.domains {
+                let clean = d.trim().trim_end_matches('.').to_ascii_lowercase();
+                let suffix = clean.starts_with("*.") || clean.starts_with('.');
+                let domain = clean.trim_start_matches('*').trim_start_matches('.').to_string();
+                if !domain.is_empty() && domains_set.insert((domain.clone(), suffix)) {
+                    dns_domains.push(DnsDomain { domain, suffix });
+                }
+            }
+        }
+    }
+    // 方案 A: WinDivert 采用精准白名单业务分流，绝不可无差别劫持全网未知域名的 DNS，
+    // 以免导致普通浏览器与非代理软件被 Fake-IP 污染而产生全网断网。
+    let dns_all = false;
+    let dns_port = if !dns_domains.is_empty()
         && yaml["dns"]["enable"].as_bool() == Some(true)
     {
         yaml["dns"]["listen"]
