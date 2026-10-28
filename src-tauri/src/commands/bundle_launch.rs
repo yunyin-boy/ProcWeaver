@@ -67,6 +67,10 @@ fn application_status(running:&[Instance],port:u16,independent:bool)->(&'static 
             else{("capture_pending","独立 WinDivert 尚未运行，请在接入方式处查看错误或重试；未要求应用重启".into())};
     }
     #[cfg(windows)]
+    if independent && crate::process_capture::is_user_mode() {
+        return ("capture", format!("用户态强接管模式，发现 {} 个主实例；新连接由轻量 Hook 透明接管至业务包出口，无需为代理参数重启", running.len()));
+    }
+    #[cfg(windows)]
     if !independent && super::settings::get_general_settings().is_ok_and(|s|s.traffic_mode==crate::capture::windivert::plan::MODE) {
         return if crate::capture::windivert::session::stats().active {
             ("capture",format!("WinDivert 模式，发现 {} 个主实例；无需为代理参数重启，实际接管范围及新连接出口请查看连接记录",running.len()))
@@ -352,9 +356,20 @@ fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:O
     let capture=crate::process_capture::selected();
     if capture && !crate::process_capture::active(){return Err("独立 WinDivert 尚未运行，未启动应用".into());}
     #[cfg(windows)]
-    if !capture && super::settings::get_general_settings().is_ok_and(|s| s.traffic_mode == crate::capture::user_mode::MODE) {
+    let user_mode_active = if crate::edition::PROCESS || crate::process_capture::is_user_mode() {
+        crate::process_capture::is_user_mode()
+    } else {
+        super::settings::get_general_settings().is_ok_and(|s| s.traffic_mode == crate::capture::user_mode::MODE)
+    };
+
+    #[cfg(windows)]
+    if !capture && user_mode_active {
         let working_dir = if !directory.is_empty() { Some(Path::new(directory)) } else { exe.parent() };
-        let dns_port = super::dns_listener::last_port().unwrap_or(45053);
+        let dns_port = if crate::edition::PROCESS {
+            crate::external_proxy::dns_port_for_port(port).unwrap_or_else(|| super::dns_listener::last_port().unwrap_or(45053))
+        } else {
+            super::dns_listener::last_port().unwrap_or(45053)
+        };
 
         if is_chromium_or_electron(exe) {
             // B 路线：双保险混合模式（针对 Chromium / Electron 架构）
@@ -503,6 +518,12 @@ pub async fn launch_bundle_app(app:tauri::AppHandle, request:LaunchRequest, conf
         if crate::external_proxy::generation(&bundle.id).is_some() && crate::process_capture::selected() && !running.is_empty() {
             if !crate::process_capture::active(){return Err("独立 WinDivert 尚未运行，请查看接入方式的错误提示；未重启应用".into());}
             return Ok(LaunchOutcome{state:"reused".into(),message:"已检测到现有应用；独立 WinDivert 对其新连接按规则接管，无需添加代理参数或重启。实际出口请查看连接记录".into(),confirmation:None,entry,process_count:running.len()});
+        }
+        #[cfg(windows)]
+        if crate::external_proxy::generation(&bundle.id).is_some() && crate::process_capture::is_user_mode() && !running.is_empty() {
+            if running.iter().all(|p| proxy_matches(&p.args, bundle.port)) {
+                return Ok(LaunchOutcome{state:"reused".into(),message:"已有实例已接入本业务包入口；新网络连接与解析正由轻量 Hook 按照策略自动导向业务包出口".into(),confirmation:None,entry,process_count:running.len()});
+            }
         }
         #[cfg(windows)]
         if crate::external_proxy::generation(&bundle.id).is_none() && !running.is_empty() && super::settings::get_general_settings()?.traffic_mode==crate::capture::windivert::plan::MODE {

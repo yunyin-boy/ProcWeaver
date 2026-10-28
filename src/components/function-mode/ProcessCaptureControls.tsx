@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Zap, Shield, RefreshCw, AlertCircle, Check } from "lucide-react";
+import { Zap, Shield, RefreshCw, AlertCircle, Check, Sparkles } from "lucide-react";
 import type { ProcessCaptureState } from "../../services/processCaptureController";
 import type { ProcessAccessMode } from "../../types/functionMode";
 
@@ -86,6 +86,20 @@ export function ProcessCaptureControls({
             </button>
             <button
               type="button"
+              aria-pressed={mode === "user_mode"}
+              disabled={state.pending || !state.view}
+              onClick={() => onRequest("user_mode")}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer flex items-center space-x-1 select-none ${
+                mode === "user_mode"
+                  ? "bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 font-bold shadow-2xs"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+              }`}
+            >
+              <Sparkles className="w-3 h-3 text-emerald-500" />
+              <span>用户态 Hook</span>
+            </button>
+            <button
+              type="button"
               aria-pressed={mode === "windivert"}
               disabled={state.pending || !state.view || !state.view.supported}
               onClick={() => onRequest("windivert")}
@@ -122,10 +136,14 @@ export function ProcessCaptureControls({
               : !state.view
               ? "读取状态中…"
               : state.view.active
-              ? "驱动接管中"
+              ? mode === "windivert"
+                ? "驱动接管中"
+                : mode === "user_mode"
+                ? "Hook 注入就绪"
+                : "应用代理就绪"
               : mode === "windivert"
               ? "驱动未运行"
-              : "应用代理就绪"}
+              : "准备就绪"}
           </span>
         </div>
       </div>
@@ -195,14 +213,14 @@ export function ProcessCaptureControls({
             >
               <div className="flex items-center space-x-3">
                 <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-100 dark:border-indigo-900/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400 shrink-0">
-                  {state.requested === "windivert" ? <Shield className="w-5 h-5" /> : <Zap className="w-5 h-5" />}
+                  {state.requested === "windivert" ? <Shield className="w-5 h-5" /> : state.requested === "user_mode" ? <Sparkles className="w-5 h-5 text-emerald-500" /> : <Zap className="w-5 h-5" />}
                 </div>
                 <div>
                   <h2 id="capture-title" className="text-base font-bold text-slate-900 dark:text-white">
-                    {state.requested === "windivert" ? "启用独立 WinDivert 驱动" : "切换为纯应用层代理"}
+                    {state.requested === "windivert" ? "启用独立 WinDivert 驱动" : state.requested === "user_mode" ? "启用用户态 Hook 强接管" : "切换为纯应用层代理"}
                   </h2>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    {state.requested === "windivert" ? "免虚拟网卡 · 进程级数据包拦截" : "系统零侵入 · 极轻量免提权"}
+                    {state.requested === "windivert" ? "免虚拟网卡 · 进程级数据包拦截" : state.requested === "user_mode" ? "免驱动提权 · 透明 API 注入 · 零网络侵入" : "系统零侵入 · 极轻量免提权"}
                   </p>
                 </div>
               </div>
@@ -211,6 +229,8 @@ export function ProcessCaptureControls({
                 <p>
                   {state.requested === "windivert"
                     ? "将解压并加载随包过滤驱动，按业务包进程直接转发至配置的外部代理，无需运行 Mihomo。需 Windows 管理员授权（UAC）；可能与反作弊等内核过滤驱动冲突；仅影响新发起的连接。"
+                    : state.requested === "user_mode"
+                    ? "基于轻量用户态 Hook（pw_hook）透明重定向 Socket 与真实 DNS 解析，免装驱动、无需管理员提权。由业务包卡片启动的目标程序自动挂载，支持原生 Chromium 极速启动与子进程防泄漏锁定。"
                     : "将停止本程序的独立驱动接管，现有驱动转发的连接会断开。独立 HTTP/SOCKS5 入口继续运行，应用程序需通过代理参数或环境变量接入。"}
                 </p>
               </div>

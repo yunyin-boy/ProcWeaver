@@ -106,6 +106,8 @@ export function ProcessAccessBar({
         <p className="leading-relaxed min-w-0 flex-1">
           {s.capture.state.view?.mode === "windivert"
             ? "无需为代理参数重启已运行的目标；只接管新连接，实际出口请查看连接记录。"
+            : s.capture.state.view?.mode === "user_mode"
+            ? "由业务包卡片启动的应用自动透明挂载 Hook，免驱动且无需为代理参数重启。"
             : "应用需接入本包代理入口；发现进程不代表已接管。"}
           {capability.winDivertReason}。
         </p>

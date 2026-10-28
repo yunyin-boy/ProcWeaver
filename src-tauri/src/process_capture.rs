@@ -1,21 +1,19 @@
 //! Independent capture selection. Persisted separately from Mihomo traffic mode.
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Mutex,
-};
+use std::sync::Mutex;
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessMode {
     #[default]
     AppProxy,
+    UserMode,
     Windivert,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Config {
     mode: AccessMode,
 }
-static SELECTED: AtomicBool = AtomicBool::new(false);
+static CURRENT_MODE: Mutex<AccessMode> = Mutex::new(AccessMode::AppProxy);
 static ERROR: Mutex<Option<String>> = Mutex::new(None);
 #[cfg(windows)]
 static ENGINE: Mutex<Option<crate::capture::windivert::runtime::Engine>> = Mutex::new(None);
@@ -23,18 +21,30 @@ fn path() -> std::path::PathBuf {
     crate::storage::data_dir().join("config/process-capture.json")
 }
 pub(crate) fn initialize() {
+    let mut initial_mode = AccessMode::AppProxy;
     match std::fs::read(path()) {
         Ok(bytes) => match serde_json::from_slice::<Config>(&bytes) {
-            Ok(c) => SELECTED.store(c.mode == AccessMode::Windivert, Ordering::Release),
+            Ok(c) => initial_mode = c.mode,
             Err(_) => *ERROR.lock().unwrap() = Some("进程接入配置损坏，驱动未自动启动".into()),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => *ERROR.lock().unwrap() = Some("进程接入配置读取失败".into()),
     }
-    crate::external_proxy::diagnostics::emit("capture.initialized","info",serde_json::json!({"windivertSelected":SELECTED.load(Ordering::Acquire),"error":ERROR.lock().unwrap_or_else(|e|e.into_inner()).clone()}));
+    *CURRENT_MODE.lock().unwrap_or_else(|e| e.into_inner()) = initial_mode;
+    crate::external_proxy::diagnostics::emit("capture.initialized","info",serde_json::json!({
+        "mode": initial_mode,
+        "windivertSelected": initial_mode == AccessMode::Windivert,
+        "error": ERROR.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }));
+}
+pub(crate) fn current_mode() -> AccessMode {
+    *CURRENT_MODE.lock().unwrap_or_else(|e| e.into_inner())
 }
 pub(crate) fn selected() -> bool {
-    SELECTED.load(Ordering::Acquire) && !crate::function_mode::core_features_enabled()
+    current_mode() == AccessMode::Windivert && !crate::function_mode::core_features_enabled()
+}
+pub(crate) fn is_user_mode() -> bool {
+    current_mode() == AccessMode::UserMode && !crate::function_mode::core_features_enabled()
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,15 +71,17 @@ pub fn get_process_capture() -> View {
         .unwrap_or_default();
     #[cfg(not(windows))]
     let stats = Stats::default();
+    let current_mode = current_mode();
+    let (active, supported) = match current_mode {
+        AccessMode::Windivert => (stats.active, cfg!(all(windows, target_arch = "x86_64"))),
+        AccessMode::UserMode => (true, cfg!(windows)),
+        AccessMode::AppProxy => (true, true),
+    };
     View {
-        mode: if SELECTED.load(Ordering::Acquire) {
-            AccessMode::Windivert
-        } else {
-            AccessMode::AppProxy
-        },
-        active: stats.active,
+        mode: current_mode,
+        active,
         admin: crate::commands::system::check_is_admin(),
-        supported: cfg!(all(windows, target_arch = "x86_64")),
+        supported,
         error: ERROR.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp: stats.tcp,
         udp: stats.udp,
@@ -203,11 +215,7 @@ pub async fn set_process_capture(
     if crate::function_mode::core_features_enabled() {
         return Err("请先切换为进程代理功能".into());
     }
-    let previous = if SELECTED.load(Ordering::Acquire) {
-        AccessMode::Windivert
-    } else {
-        AccessMode::AppProxy
-    };
+    let previous = current_mode();
     validate(mode, expected_mode, previous, confirmed)?;
     crate::external_proxy::diagnostics::emit("capture.mode_requested","info",serde_json::json!({"previous":previous,"requested":mode}));
     if mode == AccessMode::Windivert {
@@ -224,13 +232,13 @@ pub async fn set_process_capture(
         &path(),
         &serde_json::to_vec_pretty(&Config { mode }).map_err(|_| "接入方式编码失败")?,
     ) {
-        if previous == AccessMode::AppProxy {
+        if previous != AccessMode::Windivert {
             let _ = tokio::task::spawn_blocking(stop_blocking).await;
         }
         return Err(format!("接入方式保存失败，保留原选择：{error}"));
     }
-    SELECTED.store(mode == AccessMode::Windivert, Ordering::Release);
-    if mode == AccessMode::AppProxy {
+    *CURRENT_MODE.lock().unwrap_or_else(|e| e.into_inner()) = mode;
+    if mode != AccessMode::Windivert {
         let _ = tokio::task::spawn_blocking(stop_blocking).await;
     }
     *ERROR.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -264,6 +272,13 @@ mod tests {
         )
         .is_err());
         assert!(validate(
+            AccessMode::UserMode,
+            AccessMode::AppProxy,
+            AccessMode::AppProxy,
+            false
+        )
+        .is_err());
+        assert!(validate(
             AccessMode::AppProxy,
             AccessMode::AppProxy,
             AccessMode::Windivert,
@@ -274,6 +289,13 @@ mod tests {
             AccessMode::Windivert,
             AccessMode::Windivert,
             AccessMode::Windivert,
+            true
+        )
+        .is_ok());
+        assert!(validate(
+            AccessMode::UserMode,
+            AccessMode::UserMode,
+            AccessMode::UserMode,
             true
         )
         .is_ok());

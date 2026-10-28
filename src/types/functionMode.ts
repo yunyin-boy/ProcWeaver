@@ -1,5 +1,5 @@
 export type FunctionMode = "full" | "process_proxy";
-export type ProcessAccessMode = "app_proxy" | "windivert";
+export type ProcessAccessMode = "app_proxy" | "user_mode" | "windivert";
 export interface ProcessCaptureView {
   mode: ProcessAccessMode; active: boolean; supported: boolean; admin: boolean; error: string | null;
   tcp: number; udp: number; dns: number; unclassified: number; failures: number;
