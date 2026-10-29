@@ -135,7 +135,7 @@ fn native_bundle_outlet_is_independent_of_public_selection() {
         let process_position = rules.iter().position(|r| r.as_str().is_some_and(|r| r.starts_with("PROCESS-NAME,proc_weaver_lib-") && r.ends_with(",HK-fixture"))).unwrap();
         let domain_position = rules.iter().position(|r| r.as_str() == Some("DOMAIN-SUFFIX,example.net,PROXY")).unwrap();
         assert!(process_position < domain_position, "{priority}");
-        assert_eq!(yaml["find-process-mode"].as_str(), Some("always"));
+        assert!(matches!(yaml["find-process-mode"].as_str(), Some("strict" | "always")));
         std::fs::write(dir.join("config.yaml"), prepared.replace("log-level: silent", "log-level: debug")).unwrap();
     }
     let missing: Value = serde_yaml::from_str(&prepare(&raw, &c, "different-subscription").unwrap()).unwrap();
@@ -191,15 +191,17 @@ fn composer_sub_rules_sandbox_and_direct_prioritization() {
     let subrules = &value["sub-rules"];
     assert!(subrules.is_mapping());
 
-    // 测试 prioritize_direct_rules
-    let mixed_raw = "rules:\n- DOMAIN,proxy.com,PROXY\n- DOMAIN,direct1.com,DIRECT\n- PROCESS-NAME,test.exe,PROXY\n- DOMAIN-SUFFIX,direct2.com,DIRECT\n";
+    // 测试 prioritize_direct_rules 基础与复合规则
+    let mixed_raw = "rules:\n- DOMAIN,proxy.com,PROXY\n- DOMAIN,direct1.com,DIRECT\n- PROCESS-NAME,test.exe,PROXY\n- AND,((NETWORK,TCP),(DOMAIN,direct-compound.com)),DIRECT\n- DOMAIN-SUFFIX,direct2.com,DIRECT\n- AND,((NETWORK,UDP),(DOMAIN,direct3.com)),DIRECT,no-resolve\n";
     let prioritized = composer::prioritize_direct_rules(mixed_raw).unwrap();
     let p_val: Value = serde_yaml::from_str(&prioritized).unwrap();
     let p_rules: Vec<&str> = p_val["rules"].as_sequence().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
     assert_eq!(p_rules[0], "DOMAIN,direct1.com,DIRECT");
-    assert_eq!(p_rules[1], "DOMAIN-SUFFIX,direct2.com,DIRECT");
-    assert_eq!(p_rules[2], "DOMAIN,proxy.com,PROXY");
-    assert_eq!(p_rules[3], "PROCESS-NAME,test.exe,PROXY");
+    assert_eq!(p_rules[1], "AND,((NETWORK,TCP),(DOMAIN,direct-compound.com)),DIRECT");
+    assert_eq!(p_rules[2], "DOMAIN-SUFFIX,direct2.com,DIRECT");
+    assert_eq!(p_rules[3], "AND,((NETWORK,UDP),(DOMAIN,direct3.com)),DIRECT,no-resolve");
+    assert_eq!(p_rules[4], "DOMAIN,proxy.com,PROXY");
+    assert_eq!(p_rules[5], "PROCESS-NAME,test.exe,PROXY");
 }
 #[test]
 fn validation_rejects_injection_duplicates_and_dns_credentials() {

@@ -43,7 +43,10 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
     let available = targets(raw, profile_id)?;
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
     if config.process_enabled {
-        yaml["find-process-mode"] = "always".into();
+        // 尊重外部已有进程查找模式设定（如 strict / always）；未设定或为 off 时默认采用 strict 按需查找，避免全局遍历连接表
+        if yaml.get("find-process-mode").is_none() || yaml["find-process-mode"].as_str() == Some("off") {
+            yaml["find-process-mode"] = "strict".into();
+        }
         let mut prefix = Vec::new();
         for rule in config.process_rules.iter().filter(|r| r.enabled).chain(derived.iter()) {
             let kind = if rule.match_kind == "path" { "PROCESS-PATH" } else { "PROCESS-NAME" };
@@ -75,7 +78,6 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
                     Value::from("GEOSITE,cn,DIRECT"),
                     Value::from("GEOIP,cn,DIRECT"),
                     Value::from(format!("MATCH,{dest}")),
-                    Value::from("MATCH,REJECT"),
                 ];
                 subrules.insert(Value::from(sub_name.clone()), Value::Sequence(sub_rules_list));
                 prefix.push(Value::from(format!("SUB-RULE,({process}),{sub_name}")));
@@ -289,8 +291,11 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
         .or_insert(Value::Sequence(Vec::new()));
     if let Some(rules) = rules_entry.as_sequence_mut() {
         let mut to_insert = Vec::new();
+        // 先构建现有规则的字符串集合，避免逐项 O(N) 线性搜索，整体降至 O(N+21)。
+        let existing: std::collections::HashSet<&str> =
+            rules.iter().filter_map(|r| r.as_str()).collect();
         for item in bt_pt_rules {
-            if !rules.iter().any(|r| r.as_str() == Some(item)) {
+            if !existing.contains(item) {
                 to_insert.push(Value::String(item.to_string()));
             }
         }
@@ -310,9 +315,10 @@ pub fn prioritize_direct_rules(raw: &str) -> Result<String, String> {
         let mut directs = Vec::new();
         let mut others = Vec::new();
         for r in rules.drain(..) {
+            // 直接比较后缀，兼容 AND,(...),DIRECT 等复合规则格式，
+            // 避免 split(',') 在嵌套括号规则中 parts[2] 位置错判。
             let is_direct = r.as_str().map_or(false, |s| {
-                let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
-                parts.len() >= 3 && parts[2].eq_ignore_ascii_case("DIRECT")
+                s.ends_with(",DIRECT") || s.ends_with(",DIRECT,no-resolve")
             });
             if is_direct {
                 directs.push(r);

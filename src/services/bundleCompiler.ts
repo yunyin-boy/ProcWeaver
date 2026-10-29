@@ -105,9 +105,14 @@ export function compileBundlesToDnsRules(instances: BundleLocalInstance[]): DnsR
       if (duplicate) { owners.get(duplicate.id)!.push(instance); continue; }
       const id = `bundle-dns-${instance.instanceId}-${domainKind}-${domain}`;
       owners.set(id, [instance]);
-      // 业务 DNS 随所选出口出站；使用 IP DoH 避免解析器主机名的额外引导查询。
+      // 根据 dnsMode 选择解析器：
+      //   safe_pure / fake_ip：使用 IP 直连 DoH（避免解析器主机名的额外引导查询），流量随出口代理路由；
+      //   system_native：跳过 DNS 覆盖，由系统/核心默认解析器处理，不注入业务 DNS 规则。
+      const dnsMode = instance.definition.policy?.dnsMode ?? instance.policy?.dnsMode ?? "safe_pure";
+      if (dnsMode === "system_native") continue;
+      const resolverUrl = "https://1.1.1.1/dns-query";
       rules.push({ id, enabled: true,
-        domainKind, domain, resolverUrl: "https://1.1.1.1/dns-query", target });
+        domainKind, domain, resolverUrl, target });
     }
   }
   return rules;

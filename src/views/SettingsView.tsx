@@ -385,9 +385,9 @@ export const SettingsView: React.FC = () => {
                 { title: "Geo 低内存", description: "使用节省内存的 Geo 数据加载器；关闭后使用标准加载器。", value: geoLowMemory, update: setGeoLowMemory },
                 {
                   title: "查找进程",
-                  description: "解析发起网络连接的应用名称与路径；开启后可配合进程分流，默认跟随进程分流状态自动启用。",
-                  value: findProcessMode === "always",
-                  update: (checked: boolean) => setFindProcessMode(checked ? "always" : "off"),
+                  description: "解析发起网络连接的应用名称与路径；默认以 strict 智能按需模式运行，大幅降低 CPU 开销并保障进程分流。",
+                  value: findProcessMode !== "off",
+                  update: (checked: boolean) => setFindProcessMode(checked ? "strict" : "off"),
                 },
                 {
                   title: "追加系统 DNS",

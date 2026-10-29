@@ -354,10 +354,11 @@ fn prepare_with_runtime(raw: &str, settings: &GeneralSettings, os: &str, dns_set
     map.insert("ipv6".into(), settings.ipv6.into());
     let find_proc = match settings.find_process_mode.as_str() {
         "always" => "always",
+        "strict" => "strict",
         "off" => "off",
         _ => {
             if crate::routing_overrides::read().map(|r| r.effective().process_enabled).unwrap_or(false) {
-                "always"
+                "strict"
             } else {
                 "off"
             }

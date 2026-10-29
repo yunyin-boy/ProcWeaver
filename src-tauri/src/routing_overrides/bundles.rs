@@ -112,7 +112,6 @@ pub fn add_listeners(yaml: &mut Value, config: &Overrides, prefix: &Value, fallb
                 else { rules.extend_from_slice(fallback); }
             } else {
                 rules.push(format!("MATCH,{}", group(&bundle.id, "main")).into());
-                rules.push("MATCH,REJECT".into());
             }
         } else { rules.extend_from_slice(fallback); }
         let subrules = yaml["sub-rules"].as_mapping_mut().ok_or("sub-rules 须为对象")?;

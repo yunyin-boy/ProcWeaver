@@ -73,6 +73,9 @@ function savedExternalInstances(instances: BundleLocalInstance[], view?: Externa
   });
 }
 
+// 以 RoutingView 对象引用为键缓存编译结果；View 引用更新时自动失效，避免多包卡片同帧重复编译。
+const compiledCache = new WeakMap<object, Map<string, { expected: ReturnType<typeof compileBundlesToProcessRules>; dns: ReturnType<typeof compileBundlesToDnsRules>; routes: ReturnType<typeof compileBundleRoutes> }>>();
+
 export function getBundleStatus(instance: BundleLocalInstance, state: BundleState): BundleStatus {
   const rules = state.view?.config.processRules.filter(r => r.id.startsWith(`bundle-${instance.instanceId}-`)) || [];
   const previousTargets = [...new Set(rules.filter(r => r.enabled && r.target).map(r => r.target!.name))];
@@ -111,11 +114,20 @@ export function getBundleStatus(instance: BundleLocalInstance, state: BundleStat
     if (state.view.unavailableRules?.some(id => rules.some(r => r.id === id) || id === `bundle:${instance.instanceId}` || id.startsWith(`bundle-dns-${instance.instanceId}-`))) {
       return result("error", "原出口不可用或已选择稍后换绑；绑定信息保留，匹配流量暂时阻断，请选择可用出口重新绑定");
     }
-    const resolved = resolveBundleTargets([instance], state.view.targets, state.view.preservedTargets);
-    const expected = compileBundlesToProcessRules(resolved);
-    const dns = compileBundlesToDnsRules(resolved);
+    // 同一 view 引用下按包 ID 缓存编译结果，避免多卡片同帧重复编译。
+    let viewCache = compiledCache.get(state.view);
+    if (!viewCache) { viewCache = new Map(); compiledCache.set(state.view, viewCache); }
+    if (!viewCache.has(instance.instanceId)) {
+      const resolved = resolveBundleTargets([instance], state.view.targets, state.view.preservedTargets);
+      viewCache.set(instance.instanceId, {
+        expected: compileBundlesToProcessRules(resolved),
+        dns: compileBundlesToDnsRules(resolved),
+        routes: compileBundleRoutes(resolved),
+      });
+    }
+    const { expected, dns, routes } = viewCache.get(instance.instanceId)!;
     const config = state.view.config;
-    if (routeSignature(config.bundles?.filter(b => b.id === instance.instanceId)) !== routeSignature(compileBundleRoutes(resolved)) ||
+    if (routeSignature(config.bundles?.filter(b => b.id === instance.instanceId)) !== routeSignature(routes) ||
       ruleSignature(rules) !== ruleSignature(expected) ||
       (dns.length > 0 && dns.some(r => !config.dnsRules.some(actual =>
         ruleSignature([{ ...actual, id: r.id }]) === ruleSignature([r]))))) {
