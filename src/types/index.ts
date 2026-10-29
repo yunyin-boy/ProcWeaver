@@ -89,6 +89,8 @@ export interface ProxyGroup {
   type: string;
   now: string;
   all: string[];
+  hidden?: boolean;
+  icon?: string;
 }
 
 // 规则条目

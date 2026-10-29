@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ProxyGroup, ProxyItem, IpHealthInfo, ProfileItem } from "../types";
 import { SmartGroupRule } from "../types/smartGroup";
-import { fetchProxies, fetchMihomoConfig, switchProxy, testDelay, getPreferredSpeedTestUrl } from "../api/mihomo";
+import { fetchProxies, fetchMihomoConfig, switchProxy, switchPublicNode, testDelay, getPreferredSpeedTestUrl } from "../api/mihomo";
 import { mobileSelectionGroup, selectedLeaf, type MobileCoreMode } from "../utils/mobileNodeSelection";
 import { logInfo, logWarn, logError } from "../api/logs";
 import {
@@ -411,8 +411,10 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
   // 当前激活使用中的主节点名称
   const activeNodeName = useMemo(() => {
     if (mobile) return selectedLeaf(groups, mobileSelectionGroup(groups, coreMode, selectionGroup));
-    const mainGroup = groups.find((g) => g.name === "PROXY" || g.name === "GLOBAL") || groups[0];
-    return mainGroup?.now || "";
+    const publicGroup = groups.find(
+      (g) => !g.hidden && !g.name.startsWith("PW-") && (g.name === "PROXY" || g.name === "GLOBAL" || g.name.includes("节点选择"))
+    ) || groups.find((g) => !g.hidden && !g.name.startsWith("PW-"));
+    return publicGroup?.now || "";
   }, [groups, mobile, coreMode, selectionGroup]);
 
   // 全量测速
@@ -695,60 +697,27 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
       }
       return;
     }
+    if (switchingNode.current) return;
+    switchingNode.current = true;
+    setSwitchingNodeName(nodeName);
     try {
-      const targetGroups = groups.filter(
-        (g) =>
-          g.name === "PROXY" ||
-          g.name === "GLOBAL" ||
-          ((g.type?.toLowerCase() === "selector" || g.type?.toLowerCase() === "select") &&
-            g.all?.includes(nodeName))
-      );
-
-      let hasSuccess = false;
-      const failedGroups: string[] = [];
-
-      if (targetGroups.length > 0) {
-        const results = await Promise.allSettled(
-          targetGroups.map((g) => switchProxy(g.name, nodeName))
-        );
-        results.forEach((res, idx) => {
-          if (res.status === "fulfilled" && res.value) {
-            hasSuccess = true;
-          } else {
-            failedGroups.push(targetGroups[idx].name);
-          }
-        });
-      } else if (groups[0]) {
-        try {
-          const ok = await switchProxy(groups[0].name, nodeName);
-          if (ok) hasSuccess = true;
-        } catch {
-          failedGroups.push(groups[0].name);
-        }
-      }
-
-      if (!hasSuccess) {
-        alert(`切换节点失败：核心拒绝将出口切换为 [${nodeName}]。请检查核心运行状态。`);
+      const res = await switchPublicNode(nodeName);
+      if (!res.success) {
+        alert(`切换公共出口失败：${res.message || "核心拒绝切换"}`);
         return;
-      }
-
-      if (failedGroups.length > 0) {
-        console.warn(`部分策略组未切换成功: ${failedGroups.join(", ")}`);
       }
 
       try {
         localStorage.setItem("netbox_active_node_name", nodeName);
       } catch {}
 
-      window.dispatchEvent(
-        new CustomEvent("netbox-active-node-changed", { detail: { nodeName } })
-      );
-      window.dispatchEvent(new CustomEvent("netbox-route-changed"));
-
-      loadData();
+      await loadData();
     } catch (err: any) {
-      console.error("切换节点失败:", err);
-      alert(`切换节点异常: ${err?.message || err}`);
+      console.error("切换公共出口失败:", err);
+      alert(`切换公共出口异常: ${err?.message || err}`);
+    } finally {
+      switchingNode.current = false;
+      setSwitchingNodeName(null);
     }
   };
 

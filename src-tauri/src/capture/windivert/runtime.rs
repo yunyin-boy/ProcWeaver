@@ -549,6 +549,17 @@ fn network(s: Arc<Shared>) {
                     continue;
                 }
             }
+            if is_fake_ip(flow.destination.ip()) {
+                // 严禁将未知归属的 Fake-IP 数据包写入 bypass 并裸投物理网卡！
+                // 物理网卡与外部网关无法路由 198.18.0.0/15，若写入 bypass 并放行会导致客户端 TCP 握手假死并触发断网；
+                // 正确做法：直接丢弃此包（Drop，不调用 send，不插入 bypass），递增失败与未知计数。
+                // 客户端协议栈随后重传 SYN，为系统连接表与 WFP 异步事件反查争取窗口期。
+                s.failures.fetch_add(1, Ordering::Relaxed);
+                if owner.is_none() {
+                    s.unknown.fetch_add(1, Ordering::Relaxed);
+                }
+                continue;
+            }
             if owner.is_none() {
                 s.unknown.fetch_add(1, Ordering::Relaxed);
             }

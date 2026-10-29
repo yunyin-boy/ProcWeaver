@@ -52,6 +52,8 @@ export async function fetchProxies(): Promise<{
                 type: val.type,
                 now: val.now,
                 all: val.all,
+                hidden: Boolean(val.hidden),
+                icon: val.icon,
               });
             }
             proxies[name] = {
@@ -77,6 +79,32 @@ export async function fetchProxies(): Promise<{
   return {
     groups: [],
     proxies: {},
+  };
+}
+
+export interface SwitchPublicNodeResult {
+  success: boolean;
+  switched_groups: string[];
+  protected_bundle_groups: string[];
+  closed_connections_count: number;
+  message: string;
+}
+
+export async function switchPublicNode(nodeName: string): Promise<SwitchPublicNodeResult> {
+  if (isTauri()) {
+    const res = await invokeTauri<SwitchPublicNodeResult>("switch_public_node", {
+      node: nodeName,
+    });
+    window.dispatchEvent(new CustomEvent("netbox-active-node-changed", { detail: { nodeName } }));
+    window.dispatchEvent(new Event("netbox-route-changed"));
+    return res;
+  }
+  return {
+    success: true,
+    switched_groups: ["PROXY"],
+    protected_bundle_groups: [],
+    closed_connections_count: 0,
+    message: "预览模式已模拟切换公共节点",
   };
 }
 

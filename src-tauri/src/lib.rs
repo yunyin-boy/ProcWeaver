@@ -221,6 +221,7 @@ pub fn run() {
             commands::profile::add_external_rule_provider,
             commands::profile::remove_external_rule_provider,
             commands::mihomo_api::get_mihomo_proxies,
+            commands::mihomo_api::switch_public_node,
             commands::mihomo_api::switch_mihomo_proxy,
             commands::mihomo_api::test_mihomo_delay,
             commands::mihomo_api::get_mihomo_rules,
