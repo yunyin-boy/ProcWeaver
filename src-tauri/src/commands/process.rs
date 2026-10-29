@@ -158,7 +158,6 @@ pub fn get_cpu_info() -> CpuInfo {
 /// UI queries only observe. Cleanup and route reconciliation belong to the background lifecycle.
 #[tauri::command]
 pub async fn get_core_status(state: tauri::State<'_, CoreStateMutex>) -> Result<CoreStatus, String> {
-    let _lifecycle = LIFECYCLE.lock().await;
     read_core_status(&state)
 }
 

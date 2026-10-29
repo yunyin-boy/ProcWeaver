@@ -143,7 +143,7 @@ impl Engine {
         let default_filter = if !external && plan.targets.is_empty() && plan.instances.is_empty() && !plan.has_dns() {
             "false"
         } else {
-            "outbound and (tcp or udp)"
+            "outbound and !loopback and (tcp or udp)"
         };
         let filter_text = filter
             .unwrap_or(default_filter)

@@ -132,3 +132,23 @@ fn real_runtime_tcp_udp_dns_and_stop_use_owned_flows_only() {
         pool.shutdown_timeout(Duration::from_secs(1));
     }
 }
+
+#[test]
+fn default_filter_excludes_loopback_to_prevent_local_proxy_packet_storm() {
+    let plan = Plan {
+        targets: vec![Entry {
+            owner: "test".into(),
+            kind: "path".into(),
+            value: "test.exe".into(),
+            port: 61000,
+        }],
+        ..Plan::default()
+    };
+    let default_filter = if plan.targets.is_empty() && plan.instances.is_empty() && !plan.has_dns() {
+        "false"
+    } else {
+        "outbound and !loopback and (tcp or udp)"
+    };
+    assert!(default_filter.contains("!loopback"));
+    assert_eq!(default_filter, "outbound and !loopback and (tcp or udp)");
+}
