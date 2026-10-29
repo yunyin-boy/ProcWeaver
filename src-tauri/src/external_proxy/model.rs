@@ -174,6 +174,7 @@ mod tests {
             block_ipv6: None,
             block_udp: None,
             sniff_sni: None,
+            policy: None,
         };
         // 继承全局
         assert!(bundle.effective_block_ipv6(&global));

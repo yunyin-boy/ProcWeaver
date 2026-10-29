@@ -47,6 +47,7 @@ impl Fixture {
             block_ipv6: Some(false),
             block_udp: Some(false),
             sniff_sni: Some(false),
+            policy: None,
         }];
         *runtime.config.write().unwrap() = config;
         Self {
