@@ -54,7 +54,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
   {
     packageId: "openai-chatgpt",
     packageName: "OpenAI / ChatGPT 生产力套件",
-    packageVersion: "v1.4",
+    packageVersion: "v1.5",
     category: "dev",
     mode: "strict",
     icon: "🧠",
@@ -67,12 +67,12 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       proxyUdp: false,
       proxySubprocesses: true,
       bypassLan: true,
-      disallowProxyArgs: false,
       dnsMode: "safe_pure",
       portFilterMode: "all",
       customPorts: "",
       targetFilterMode: "all",
       targetRules: [],
+      disallowProxyArgs: false,
     },
     processes: [
       { exe: "ChatGPT.exe", role: "main", description: "桌面主客户端" },
@@ -88,6 +88,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       "openai.com",
       "chatgpt.com",
       "chat.com",
+      "sora.com",
       "oaistatic.com",
       "oaiusercontent.com",
       "auth0.openai.com",
@@ -96,7 +97,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
   {
     packageId: "google-antigravity",
     packageName: "Google Antigravity 2.0 研发套件",
-    packageVersion: "v1.1",
+    packageVersion: "v1.2",
     category: "dev",
     mode: "strict",
     icon: "🌌",
@@ -109,12 +110,12 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       proxyUdp: false,
       proxySubprocesses: true,
       bypassLan: true,
-      disallowProxyArgs: true,
       dnsMode: "safe_pure",
       portFilterMode: "all",
       customPorts: "",
       targetFilterMode: "all",
       targetRules: [],
+      disallowProxyArgs: true,
     },
     processes: [
       { exe: "Antigravity.exe", role: "main", description: "主集成开发环境与核心进程" },
@@ -143,6 +144,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       "aistudio.google.com",
       "generativelanguage.googleapis.com",
       "cloudaicompanion.googleapis.com",
+      "googleapis.com",
     ],
   },
 ];
@@ -153,6 +155,27 @@ export function getBundleInstances(): BundleLocalInstance[] {
   const upgradePreset = (instances: BundleLocalInstance[]): { list: BundleLocalInstance[]; changed: boolean } => {
     let changed = false;
     const list = instances.map(item => {
+      if (item.definition?.packageId === "openai-chatgpt") {
+        const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
+        let itemChanged = false;
+        if (!domains.some(d => d.toLowerCase() === "sora.com")) {
+          domains.push("sora.com");
+          itemChanged = true;
+        }
+        if (item.definition.packageVersion !== "v1.5") {
+          itemChanged = true;
+        }
+        if (!itemChanged) return item;
+        changed = true;
+        return {
+          ...item,
+          definition: {
+            ...item.definition,
+            packageVersion: "v1.5",
+            domains,
+          },
+        };
+      }
       if (item.definition?.packageId !== "google-antigravity") return item;
       const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
       const additionalExes = Array.isArray(item.definition.additionalExes) ? [...item.definition.additionalExes] : [];
@@ -183,6 +206,9 @@ export function getBundleInstances(): BundleLocalInstance[] {
         policy.disallowProxyArgs = true;
         itemChanged = true;
       }
+      if (item.definition.packageVersion !== "v1.2") {
+        itemChanged = true;
+      }
       if (!itemChanged) return item;
       changed = true;
       return {
@@ -190,6 +216,7 @@ export function getBundleInstances(): BundleLocalInstance[] {
         policy: item.policy && item.policy.disallowProxyArgs === undefined ? { ...item.policy, disallowProxyArgs: true } : item.policy,
         definition: {
           ...item.definition,
+          packageVersion: "v1.2",
           domains,
           additionalExes,
           processes,
