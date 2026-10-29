@@ -17,6 +17,7 @@ function policySignature(policy?: BundlePolicy | null): [string, any][] | null {
     targetFilterMode: policy.targetFilterMode ?? "all",
     targetRules: Array.isArray(policy.targetRules) ? [...policy.targetRules].sort() : [],
     disallowProxyArgs: policy.disallowProxyArgs ?? false,
+    staleConnectionStrategy: policy.staleConnectionStrategy ?? "prompt",
   };
   return Object.entries(p).sort(([a], [b]) => a.localeCompare(b));
 }

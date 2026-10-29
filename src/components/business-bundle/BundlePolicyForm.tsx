@@ -214,6 +214,43 @@ export const BundlePolicyForm: React.FC<Props> = ({
               </div>
             )}
           </div>
+
+          {/* 存量旧连接热接管策略 (TCP Hot-Reset) */}
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60 space-y-2">
+            <div className="space-y-0.5">
+              <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <span>存量旧长连接接管策略 (TCP Hot-Reset)</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                  免重启自愈
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                开启分流或切换出口时处理已建立的长连接。利用 Windows 协议栈热重置机制，迫使应用 0.1 秒内自动重连切入代理
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              {[
+                { value: "prompt", label: "智能询问", desc: "检测到旧连接时弹窗" },
+                { value: "auto_reset", label: "自动热刷新", desc: "0ms 无感秒切免重启" },
+                { value: "ignore", label: "仅接管新连接", desc: "保持旧连接直连" },
+              ].map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onChange({ ...policy, staleConnectionStrategy: opt.value as any })}
+                  className={`p-2 rounded-lg text-left border transition-all ${
+                    (policy.staleConnectionStrategy || "prompt") === opt.value
+                      ? "bg-indigo-50 dark:bg-indigo-950/40 border-indigo-500 text-indigo-900 dark:text-indigo-200 font-medium ring-1 ring-indigo-500"
+                      : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="text-xs font-bold">{opt.label}</div>
+                  <div className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

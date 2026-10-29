@@ -36,6 +36,7 @@ export type BundleWatcherMode = "auto" | "hot_swap" | "notify" | "disabled";
 export type BundleDnsMode = "safe_pure" | "fake_ip" | "system_native";
 export type BundlePortFilterMode = "all" | "web_only" | "custom";
 export type BundleTargetFilterMode = "all" | "include" | "exclude";
+export type BundleStaleConnectionStrategy = "prompt" | "auto_reset" | "ignore";
 
 export interface BundlePolicy {
   proxyTcp: boolean;               // 代理 TCP 连接 (默认 true)
@@ -50,6 +51,7 @@ export interface BundlePolicy {
   targetFilterMode: BundleTargetFilterMode; // 目标域名/IP 过滤模式 (默认 "all")
   targetRules?: string[];          // 目标过滤规则 (域名/IP)
   disallowProxyArgs?: boolean;     // 禁用命令行代理参数 (默认 false，适用于 Google Gemini 等安全自检排斥 --proxy-server 的应用)
+  staleConnectionStrategy?: BundleStaleConnectionStrategy; // 存量旧长连接接管策略 (默认 "prompt")
 }
 
 export function defaultBundlePolicy(): BundlePolicy {
@@ -66,6 +68,7 @@ export function defaultBundlePolicy(): BundlePolicy {
     targetFilterMode: "all",
     targetRules: [],
     disallowProxyArgs: false,
+    staleConnectionStrategy: "prompt",
   };
 }
 
@@ -85,6 +88,7 @@ export function normalizeBundlePolicy(policy?: Partial<BundlePolicy> | null): Bu
     targetFilterMode: policy.targetFilterMode ?? defaults.targetFilterMode,
     targetRules: Array.isArray(policy.targetRules) ? policy.targetRules : defaults.targetRules,
     disallowProxyArgs: policy.disallowProxyArgs ?? defaults.disallowProxyArgs,
+    staleConnectionStrategy: policy.staleConnectionStrategy ?? defaults.staleConnectionStrategy,
   };
 }
 

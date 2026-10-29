@@ -1,5 +1,6 @@
 //! Windows 纯应用层进程路由与状态管理。
 pub mod smart_arbiter;
+pub mod tcp_reset;
 pub mod user_mode;
 #[cfg(windows)]
 pub mod windivert;

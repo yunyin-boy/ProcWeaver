@@ -24,14 +24,16 @@ import { ImportBundleModal } from "../components/business-bundle/ImportBundleMod
 import { ExportBundleModal } from "../components/business-bundle/ExportBundleModal";
 import { EditBundleModal } from "../components/business-bundle/EditBundleModal";
 import { BundlePolicyModal } from "../components/business-bundle/BundlePolicyModal";
+import { StaleConnectionsModal, type StaleTcpConnectionItem } from "../components/business-bundle/StaleConnectionsModal";
+import { inspectBundleStaleConnections, resetBundleStaleConnections } from "../api/bundleStaleConnections";
 import { BundleStudio } from "../components/business-bundle/BundleStudio";
 import { RepositoryCenter } from "../components/business-bundle/RepositoryCenter";
 import { useBundleRepositories } from "../hooks/useBundleRepositories";
 import { DEFAULT_REPOSITORY, repositoryPage } from "../services/bundleRepositories";
 import type { RepositoryPackage } from "../types/bundleRepository";
-import type { BundlePolicy } from "../types/businessBundle";
+import { type BundlePolicy, defaultBundlePolicy } from "../types/businessBundle";
 import { usePlatform } from "../context/PlatformContext";
-import { bundleExes, processKey } from "../utils/bundlePlatform";
+import { bundleExes, processKey, bundleProcesses } from "../utils/bundlePlatform";
 import { toggleDnsGuard, getDnsGuardInfo, isTauri } from "../api";
 import { dismissBundleDnsGuard, resetBundleDnsGuardDismissal } from "../services/bundleDnsGuard";
 import {
@@ -68,6 +70,10 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   const [exportTarget, setExportTarget] = useState<BundleLocalInstance | null>(null);
   const [editingTarget, setEditingTarget] = useState<BundleLocalInstance | null>(null);
   const [policyTarget, setPolicyTarget] = useState<BundleLocalInstance | null>(null);
+  const [stalePromptTarget, setStalePromptTarget] = useState<{
+    instance: BundleLocalInstance;
+    connections: StaleTcpConnectionItem[];
+  } | null>(null);
   const [isImportOpen, setIsImportOpen] = useState<boolean>(false);
   const [isModeGuideOpen, setIsModeGuideOpen] = useState<boolean>(false);
   const [currentTrafficMode, setCurrentTrafficMode] = useState<string>("app_proxy");
@@ -121,6 +127,49 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     });
   }, []);
 
+  // 存量旧长连接检测
+  const checkStaleConnectionsForInstance = async (inst: BundleLocalInstance) => {
+    if (platform.os !== "windows") return;
+    const exes = bundleProcesses(inst.definition, "windows").map(p => p.exe).filter(Boolean);
+    if (exes.length === 0) return;
+    const bundlePort = inst.backend === "external"
+      ? (bundleState.external?.states.find(s => s.id === inst.instanceId)?.port || 0)
+      : (bundleState.view?.config.bundles?.find(b => b.id === inst.instanceId)?.port || 0);
+    const staleConns = await inspectBundleStaleConnections(inst.instanceId, exes, bundlePort);
+    if (staleConns.length > 0) {
+      const strategy = inst.policy?.staleConnectionStrategy || inst.definition.policy?.staleConnectionStrategy || "prompt";
+      if (strategy === "auto_reset") {
+        await resetBundleStaleConnections(staleConns);
+        showToast(`⚡ 出口已更新，并自动微秒热刷新了 ${staleConns.length} 条存量长连接！`);
+      } else if (strategy === "prompt") {
+        setStalePromptTarget({ instance: inst, connections: staleConns });
+      }
+    }
+  };
+
+  const handleConfirmStaleReset = async (rememberChoice: boolean) => {
+    if (!stalePromptTarget) return;
+    const { instance, connections } = stalePromptTarget;
+    const res = await resetBundleStaleConnections(connections);
+    if (rememberChoice) {
+      const next = updateBundleInstance(instance.instanceId, (prev) => ({
+        ...prev,
+        policy: {
+          ...(prev.policy ?? prev.definition.policy ?? defaultBundlePolicy()),
+          staleConnectionStrategy: "auto_reset",
+        },
+        isModified: true,
+      }));
+      persistAndSync(next);
+    }
+    setStalePromptTarget(null);
+    showToast(`⚡ 成功重置 ${res.totalReset} 条存量连接，应用已自动自愈切入代理！`);
+  };
+
+  const handleIgnoreStale = () => {
+    setStalePromptTarget(null);
+  };
+
   // 切换开关
   const handleToggleSwitch = (instanceId: string, nextState: boolean) => {
     const next = updateBundleInstance(instanceId, (prev) => ({
@@ -128,15 +177,22 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
       enabled: nextState,
     }));
     persistAndSync(next);
+    if (nextState) {
+      const targetInst = next.find(i => i.instanceId === instanceId);
+      if (targetInst && targetInst.slotBindings.main) {
+        void checkStaleConnectionsForInstance(targetInst);
+      }
+    }
   };
 
   // 弹窗确认应用出口（含主出口与 DNS 出口联动）
   const handleSelectExitConfirm = (instanceId: string, mainExit: string | null, dnsExit?: string | null) => {
+    let updatedTarget: BundleLocalInstance | null = null;
     const next = updateBundleInstance(instanceId, (prev) => {
       const isUnbinding = !mainExit || mainExit.trim() === "";
-      return {
+      const updated = {
         ...prev,
-        backend: "core",
+        backend: "core" as const,
         slotBindings: {
           ...prev.slotBindings,
           main: isUnbinding ? null : mainExit,
@@ -150,6 +206,8 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         // 如果解除绑定，则自动停用；若选了有效节点，则自动开启强锁
         enabled: !isUnbinding,
       };
+      updatedTarget = updated;
+      return updated;
     });
     persistAndSync(next);
     showToast(
@@ -157,6 +215,9 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         ? `正在应用出口【${mainExit}】，请查看核心确认状态`
         : `正在解除绑定，请等待核心确认`
     );
+    if (mainExit && updatedTarget) {
+      void checkStaleConnectionsForInstance(updatedTarget);
+    }
   };
 
   // 切换单包守护模式
@@ -712,6 +773,16 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         onClose={() => setIsModeGuideOpen(false)}
         onConfirm={() => setIsModeGuideOpen(false)}
         currentMode={currentTrafficMode}
+      />
+
+      {/* 存量直连旧连接热重置提示弹窗 */}
+      <StaleConnectionsModal
+        isOpen={Boolean(stalePromptTarget)}
+        instance={stalePromptTarget?.instance || null}
+        connections={stalePromptTarget?.connections || []}
+        onConfirmReset={handleConfirmStaleReset}
+        onIgnore={handleIgnoreStale}
+        onClose={handleIgnoreStale}
       />
     </div>
   );

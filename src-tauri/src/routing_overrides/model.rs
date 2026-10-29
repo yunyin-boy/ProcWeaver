@@ -47,6 +47,8 @@ pub struct BundlePolicy {
     pub target_rules: Vec<String>,
     #[serde(default = "default_false")]
     pub disallow_proxy_args: bool,
+    #[serde(default = "default_stale_connection_strategy")]
+    pub stale_connection_strategy: String,
 }
 
 fn default_true() -> bool { true }
@@ -54,6 +56,7 @@ fn default_false() -> bool { false }
 fn default_dns_mode() -> String { "safe_pure".into() }
 fn default_port_filter_mode() -> String { "all".into() }
 fn default_target_filter_mode() -> String { "all".into() }
+fn default_stale_connection_strategy() -> String { "prompt".into() }
 
 impl Default for BundlePolicy {
     fn default() -> Self {
@@ -70,6 +73,7 @@ impl Default for BundlePolicy {
             target_filter_mode: default_target_filter_mode(),
             target_rules: Vec::new(),
             disallow_proxy_args: false,
+            stale_connection_strategy: default_stale_connection_strategy(),
         }
     }
 }

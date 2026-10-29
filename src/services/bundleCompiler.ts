@@ -155,6 +155,7 @@ function normalizePolicy(policy?: Partial<BundlePolicy> | null): Record<string, 
     targetFilterMode: policy.targetFilterMode ?? "all",
     targetRules: Array.isArray(policy.targetRules) ? [...policy.targetRules].sort() : [],
     disallowProxyArgs: policy.disallowProxyArgs ?? false,
+    staleConnectionStrategy: policy.staleConnectionStrategy ?? "prompt",
   };
 }
 

@@ -172,6 +172,8 @@ pub fn run() {
             commands::bundle_launch::get_bundle_entry_states,
             commands::bundle_launch::take_bundle_launch_requests,
             commands::bundle_launch::choose_bundle_executable,
+            commands::bundle_launch::inspect_bundle_stale_connections,
+            commands::bundle_launch::reset_bundle_stale_connections,
             commands::bundle_shortcuts::get_bundle_shortcuts,
             commands::bundle_shortcuts::change_bundle_shortcut,
             commands::routing_overrides::get_routing_overrides,

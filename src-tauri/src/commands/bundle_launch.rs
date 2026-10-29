@@ -682,6 +682,41 @@ pub async fn launch_bundle_app(app:tauri::AppHandle, request:LaunchRequest, conf
     Ok(LaunchOutcome{state:"launched".into(),message:message.into(),confirmation:None,entry,process_count:1})
 }
 
+#[tauri::command]
+pub async fn inspect_bundle_stale_connections(
+    _bundle_id: String,
+    process_names: Vec<String>,
+    port: u16,
+) -> Result<Vec<crate::capture::tcp_reset::StaleTcpConnection>, String> {
+    if process_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let snapshot = crate::routing_overrides::native::snapshot()?;
+    let target_pids: Vec<u32> = snapshot
+        .iter()
+        .filter(|p| {
+            process_names
+                .iter()
+                .any(|name| p.name.eq_ignore_ascii_case(name))
+        })
+        .map(|p| p.pid)
+        .collect();
+
+    if target_pids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    crate::capture::tcp_reset::scan_stale_tcp_connections(&target_pids, port)
+}
+
+#[tauri::command]
+pub async fn reset_bundle_stale_connections(
+    connections: Vec<crate::capture::tcp_reset::StaleTcpConnection>,
+) -> Result<crate::capture::tcp_reset::ResetStaleResult, String> {
+    Ok(crate::capture::tcp_reset::reset_stale_tcp_connections(&connections))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
