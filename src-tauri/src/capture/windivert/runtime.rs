@@ -485,9 +485,27 @@ fn network(s: Arc<Shared>) {
         } else if !is_excluded && !s.external && is_fake_ip(flow.destination.ip()) {
             // 方案 B：底层安全兜底门禁
             // 若数据包的目的地址属于 Fake-IP (198.18.0.0/15)，说明此前已被内核 DNS 记录；
-            // 绝对不可作为普通流量直连丢给物理网卡（物理网卡无法路由必然超时断网）。
-            // 兜底定向到首个可用的规则入口端口，交由内核依据 Fake-IP 映射还原原始域名并分流出站！
-            s.plan.read().unwrap().entries.first().map(|e| e.port)
+            // 仅在当前所有受控业务包入口具有单一确定端口时执行安全兜底；
+            // 若存在多个不同业务包入口（多端口），避免未知归属数据包盲目串流污染首个业务包，记录未知归属失败计数。
+            let plan = s.plan.read().unwrap();
+            let mut single_port = None;
+            let mut has_ambiguity = false;
+            for entry in &plan.entries {
+                if let Some(p) = single_port {
+                    if p != entry.port {
+                        has_ambiguity = true;
+                        break;
+                    }
+                } else {
+                    single_port = Some(entry.port);
+                }
+            }
+            if !has_ambiguity {
+                single_port
+            } else {
+                s.failures.fetch_add(1, Ordering::Relaxed);
+                None
+            }
         } else {
             None
         };

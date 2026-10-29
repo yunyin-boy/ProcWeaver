@@ -3,7 +3,6 @@ import { getGeneralSettings } from "../api/settings";
 import { getPlatform } from "./platform";
 
 let userDismissed = false;
-let lastHadActiveBundle = false;
 let syncing = false;
 
 export function dismissBundleDnsGuard(): void {
@@ -33,11 +32,7 @@ export async function syncBundleDnsGuard(
     return { changed: false, info: fallback };
   }
 
-  // 当业务包状态从「全部停用」转为「有启用包」时，自动重置用户忽略标记
-  if (hasActiveBundle && !lastHadActiveBundle) {
-    userDismissed = false;
-  }
-  lastHadActiveBundle = hasActiveBundle;
+  // 保留用户显式忽略/关闭意图；业务包状态变化不擅自覆盖用户的手动关闭决定
 
   if (syncing) {
     const current = await getDnsGuardInfo().catch(() => ({ enabled: false, origin: "none" as const, windivertMode: false }));
