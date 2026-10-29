@@ -61,30 +61,97 @@ fn instance_key(running:&[Instance],port:u16)->String {
     let mut identities:Vec<_>=running.iter().map(|p|p.identity.as_str()).collect(); identities.sort_unstable();
     format!("{port}:{}",identities.join("|"))
 }
-fn application_status(running:&[Instance],port:u16,independent:bool)->(&'static str,String) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActiveCaptureMode {
+    None,
+    WinDivert,
+    Tun,
+    UserMode,
+}
+
+fn detect_active_capture_mode() -> ActiveCaptureMode {
+    let independent = crate::edition::PROCESS || !crate::function_mode::core_features_enabled();
+    if independent {
+        if crate::process_capture::selected() {
+            if crate::process_capture::active() {
+                return ActiveCaptureMode::WinDivert;
+            }
+        }
+        #[cfg(windows)]
+        if crate::process_capture::is_user_mode() {
+            return ActiveCaptureMode::UserMode;
+        }
+        return ActiveCaptureMode::None;
+    }
+
+    #[cfg(windows)]
+    if let Ok(settings) = super::settings::get_general_settings() {
+        if settings.traffic_mode == crate::capture::windivert::plan::MODE {
+            if crate::capture::windivert::session::stats().active {
+                return ActiveCaptureMode::WinDivert;
+            }
+        } else if settings.traffic_mode == crate::capture::user_mode::MODE {
+            return ActiveCaptureMode::UserMode;
+        } else if settings.traffic_mode == "tun" || settings.tun_mode {
+            return ActiveCaptureMode::Tun;
+        }
+    }
+
+    #[cfg(not(windows))]
+    if let Ok(settings) = super::settings::get_general_settings() {
+        if settings.traffic_mode == "tun" || settings.tun_mode {
+            return ActiveCaptureMode::Tun;
+        }
+    }
+
+    ActiveCaptureMode::None
+}
+
+pub fn disallows_proxy_arguments(_exe: &Path, policy: Option<&crate::routing_overrides::model::BundlePolicy>) -> bool {
+    policy.is_some_and(|p| p.disallow_proxy_args)
+}
+
+fn application_status(running:&[Instance],port:u16,independent:bool,exe:Option<&Path>,policy:Option<&crate::routing_overrides::model::BundlePolicy>)->(&'static str,String) {
+    let active_mode = detect_active_capture_mode();
+    match active_mode {
+        ActiveCaptureMode::WinDivert => {
+            return ("capture", format!("WinDivert 模式，发现 {} 个主实例；新连接按业务包规则透明接管，无需代理参数", running.len()));
+        }
+        ActiveCaptureMode::Tun => {
+            return ("capture", format!("TUN 虚拟网卡模式，发现 {} 个主实例；系统流量自动由网卡接管分流，无需代理参数", running.len()));
+        }
+        ActiveCaptureMode::UserMode => {
+            return ("capture", format!("用户态强接管模式，发现 {} 个主实例；新连接由轻量 Hook 透明接管至业务包出口，无需代理参数", running.len()));
+        }
+        ActiveCaptureMode::None => {}
+    }
+
     if independent && crate::process_capture::selected() {
-        return if crate::process_capture::active(){("capture",format!("独立 WinDivert 已运行，发现 {} 个主实例；新连接按业务包规则接管，无需为代理参数重启",running.len()))}
-            else{("capture_pending","独立 WinDivert 尚未运行，请在接入方式处查看错误或重试；未要求应用重启".into())};
+        return ("capture_pending", "独立 WinDivert 尚未运行，请在接入方式处查看错误或重试；未要求应用重启".into());
     }
+
     #[cfg(windows)]
-    if independent && crate::process_capture::is_user_mode() {
-        return ("capture", format!("用户态强接管模式，发现 {} 个主实例；新连接由轻量 Hook 透明接管至业务包出口，无需为代理参数重启", running.len()));
+    if !independent && super::settings::get_general_settings().is_ok_and(|s| s.traffic_mode == crate::capture::windivert::plan::MODE) {
+        return ("capture_pending", "WinDivert 尚未接管；启动核心并完成管理员授权后核验，不按启动参数要求重启应用".into());
     }
-    #[cfg(windows)]
-    if !independent && super::settings::get_general_settings().is_ok_and(|s|s.traffic_mode==crate::capture::windivert::plan::MODE) {
-        return if crate::capture::windivert::session::stats().active {
-            ("capture",format!("WinDivert 模式，发现 {} 个主实例；无需为代理参数重启，实际接管范围及新连接出口请查看连接记录",running.len()))
-        } else { ("capture_pending","WinDivert 尚未接管；启动核心并完成管理员授权后核验，不按启动参数要求重启应用".into()) };
+
+    if let Some(exe) = exe {
+        if disallows_proxy_arguments(exe, policy) {
+            if running.is_empty() {
+                return ("idle", "未检测到所选程序的主实例（已检查默认及自定义资料目录）".into());
+            } else if independent {
+                return ("unverified", format!("检测到 {} 个主实例；该应用已禁用代理参数，在纯应用层模式下将直接直连，请在【接入方式】切换为【用户态 Hook】或【WinDivert】以透明接管", running.len()));
+            } else {
+                return ("connected", format!("检测到 {} 个主实例；该应用策略限制代理参数，已按免参数模式运行", running.len()));
+            }
+        }
     }
-    #[cfg(windows)]
-    if !independent && super::settings::get_general_settings().is_ok_and(|s|s.traffic_mode==crate::capture::user_mode::MODE) {
-        return ("capture", format!("用户态强接管模式，发现 {} 个主实例；新连接由轻量 Hook 透明接管至业务包出口，无需为代理参数重启", running.len()));
-    }
-    let connected=running.iter().filter(|p|proxy_matches(&p.args,port)).count();
-    if running.is_empty() { ("idle","未检测到所选程序的主实例（已检查默认及自定义资料目录）".into()) }
-    else if connected==running.len() { ("connected",format!("检测到 {} 个主实例，启动参数均已接入本包入口；实际连接另行核验",running.len())) }
-    else if connected>0 { ("partial",format!("{} / {} 个主实例已接入；其余资料实例未接入，请从对应快捷方式检测，重启需确认",connected,running.len())) }
-    else { ("restart_required",format!("检测到 {} 个主实例未使用本包入口；点击检测并启动应用，重启时会请求确认",running.len())) }
+
+    let connected = running.iter().filter(|p| proxy_matches(&p.args, port)).count();
+    if running.is_empty() { ("idle", "未检测到所选程序的主实例（已检查默认及自定义资料目录）".into()) }
+    else if connected == running.len() { ("connected", format!("检测到 {} 个主实例，启动参数均已接入本包入口；实际连接另行核验", running.len())) }
+    else if connected > 0 { ("partial", format!("{} / {} 个主实例已接入；其余资料实例未接入，请从对应快捷方式检测，重启需确认", connected, running.len())) }
+    else { ("restart_required", format!("检测到 {} 个主实例未使用本包入口；点击检测并启动应用，重启时会请求确认", running.len())) }
 }
 fn observe_connections(result:&mut [EntryStatus],value:&serde_json::Value)->Result<(),String> {
     let connections=value["connections"].as_array().ok_or("核心连接记录格式无效，无法核验分流")?;
@@ -152,7 +219,7 @@ pub async fn get_bundle_entry_states(instance_ids:Vec<String>)->Result<Vec<Entry
                 Err(error)=>Err(error.clone()),
             });
             match running { Ok(running) => {
-                let (state,message)=application_status(running,bundle.port,crate::external_proxy::generation(&bundle.id).is_some());
+                let (state,message)=application_status(running,bundle.port,crate::external_proxy::generation(&bundle.id).is_some(),Some(&exe),bundle.policy.as_ref());
                 #[cfg(target_os = "macos")]
                 let (state,message)=if !running.is_empty() && !crate::platform::macos::apps::supports_proxy_arguments(&exe) {
                     ("unverified", "已识别应用；原生 GUI 使用系统代理，命令行使用代理环境变量，实际接入以连接记录为准".into())
@@ -210,7 +277,10 @@ impl Confirmation {
     }
     fn preflight(&self)->Result<(),String> {
         #[cfg(windows)]
-        super::packaged_app::preflight(&self.exe,&proxy_args(self.args.clone(),self.port))?;
+        {
+            let args = if disallows_proxy_arguments(&self.exe, self.policy.as_ref()) { self.args.clone() } else { proxy_args(self.args.clone(), self.port) };
+            super::packaged_app::preflight(&self.exe, &args)?;
+        }
         Ok(())
     }
     fn close_after_preflight(&self, close:impl Fn(&Instance)->Result<(),String>)->Result<(),String> {
@@ -353,17 +423,42 @@ pub fn is_chromium_or_electron(exe: &Path) -> bool {
 }
 
 fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:Option<&crate::routing_overrides::model::BundlePolicy>)->Result<&'static str,String> {
-    let capture=crate::process_capture::selected();
-    if capture && !crate::process_capture::active(){return Err("独立 WinDivert 尚未运行，未启动应用".into());}
-    #[cfg(windows)]
-    let user_mode_active = if crate::edition::PROCESS || crate::process_capture::is_user_mode() {
-        crate::process_capture::is_user_mode()
-    } else {
-        super::settings::get_general_settings().is_ok_and(|s| s.traffic_mode == crate::capture::user_mode::MODE)
-    };
+    let active_mode = detect_active_capture_mode();
+    let proxy_disallowed = disallows_proxy_arguments(exe, policy);
 
+    // 1. 优先判定 WinDivert 与 TUN 透明模式（完整版与独立版均覆盖）
+    if active_mode == ActiveCaptureMode::WinDivert || active_mode == ActiveCaptureMode::Tun {
+        let working_dir = if !directory.is_empty() { Some(Path::new(directory)) } else { exe.parent() };
+        let mut command = std::process::Command::new(exe);
+        command.args(&args);
+        if let Some(dir) = working_dir {
+            command.current_dir(dir);
+        }
+        let child = command.spawn().map_err(|e| format!("启动应用失败：{e}"))?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            let _ = native::assign_to_job_object(child.as_raw_handle() as _);
+        }
+        return Ok(if active_mode == ActiveCaptureMode::WinDivert {
+            "已沿用原参数启动应用；WinDivert 内核过滤将按进程归属处理新连接，无需代理参数"
+        } else {
+            "已沿用原参数启动应用；TUN 虚拟网卡将自动接管应用网络分流，无需代理参数"
+        });
+    }
+
+    // 未就绪拦截
+    if (crate::edition::PROCESS || !crate::function_mode::core_features_enabled()) && crate::process_capture::selected() && !crate::process_capture::active() {
+        return Err("独立 WinDivert 尚未运行，未启动应用".into());
+    }
     #[cfg(windows)]
-    if !capture && user_mode_active {
+    if crate::function_mode::core_features_enabled() && super::settings::get_general_settings().is_ok_and(|s| s.traffic_mode == crate::capture::windivert::plan::MODE) && !crate::capture::windivert::session::stats().active {
+        return Err("WinDivert 尚未就绪，请在设置中检查管理员权限与核心状态后重试".into());
+    }
+
+    // 2. 用户态强接管模式 (User Mode)
+    #[cfg(windows)]
+    if active_mode == ActiveCaptureMode::UserMode {
         let working_dir = if !directory.is_empty() { Some(Path::new(directory)) } else { exe.parent() };
         let dns_port = if crate::edition::PROCESS {
             crate::external_proxy::dns_port_for_port(port).unwrap_or_else(|| super::dns_listener::last_port().unwrap_or(45053))
@@ -371,7 +466,7 @@ fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:O
             super::dns_listener::last_port().unwrap_or(45053)
         };
 
-        if is_chromium_or_electron(exe) {
+        if is_chromium_or_electron(exe) && !proxy_disallowed {
             // B 路线：双保险混合模式（针对 Chromium / Electron 架构）
             // 1. 原生代理参数保障主干网络通道 100% 工业级稳定秒开，绝不白屏、绝不假死
             let hybrid_args = proxy_args(args, port);
@@ -385,34 +480,62 @@ fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:O
             crate::capture::user_mode::launch_with_hook(exe, &hybrid_args, working_dir, port, dns_port, policy)?;
             return Ok("已在用户态强接管模式下启动应用（双保险混合模式：原生参数保障极速开屏，Hook 透明锁定子进程与防泄漏）");
         } else {
-            // C 路线：纯透明 Hook 接管（针对不支持代理参数的普通程序）
+            // C 路线：纯透明 Hook 接管（针对 Gemini 等拒绝代理参数的应用，或不支持代理参数的普通程序）
+            // 绝不传递 --proxy-server，由轻量 Hook 在底层透明重定向至业务包出口
             crate::capture::user_mode::launch_with_hook(exe, &args, working_dir, port, dns_port, policy)?;
-            return Ok("已在用户态强接管模式下启动应用；新网络连接与解析将由轻量 Hook 按照业务包策略自动导向业务包出口");
+            return Ok(if proxy_disallowed {
+                "已在用户态强接管模式下启动应用（纯透明 Hook 接管：针对该应用自动免除代理参数，由轻量 Hook 透明接管分流）"
+            } else {
+                "已在用户态强接管模式下启动应用；新网络连接与解析将由轻量 Hook 按照业务包策略自动导向业务包出口"
+            });
         }
     }
+
+    // 3. 普通应用层模式 (App Proxy)
     #[cfg(target_os = "macos")]
-    let args=if crate::platform::macos::apps::supports_proxy_arguments(exe) { proxy_args(args,port) } else { args };
+    let final_args = if crate::platform::macos::apps::supports_proxy_arguments(exe) && !proxy_disallowed { proxy_args(args, port) } else { args };
     #[cfg(not(target_os = "macos"))]
-    let args=if capture {args}else{proxy_args(args,port)};
+    let final_args = if proxy_disallowed { args } else { proxy_args(args, port) };
+
     #[cfg(windows)]
-    if let Some(application)=super::packaged_app::resolve(exe)? {
-        application.activate(&args)?;
+    if let Some(application) = super::packaged_app::resolve(exe)? {
+        application.activate(&final_args)?;
         return Ok(super::packaged_app::activation_note());
     }
-    let proxy=format!("http://127.0.0.1:{port}");let mut command=std::process::Command::new(exe);
-    command.args(args);
-    if !capture {
-        for key in ["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy"] {command.env(key,&proxy);}
-        command.env("NO_PROXY","localhost,127.0.0.1,::1").env("no_proxy","localhost,127.0.0.1,::1").env("NODE_USE_ENV_PROXY","1");
+
+    let proxy = format!("http://127.0.0.1:{port}");
+    let mut command = std::process::Command::new(exe);
+    command.args(&final_args);
+    if !proxy_disallowed {
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+            command.env(key, &proxy);
+        }
+        command.env("NO_PROXY", "localhost,127.0.0.1,::1")
+            .env("no_proxy", "localhost,127.0.0.1,::1")
+            .env("NODE_USE_ENV_PROXY", "1");
     }
-    if !directory.is_empty(){command.current_dir(directory);}else if let Some(dir)=exe.parent(){command.current_dir(dir);}
-    let child = command.spawn().map_err(|e|format!("启动应用失败：{e}"))?;
+
+    if !directory.is_empty() {
+        command.current_dir(directory);
+    } else if let Some(dir) = exe.parent() {
+        command.current_dir(dir);
+    }
+    let child = command.spawn().map_err(|e| format!("启动应用失败：{e}"))?;
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
         let _ = native::assign_to_job_object(child.as_raw_handle() as _);
     }
-    Ok(if capture {"已沿用原参数启动应用；独立 WinDivert 将按进程归属处理新连接，实际出口请查看连接记录"}else{"已使用业务包入口启动，沿用现有用户资料；启动成功不等于实际连接出口已验证"})
+
+    Ok(if proxy_disallowed {
+        if crate::edition::PROCESS || !crate::function_mode::core_features_enabled() {
+            "已启动应用（该应用安全机制排斥命令行代理参数，当前处于纯应用层模式下将直接直连；请在顶部【接入方式】切换至【用户态 Hook】或【WinDivert】以实现透明接管）"
+        } else {
+            "已启动应用（该应用安全机制限制命令行代理开关，已按免参数模式启动；建议选用 WinDivert、TUN 虚拟网卡或用户态强接管以保证最佳分流效果）"
+        }
+    } else {
+        "已使用业务包入口启动，沿用现有用户资料；启动成功不等于实际连接出口已验证"
+    })
 }
 fn instances(exe:&Path,args:Option<&[String]>)->Result<Vec<Instance>,String> {
     let name=exe.file_name().ok_or("应用路径无效")?.to_string_lossy();
@@ -646,8 +769,45 @@ mod tests {
     #[test] fn profiles_with_mixed_entries_are_not_all_connected() {
         let one=Instance{pid:1,identity:"one".into(),args:vec!["--proxy-server=127.0.0.1:34000".into()]};
         let two=Instance{pid:2,identity:"two".into(),args:vec!["--user-data-dir=D:\\fixture".into()]};
-        assert_eq!(application_status(&[one.clone()],34000,false).0,"connected");
-        assert_eq!(application_status(&[one,two],34000,false).0,"partial");
+        assert_eq!(application_status(&[one.clone()],34000,false,None,None).0,"connected");
+        assert_eq!(application_status(&[one,two],34000,false,None,None).0,"partial");
+    }
+    #[test] fn policy_disallow_proxy_args_and_reports_connected_without_flags() {
+        let app_path = Path::new(r"C:\Users\User\AppData\Local\Google\Gemini\Application\Gemini.exe");
+        let policy = crate::routing_overrides::model::BundlePolicy {
+            disallow_proxy_args: true,
+            ..Default::default()
+        };
+        assert!(disallows_proxy_arguments(app_path, Some(&policy)));
+        assert!(!disallows_proxy_arguments(app_path, None), "无策略时绝不硬编码特殊应用");
+        let running = Instance{pid:100,identity:"gemini-1".into(),args:vec![]};
+        let (status, msg) = application_status(&[running], 34000, false, Some(app_path), Some(&policy));
+        assert_eq!(status, "connected");
+        assert!(msg.contains("免参数模式") || msg.contains("策略限制代理参数"));
+    }
+    #[test] fn policy_disallow_proxy_args_works_for_arbitrary_apps() {
+        let app_path = Path::new(r"C:\Custom\app.exe");
+        assert!(!disallows_proxy_arguments(app_path, None));
+        let policy = crate::routing_overrides::model::BundlePolicy {
+            disallow_proxy_args: true,
+            ..Default::default()
+        };
+        assert!(disallows_proxy_arguments(app_path, Some(&policy)));
+        let running = Instance{pid:200,identity:"custom-1".into(),args:vec![]};
+        let (status, msg) = application_status(&[running], 34000, false, Some(app_path), Some(&policy));
+        assert_eq!(status, "connected");
+        assert!(msg.contains("策略限制代理参数") || msg.contains("免参数模式"));
+    }
+    #[test] fn policy_disallow_proxy_args_process_edition_unverified_warning() {
+        let app_path = Path::new(r"C:\Custom\app.exe");
+        let policy = crate::routing_overrides::model::BundlePolicy {
+            disallow_proxy_args: true,
+            ..Default::default()
+        };
+        let running = Instance{pid:200,identity:"custom-1".into(),args:vec![]};
+        let (status, msg) = application_status(&[running], 34000, true, Some(app_path), Some(&policy));
+        assert_eq!(status, "unverified");
+        assert!(msg.contains("纯应用层模式下将直接直连") && msg.contains("用户态 Hook"));
     }
     #[test] fn proxy_flags_are_exact_and_preserve_profiles(){
         let args=vec!["--user-data-dir=C:\\资料 目录".into(),"--profile-directory=Profile 2".into(),"--proxy-server".into(),"http://127.0.0.1:7890".into(),"--no-proxy-server".into()];

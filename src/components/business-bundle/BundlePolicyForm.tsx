@@ -174,6 +174,46 @@ export const BundlePolicyForm: React.FC<Props> = ({
               className="mt-0.5 h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 dark:bg-slate-700 dark:border-slate-600 cursor-pointer"
             />
           </div>
+
+          {/* 禁用启动代理参数 */}
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60 space-y-2.5">
+            <div className="flex items-start justify-between">
+              <div className="space-y-0.5 pr-3">
+                <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <span>禁用启动代理参数 (--proxy-server)</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                    安全自检兼容
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                  禁止向应用启动命令行追加 --proxy-server 等参数。适用于 Google Gemini 等限制调试与网络覆盖开关的应用
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={!!policy.disallowProxyArgs}
+                onChange={(e) => onChange({ ...policy, disallowProxyArgs: e.target.checked })}
+                className="mt-0.5 h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 dark:bg-slate-700 dark:border-slate-600 cursor-pointer"
+              />
+            </div>
+
+            {policy.disallowProxyArgs && (
+              <div className="p-2.5 rounded-lg bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                <Info className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  {typeof document !== "undefined" && document.documentElement.dataset.edition === "process" ? (
+                    <span>
+                      <strong>独立进程版针对性提示：</strong>独立进程版不含 TUN 虚拟网卡。若当前接入方式为<strong>【纯应用层】</strong>，开启此选项后应用启动将<strong>完全直连</strong>。请务必在顶部【接入方式】切换为<strong>【用户态 Hook】</strong>（免提权、轻量透明拦截）或<strong>【WinDivert 驱动】</strong>，实现免参数底层透明分流接管。
+                    </span>
+                  ) : (
+                    <span>
+                      <strong>提示：</strong>开启此项后应用将以无参数启动；需配合 <strong>TUN 虚拟网卡</strong>、<strong>WinDivert 驱动</strong>或<strong>用户态 Hook</strong> 底层接管分流。若处于纯应用层代理模式，流量将直接直连。
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

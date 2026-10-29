@@ -72,6 +72,10 @@ export const BundleRow: React.FC<Props> = ({
   const def = instance.definition;
   const policy = instance.policy ?? instance.definition.policy;
   const independent = instance.backend === "external";
+  const isProcessEdition = typeof document !== "undefined" && document.documentElement.dataset.edition === "process";
+  const isDisallowProxyArgs = Boolean(policy?.disallowProxyArgs);
+  const isTransparentActive = entry?.state === "capture" || entry?.hookTier === "FullInline" || entry?.hookTier === "IatCompat";
+  const showProcessEditionDirectWarning = isProcessEdition && isDisallowProxyArgs && !isTransparentActive;
   const boundNode = independent ? externalLabel || "未选择代理" : instance.slotBindings.main;
   const isRequested = instance.enabled && Boolean(boundNode);
   const isEnabled = isRequested && status.phase === "applied";
@@ -269,6 +273,14 @@ export const BundleRow: React.FC<Props> = ({
                     绕局域网
                   </span>
                 )}
+                {policy?.disallowProxyArgs && (
+                  <span
+                    className="text-[9px] px-1 py-0.2 rounded font-mono bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
+                    title="禁用启动代理参数：排斥命令行 --proxy-server"
+                  >
+                    免参数
+                  </span>
+                )}
               </button>
               {instance.isModified && (
                 <span className="text-[9px] px-1 py-0.2 rounded font-medium bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
@@ -323,6 +335,14 @@ export const BundleRow: React.FC<Props> = ({
                 {processes.length}进程/{def.domains?.length || 0}域名
               </span>
             </div>
+            {showProcessEditionDirectWarning && (
+              <div
+                className="mt-1 flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400 font-semibold"
+                title="该业务包已配置【禁用代理参数】。在独立进程版的纯应用层模式下启动将直接直连，请在顶部接入方式中切换为【用户态 Hook】或【WinDivert】"
+              >
+                <span>⚠️ 纯应用层下免参数将直接直连，建议切换至【用户态 Hook】</span>
+              </div>
+            )}
             {compact && !unavailable && <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
               <span>进程：{!entry ? "检测中" : entry.state === "not_running" || entry.state === "idle" ? "待发现" : "已发现"}</span>
               <span>入口：{isEnabled ? "就绪" : status.phase === "error" ? "异常" : "未就绪"}</span>
@@ -374,7 +394,7 @@ export const BundleRow: React.FC<Props> = ({
             disabled={!canLaunch}
             onClick={onLaunch}
             className="h-7 px-3 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition flex items-center space-x-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            title="通过 ProcWeaver 拉起应用并自动注入代理环境"
+            title={showProcessEditionDirectWarning ? "该业务包已禁用代理参数，在纯应用层模式下启动将直接直连；建议在接入方式中切换至用户态 Hook" : "通过 ProcWeaver 拉起应用并自动注入代理环境"}
           >
             <Play className="w-3 h-3 fill-current" />
             <span>启动</span>

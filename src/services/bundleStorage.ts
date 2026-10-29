@@ -20,6 +20,7 @@ function normalizeInstancePolicy(policy?: Partial<BundlePolicy> | null): BundleP
     proxyUdp: policy?.proxyUdp ?? false,
     proxySubprocesses: policy?.proxySubprocesses ?? true,
     bypassLan: policy?.bypassLan ?? true,
+    disallowProxyArgs: policy?.disallowProxyArgs ?? false,
     dnsMode: policy?.dnsMode ?? "safe_pure",
     portFilterMode: policy?.portFilterMode ?? "all",
     customPorts: policy?.customPorts ?? "",
@@ -66,6 +67,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       proxyUdp: false,
       proxySubprocesses: true,
       bypassLan: true,
+      disallowProxyArgs: false,
       dnsMode: "safe_pure",
       portFilterMode: "all",
       customPorts: "",
@@ -107,6 +109,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       proxyUdp: false,
       proxySubprocesses: true,
       bypassLan: true,
+      disallowProxyArgs: true,
       dnsMode: "safe_pure",
       portFilterMode: "all",
       customPorts: "",
@@ -119,6 +122,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       { exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" },
       { exe: "agy.exe", role: "cli", description: "Antigravity 开发者命令行终端" },
       { exe: "antigravity-service.exe", role: "worker", description: "后台状态监测守护服务" },
+      { exe: "Gemini.exe", role: "worker", description: "Google Gemini 桌面客户端" },
     ],
     additionalExes: [
       "Antigravity.exe",
@@ -128,6 +132,8 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
       "agy.exe",
       "antigravity-service.exe",
       "Antigravity IDE.exe",
+      "Gemini.exe",
+      "google gemini.exe",
     ],
     macosProcesses: [{ exe: "Antigravity", role: "main", description: "macOS 应用主进程及可观测的子进程" }],
     domains: [
@@ -164,15 +170,30 @@ export function getBundleInstances(): BundleLocalInstance[] {
         processes.push({ exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" });
         itemChanged = true;
       }
+      if (!additionalExes.some(e => e.toLowerCase() === "gemini.exe")) {
+        additionalExes.push("Gemini.exe");
+        itemChanged = true;
+      }
+      if (!processes.some(p => p.exe.toLowerCase() === "gemini.exe")) {
+        processes.push({ exe: "Gemini.exe", role: "worker", description: "Google Gemini 桌面客户端" });
+        itemChanged = true;
+      }
+      const policy = item.definition.policy ? { ...item.definition.policy } : undefined;
+      if (policy && policy.disallowProxyArgs === undefined) {
+        policy.disallowProxyArgs = true;
+        itemChanged = true;
+      }
       if (!itemChanged) return item;
       changed = true;
       return {
         ...item,
+        policy: item.policy && item.policy.disallowProxyArgs === undefined ? { ...item.policy, disallowProxyArgs: true } : item.policy,
         definition: {
           ...item.definition,
           domains,
           additionalExes,
           processes,
+          policy: policy ?? item.definition.policy,
         },
       };
     });

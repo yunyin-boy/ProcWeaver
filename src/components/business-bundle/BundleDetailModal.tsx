@@ -187,6 +187,19 @@ export const BundleDetailModal: React.FC<Props> = ({
                   )}
                 </span>
               </p>
+              {(instance.policy?.disallowProxyArgs || instance.definition.policy?.disallowProxyArgs) && (
+                <p className="flex items-start space-x-1">
+                  <span className="text-slate-400 shrink-0">参数策略：</span>
+                  <span className="text-amber-600 dark:text-amber-400 font-medium">
+                    已禁用代理参数 (--proxy-server)
+                    {independent && entry?.state !== "capture" && entry?.hookTier !== "FullInline" && entry?.hookTier !== "IatCompat" && (
+                      <span className="block text-[11px] text-amber-600/90 dark:text-amber-400/90 mt-0.5">
+                        ⚠️ 独立进程版当前处于纯应用层模式，免参数应用启动将直接直连；请在顶部接入方式切换为【用户态 Hook】以透明接管。
+                      </span>
+                    )}
+                  </span>
+                </p>
+              )}
             </div>
 
             {/* 命中流向列表 */}

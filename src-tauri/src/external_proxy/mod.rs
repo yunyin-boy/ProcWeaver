@@ -250,6 +250,7 @@ fn launch_route(b: &Bundle, enabled: bool) -> crate::routing_overrides::model::B
         proxy_udp: true,
         proxy_subprocesses: true,
         bypass_lan: true,
+        disallow_proxy_args: false,
         dns_mode: "real".into(),
         port_filter_mode: "all".into(),
         custom_ports: String::new(),

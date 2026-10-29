@@ -45,6 +45,8 @@ pub struct BundlePolicy {
     pub target_filter_mode: String,
     #[serde(default)]
     pub target_rules: Vec<String>,
+    #[serde(default = "default_false")]
+    pub disallow_proxy_args: bool,
 }
 
 fn default_true() -> bool { true }
@@ -67,6 +69,7 @@ impl Default for BundlePolicy {
             custom_ports: String::new(),
             target_filter_mode: default_target_filter_mode(),
             target_rules: Vec::new(),
+            disallow_proxy_args: false,
         }
     }
 }

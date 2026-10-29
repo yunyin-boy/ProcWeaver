@@ -117,8 +117,8 @@ export function ProcessAccessBar({
           {s.capture.state.view?.mode === "windivert"
             ? "无需为代理参数重启已运行的目标；只接管新连接，实际出口请查看连接记录。"
             : s.capture.state.view?.mode === "user_mode"
-            ? "由业务包卡片启动的应用自动透明挂载 Hook，免驱动且无需为代理参数重启。"
-            : "应用需接入本包代理入口；发现进程不代表已接管。"}
+            ? "由业务包卡片启动的应用自动透明挂载 Hook，免驱动且无需为代理参数重启；原生支持 Gemini 等免参数应用透明接管。"
+            : "纯应用层模式依赖启动参数；若业务包禁用代理参数（如 Google Gemini）将直接直连，建议切换至【用户态 Hook】。"}
           {capability.winDivertReason}。
         </p>
         {onFull && <button

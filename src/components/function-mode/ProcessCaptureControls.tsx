@@ -230,8 +230,8 @@ export function ProcessCaptureControls({
                   {state.requested === "windivert"
                     ? "将解压并加载随包过滤驱动，按业务包进程直接转发至配置的外部代理，无需运行 Mihomo。需 Windows 管理员授权（UAC）；可能与反作弊等内核过滤驱动冲突；仅影响新发起的连接。"
                     : state.requested === "user_mode"
-                    ? "基于轻量用户态 Hook（pw_hook）透明重定向 Socket 与真实 DNS 解析，免装驱动、无需管理员提权。由业务包卡片启动的目标程序自动挂载，支持原生 Chromium 极速启动与子进程防泄漏锁定。"
-                    : "将停止本程序的独立驱动接管，现有驱动转发的连接会断开。独立 HTTP/SOCKS5 入口继续运行，应用程序需通过代理参数或环境变量接入。"}
+                    ? "基于轻量用户态 Hook（pw_hook）透明重定向 Socket 与真实 DNS 解析，免装驱动、无需管理员提权。由业务包卡片启动的目标程序自动挂载，支持原生 Chromium 极速启动与子进程防泄漏锁定，并原生支持 Google Gemini 等禁用代理参数的应用免参数透明接管。"
+                    : "将停止本程序的独立驱动接管，现有驱动转发的连接会断开。独立 HTTP/SOCKS5 入口继续运行，应用程序需通过代理参数或环境变量接入；注意：已开启【禁用启动代理参数】的应用（如 Google Gemini）在此模式下将直接直连。"}
                 </p>
               </div>
 
