@@ -44,12 +44,12 @@ export interface BundlePolicy {
   proxyUdp: boolean;               // 代理 UDP (仅 SOCKS5 支持，默认 false)
   proxySubprocesses: boolean;      // 代理衍生子进程 (默认 true)
   bypassLan: boolean;              // 绕过本地回环与局域网 (默认 true)
-  disallowProxyArgs?: boolean;     // 禁用命令行代理参数 (默认 false，适用于 Google Gemini 等安全自检排斥 --proxy-server 的应用)
   dnsMode: BundleDnsMode;          // DNS 解析模式 (默认 "safe_pure")
   portFilterMode: BundlePortFilterMode; // 端口过滤模式 (默认 "all")
   customPorts?: string;            // 自定义端口列表 (如 "80,443,8080")
   targetFilterMode: BundleTargetFilterMode; // 目标域名/IP 过滤模式 (默认 "all")
   targetRules?: string[];          // 目标过滤规则 (域名/IP)
+  disallowProxyArgs?: boolean;     // 禁用命令行代理参数 (默认 false，适用于 Google Gemini 等安全自检排斥 --proxy-server 的应用)
 }
 
 export function defaultBundlePolicy(): BundlePolicy {
@@ -60,12 +60,12 @@ export function defaultBundlePolicy(): BundlePolicy {
     proxyUdp: false,
     proxySubprocesses: true,
     bypassLan: true,
-    disallowProxyArgs: false,
     dnsMode: "safe_pure",
     portFilterMode: "all",
     customPorts: "",
     targetFilterMode: "all",
     targetRules: [],
+    disallowProxyArgs: false,
   };
 }
 
@@ -79,12 +79,12 @@ export function normalizeBundlePolicy(policy?: Partial<BundlePolicy> | null): Bu
     proxyUdp: policy.proxyUdp ?? defaults.proxyUdp,
     proxySubprocesses: policy.proxySubprocesses ?? defaults.proxySubprocesses,
     bypassLan: policy.bypassLan ?? defaults.bypassLan,
-    disallowProxyArgs: policy.disallowProxyArgs ?? defaults.disallowProxyArgs,
     dnsMode: policy.dnsMode ?? defaults.dnsMode,
     portFilterMode: policy.portFilterMode ?? defaults.portFilterMode,
     customPorts: policy.customPorts ?? defaults.customPorts,
     targetFilterMode: policy.targetFilterMode ?? defaults.targetFilterMode,
     targetRules: Array.isArray(policy.targetRules) ? policy.targetRules : defaults.targetRules,
+    disallowProxyArgs: policy.disallowProxyArgs ?? defaults.disallowProxyArgs,
   };
 }
 

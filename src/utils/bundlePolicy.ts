@@ -8,12 +8,12 @@ export function defaultBundlePolicy(): BundlePolicy {
     proxyUdp: false,
     proxySubprocesses: true,
     bypassLan: true,
-    disallowProxyArgs: false,
     dnsMode: "safe_pure",
     portFilterMode: "all",
     customPorts: "",
     targetFilterMode: "all",
     targetRules: [],
+    disallowProxyArgs: false,
   };
 }
 
@@ -27,11 +27,11 @@ export function normalizeBundlePolicy(policy?: Partial<BundlePolicy> | null): Bu
     proxyUdp: policy.proxyUdp ?? defaults.proxyUdp,
     proxySubprocesses: policy.proxySubprocesses ?? defaults.proxySubprocesses,
     bypassLan: policy.bypassLan ?? defaults.bypassLan,
-    disallowProxyArgs: policy.disallowProxyArgs ?? defaults.disallowProxyArgs,
     dnsMode: policy.dnsMode ?? defaults.dnsMode,
     portFilterMode: policy.portFilterMode ?? defaults.portFilterMode,
     customPorts: policy.customPorts ?? defaults.customPorts,
     targetFilterMode: policy.targetFilterMode ?? defaults.targetFilterMode,
     targetRules: Array.isArray(policy.targetRules) ? policy.targetRules : defaults.targetRules,
+    disallowProxyArgs: policy.disallowProxyArgs ?? defaults.disallowProxyArgs,
   };
 }

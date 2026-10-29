@@ -20,12 +20,12 @@ function normalizeInstancePolicy(policy?: Partial<BundlePolicy> | null): BundleP
     proxyUdp: policy?.proxyUdp ?? false,
     proxySubprocesses: policy?.proxySubprocesses ?? true,
     bypassLan: policy?.bypassLan ?? true,
-    disallowProxyArgs: policy?.disallowProxyArgs ?? false,
     dnsMode: policy?.dnsMode ?? "safe_pure",
     portFilterMode: policy?.portFilterMode ?? "all",
     customPorts: policy?.customPorts ?? "",
     targetFilterMode: policy?.targetFilterMode ?? "all",
     targetRules: Array.isArray(policy?.targetRules) ? policy.targetRules : [],
+    disallowProxyArgs: policy?.disallowProxyArgs ?? false,
   };
 }
 

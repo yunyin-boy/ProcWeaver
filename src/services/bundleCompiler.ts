@@ -1,4 +1,4 @@
-import type { BundleLocalInstance, BundleSlotId } from "../types/businessBundle";
+import type { BundleLocalInstance, BundleSlotId, BundlePolicy } from "../types/businessBundle";
 import type { ProcessRule, DnsRule, RoutingOverrides, RoutingTarget, RoutingView, BundleRoute } from "../types/routingOverrides";
 import { routingApi, type RoutingApi } from "../api/routingOverrides";
 import type { BundlePlatform } from "../types/platform";
@@ -140,8 +140,44 @@ function mainExecutable(instance: BundleLocalInstance, platform: BundlePlatform)
   const exe = bundleProcesses(instance.definition, platform).find(p => p.role === "main")?.exe || bundleProcesses(instance.definition, platform)[0]?.exe || "";
   return (platform === "android" ? undefined : instance.processBindings?.[platform]?.find(b => processKey(b.exe, platform) === processKey(exe, platform))?.executablePath) ?? exe;
 }
-export const routeSignature = (routes: BundleRoute[] = []) => JSON.stringify(routes.map(r => [r.id, r.name, r.mainExe, r.enabled, r.mode, r.fallback ?? "rules", normalizedDomains(r.domains),
-  r.mainTarget && [r.mainTarget.profileId, r.mainTarget.kind, r.mainTarget.name], r.dnsTarget && [r.dnsTarget.profileId, r.dnsTarget.kind, r.dnsTarget.name], r.policy]));
+function normalizePolicy(policy?: Partial<BundlePolicy> | null): Record<string, any> | undefined {
+  if (!policy) return undefined;
+  return {
+    proxyTcp: policy.proxyTcp ?? true,
+    blockIpv6: policy.blockIpv6 ?? true,
+    blockUdp: policy.blockUdp ?? true,
+    proxyUdp: policy.proxyUdp ?? false,
+    proxySubprocesses: policy.proxySubprocesses ?? true,
+    bypassLan: policy.bypassLan ?? true,
+    dnsMode: policy.dnsMode ?? "safe_pure",
+    portFilterMode: policy.portFilterMode ?? "all",
+    customPorts: policy.customPorts ?? "",
+    targetFilterMode: policy.targetFilterMode ?? "all",
+    targetRules: Array.isArray(policy.targetRules) ? [...policy.targetRules].sort() : [],
+    disallowProxyArgs: policy.disallowProxyArgs ?? false,
+  };
+}
+
+export function policySignature(policy?: BundlePolicy | null): [string, any][] | null {
+  if (!policy) return null;
+  const p = normalizePolicy(policy);
+  if (!p) return null;
+  return Object.entries(p)
+    .sort(([a], [b]) => a.localeCompare(b));
+}
+
+export const routeSignature = (routes: BundleRoute[] = []) => JSON.stringify(routes.map(r => [
+  r.id,
+  r.name,
+  r.mainExe,
+  r.enabled,
+  r.mode,
+  r.fallback ?? "rules",
+  normalizedDomains(r.domains),
+  r.mainTarget && [r.mainTarget.profileId, r.mainTarget.kind, r.mainTarget.name],
+  r.dnsTarget && [r.dnsTarget.profileId, r.dnsTarget.kind, r.dnsTarget.name],
+  policySignature(r.policy),
+]));
 
 export interface BundleSyncResult {
   success: boolean;
