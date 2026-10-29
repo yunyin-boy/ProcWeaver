@@ -687,13 +687,14 @@ pub async fn inspect_bundle_stale_connections(
     _bundle_id: String,
     process_names: Vec<String>,
     port: u16,
+    track_subprocesses: Option<bool>,
 ) -> Result<Vec<crate::capture::tcp_reset::StaleTcpConnection>, String> {
     if process_names.is_empty() {
         return Ok(Vec::new());
     }
 
     let snapshot = crate::routing_overrides::native::snapshot()?;
-    let target_pids: Vec<u32> = snapshot
+    let seed_pids: Vec<u32> = snapshot
         .iter()
         .filter(|p| {
             process_names
@@ -703,11 +704,42 @@ pub async fn inspect_bundle_stale_connections(
         .map(|p| p.pid)
         .collect();
 
-    if target_pids.is_empty() {
+    if seed_pids.is_empty() {
         return Ok(Vec::new());
     }
 
-    crate::capture::tcp_reset::scan_stale_tcp_connections(&target_pids, port)
+    let mut target_pids: std::collections::HashSet<u32> = seed_pids.into_iter().collect();
+
+    // 💡 极客边界 1：衍生子进程血统递归追踪（解决 10% 异名动态派生子进程遗漏）
+    let track = track_subprocesses.unwrap_or(true);
+    if track {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for p in &snapshot {
+                if target_pids.contains(&p.pid) {
+                    continue;
+                }
+                let parent_matches = target_pids.contains(&p.parent_pid);
+                let ancestor_matches = p.ancestors.iter().any(|(id, _path)| {
+                    if let Some(pos) = id.find(':') {
+                        if let Ok(ancestor_pid) = id[..pos].parse::<u32>() {
+                            return target_pids.contains(&ancestor_pid);
+                        }
+                    }
+                    false
+                });
+
+                if parent_matches || ancestor_matches {
+                    target_pids.insert(p.pid);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    let pid_list: Vec<u32> = target_pids.into_iter().collect();
+    crate::capture::tcp_reset::scan_stale_tcp_connections(&pid_list, port)
 }
 
 #[tauri::command]

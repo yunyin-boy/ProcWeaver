@@ -15,6 +15,9 @@ pub struct StaleTcpConnection {
     pub remote_address: String,
     pub remote_port: u16,
     pub state: String,
+    pub is_target: bool,
+    pub target_category: String,
+    pub destination_label: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,6 +192,8 @@ pub fn scan_stale_tcp_connections(
                 continue;
             }
 
+            let (is_target, target_category, destination_label) = classify_destination(remote_ip);
+
             results.push(StaleTcpConnection {
                 pid: row.dw_owning_pid,
                 process_name: get_process_name_by_pid(row.dw_owning_pid),
@@ -197,6 +202,9 @@ pub fn scan_stale_tcp_connections(
                 remote_address: remote_ip.to_string(),
                 remote_port,
                 state: "ESTABLISHED".into(),
+                is_target,
+                target_category,
+                destination_label,
             });
         }
 
@@ -208,6 +216,49 @@ pub fn scan_stale_tcp_connections(
         let _ = (target_pids, bundle_port);
         Ok(Vec::new())
     }
+}
+
+/// 启发式目标感知分类器：区分 Fake-IP 业务目标、海外公网服务与国内直连通道
+pub fn classify_destination(remote_ip: Ipv4Addr) -> (bool, String, String) {
+    let octets = remote_ip.octets();
+
+    // 1. Fake-IP (198.18.0.0/15) - 100% 规则包海外业务目标
+    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+        return (true, "fake_ip".into(), "Fake-IP (业务目标)".into());
+    }
+
+    // 2. 常见国内主流公共 DNS 与国内骨干 IP 段判定
+    let is_domestic = matches!(
+        octets,
+        [223, 5 | 6, ..] | // 阿里 DNS / 阿里公网
+        [119, 29, ..] |    // 腾讯 DNS / 腾讯云
+        [114, 114, 114, 114] | [114, 114, 115, 115] |
+        [180, 76, 76, 76] | // 百度 DNS
+        [101, 226, ..] |   // 腾讯云常用段
+        [120, 24..=55, ..] | // 阿里云华东/华南常用段
+        [121, 14..=51, ..] |
+        [123, 120..=126, ..]
+    );
+
+    if is_domestic {
+        return (false, "domestic".into(), "国内直连通道 (建议保留)".into());
+    }
+
+    // 3. 常见海外公共服务 / DNS
+    let is_overseas_common = matches!(
+        octets,
+        [8, 8, 8 | 4, _] |     // Google DNS
+        [1, 1, 1, 1] | [1, 0, 0, 1] | // Cloudflare DNS
+        [9, 9, 9, 9] |         // Quad9
+        [208, 67, 222 | 220, _] // OpenDNS
+    );
+
+    if is_overseas_common {
+        return (true, "overseas".into(), "海外公共服务".into());
+    }
+
+    // 4. 默认公网连接在跨境规则包下作为远端目标对待
+    (true, "overseas".into(), "海外/远端目标".into())
 }
 
 /// 对给定的存量连接列表执行微秒级重置 (TCP RST)
@@ -336,13 +387,38 @@ mod tests {
             remote_address: "142.250.190.46".into(),
             remote_port: 443,
             state: "ESTABLISHED".into(),
+            is_target: true,
+            target_category: "overseas".into(),
+            destination_label: "海外/远端目标".into(),
         };
 
         let json = serde_json::to_string(&conn).unwrap();
         assert!(json.contains("\"processName\":\"test.exe\""));
         assert!(json.contains("\"remotePort\":443"));
+        assert!(json.contains("\"isTarget\":true"));
 
         let de: StaleTcpConnection = serde_json::from_str(&json).unwrap();
         assert_eq!(de.pid, 1234);
+        assert!(de.is_target);
+    }
+
+    #[test]
+    fn test_classify_destination_targets() {
+        let fake = "198.18.0.25".parse::<Ipv4Addr>().unwrap();
+        let (is_t, cat, label) = classify_destination(fake);
+        assert!(is_t);
+        assert_eq!(cat, "fake_ip");
+        assert!(label.contains("Fake-IP"));
+
+        let domestic = "223.5.5.5".parse::<Ipv4Addr>().unwrap();
+        let (is_t, cat, label) = classify_destination(domestic);
+        assert!(!is_t);
+        assert_eq!(cat, "domestic");
+        assert!(label.contains("建议保留"));
+
+        let google = "8.8.8.8".parse::<Ipv4Addr>().unwrap();
+        let (is_t, cat, _) = classify_destination(google);
+        assert!(is_t);
+        assert_eq!(cat, "overseas");
     }
 }

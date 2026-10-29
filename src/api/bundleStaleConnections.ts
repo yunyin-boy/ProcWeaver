@@ -11,7 +11,8 @@ export interface ResetStaleResult {
 export async function inspectBundleStaleConnections(
   bundleId: string,
   processNames: string[],
-  port: number
+  port: number,
+  trackSubprocesses: boolean = true
 ): Promise<StaleTcpConnectionItem[]> {
   if (!isTauri() || processNames.length === 0) return [];
   try {
@@ -20,6 +21,7 @@ export async function inspectBundleStaleConnections(
       bundleId,
       processNames,
       port,
+      trackSubprocesses,
     });
   } catch (err) {
     console.warn("inspectBundleStaleConnections 失败:", err);

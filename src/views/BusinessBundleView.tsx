@@ -135,22 +135,30 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     const bundlePort = inst.backend === "external"
       ? (bundleState.external?.states.find(s => s.id === inst.instanceId)?.port || 0)
       : (bundleState.view?.config.bundles?.find(b => b.id === inst.instanceId)?.port || 0);
-    const staleConns = await inspectBundleStaleConnections(inst.instanceId, exes, bundlePort);
+    const trackSubs = inst.policy?.proxySubprocesses ?? inst.definition.policy?.proxySubprocesses ?? true;
+    const staleConns = await inspectBundleStaleConnections(inst.instanceId, exes, bundlePort, trackSubs);
     if (staleConns.length > 0) {
       const strategy = inst.policy?.staleConnectionStrategy || inst.definition.policy?.staleConnectionStrategy || "prompt";
       if (strategy === "auto_reset") {
-        await resetBundleStaleConnections(staleConns);
-        showToast(`⚡ 出口已更新，并自动微秒热刷新了 ${staleConns.length} 条存量长连接！`);
+        // 自动重置时：智能过滤出海外目标连接（若全是国内则按原样全部重置）
+        const targetsToReset = staleConns.some(c => c.isTarget !== false)
+          ? staleConns.filter(c => c.isTarget !== false)
+          : staleConns;
+        await resetBundleStaleConnections(targetsToReset);
+        showToast(`⚡ 出口已更新，并自动微秒热刷新了 ${targetsToReset.length} 条存量长连接！`);
       } else if (strategy === "prompt") {
         setStalePromptTarget({ instance: inst, connections: staleConns });
       }
     }
   };
 
-  const handleConfirmStaleReset = async (rememberChoice: boolean) => {
+  const handleConfirmStaleReset = async (
+    selectedConns: StaleTcpConnectionItem[],
+    rememberChoice: boolean
+  ) => {
     if (!stalePromptTarget) return;
-    const { instance, connections } = stalePromptTarget;
-    const res = await resetBundleStaleConnections(connections);
+    const { instance } = stalePromptTarget;
+    const res = await resetBundleStaleConnections(selectedConns);
     if (rememberChoice) {
       const next = updateBundleInstance(instance.instanceId, (prev) => ({
         ...prev,
