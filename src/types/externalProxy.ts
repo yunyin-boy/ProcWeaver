@@ -1,3 +1,5 @@
+import type { BundlePolicy } from "./businessBundle";
+
 export interface ExternalEndpoint {
   id: string; name: string; protocol: "http" | "socks5"; host: string; port: number;
   username: string; hasPassword: boolean;
@@ -7,6 +9,7 @@ export interface ExternalBundle {
   id: string; name: string; mainExe: string; enabled: boolean; mode: "strict" | "sandbox";
   domains: string[]; members: { value: string; kind: "path" | "name"; descendants: boolean }[];
   endpointId: string | null; fallback: "direct" | "default"; port: number; dnsPort?: number;
+  policy?: BundlePolicy;
 }
 export interface ExternalDnsSettings { enabled: boolean; server: string; port: number }
 export interface ExternalRecord {

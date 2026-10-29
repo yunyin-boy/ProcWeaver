@@ -1,6 +1,6 @@
 # ProcWeaver
 
-当前版本：**V2.2.6** · [Windows x64 绿色便携版](https://github.com/jojhaa/ProcWeaver/releases/tag/v2.2.6)
+当前版本：**V2.2.7** · [Windows x64 绿色便携版](https://github.com/jojhaa/ProcWeaver/releases/tag/v2.2.7)
 
 面向 **Windows / Android / macOS** 跨平台的高性能进程、应用与业务级智能分流客户端。  
 基于 **Tauri 2 · Rust · React · TypeScript · Mihomo** 深度构建。

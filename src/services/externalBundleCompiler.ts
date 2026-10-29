@@ -1,6 +1,25 @@
-import type { BundleLocalInstance } from "../types/businessBundle";
+import type { BundleLocalInstance, BundlePolicy } from "../types/businessBundle";
 import type { ExternalBundle } from "../types/externalProxy";
 import { bundleProcesses, bundleExes, processKey, validateProcessBindings } from "../utils/bundlePlatform";
+
+function policySignature(policy?: BundlePolicy | null): [string, any][] | null {
+  if (!policy) return null;
+  const p: Record<string, any> = {
+    proxyTcp: policy.proxyTcp ?? true,
+    blockIpv6: policy.blockIpv6 ?? true,
+    blockUdp: policy.blockUdp ?? true,
+    proxyUdp: policy.proxyUdp ?? false,
+    proxySubprocesses: policy.proxySubprocesses ?? true,
+    bypassLan: policy.bypassLan ?? true,
+    dnsMode: policy.dnsMode ?? "safe_pure",
+    portFilterMode: policy.portFilterMode ?? "all",
+    customPorts: policy.customPorts ?? "",
+    targetFilterMode: policy.targetFilterMode ?? "all",
+    targetRules: Array.isArray(policy.targetRules) ? [...policy.targetRules].sort() : [],
+    disallowProxyArgs: policy.disallowProxyArgs ?? false,
+  };
+  return Object.entries(p).sort(([a], [b]) => a.localeCompare(b));
+}
 export function compileExternalBundles(instances: BundleLocalInstance[]): ExternalBundle[] {
   return instances.filter(i => i.backend === "external").map(i => {
     const bindings = i.processBindings?.windows ?? [];
@@ -14,7 +33,7 @@ export function compileExternalBundles(instances: BundleLocalInstance[]): Extern
     });
     return { id: i.instanceId, name: i.definition.packageName, mainExe: bindings.find(b => processKey(b.exe, "windows") === processKey(main, "windows"))?.executablePath || main,
       enabled: i.enabled, mode: i.definition.mode, domains: [...new Set((i.definition.domains || []).map(d => d.trim().toLowerCase().replace(/\.+$/, "").replace(/^\./, "*.")).filter(Boolean))].sort(),
-      members, endpointId: i.externalEndpointId || null, fallback: i.externalFallback || "direct", port: 0 };
+      members, endpointId: i.externalEndpointId || null, fallback: i.externalFallback || "direct", port: 0, policy: i.policy ?? i.definition.policy };
   });
 }
 // Native Serde and JavaScript construct member fields in different orders.
@@ -24,6 +43,7 @@ export const externalSignature = (bundles: ExternalBundle[]) => JSON.stringify(b
   domains: [...b.domains].sort(), endpointId: b.endpointId, fallback: b.fallback,
   members: b.members.map(m => ({ kind: m.kind, value: m.value, descendants: m.descendants }))
     .sort((a, c) => `${a.kind}:${a.value}:${a.descendants}`.localeCompare(`${c.kind}:${c.value}:${c.descendants}`)),
+  policy: policySignature(b.policy),
 })).sort((a, b) => a.id.localeCompare(b.id)));
 export function validateBackendOwnership(instances: BundleLocalInstance[]) {
   const owners = new Map<string, { id: string; name: string; backend: string }>();

@@ -66,8 +66,9 @@ function savedExternalInstances(instances: BundleLocalInstance[], view?: Externa
     const basename = (path: string) => path.split(/[\\/]/).pop() || path;
     const main = basename(saved.mainExe);
     return [{ ...instance, backend: "external" as const, enabled: saved.enabled, externalEndpointId: saved.endpointId, externalFallback: saved.fallback,
+      policy: saved.policy ?? instance.policy,
       processBindings: { ...instance.processBindings, windows: saved.members.filter(m => m.kind === "path").map(m => ({ exe: basename(m.value), executablePath: m.value, includeDescendants: m.descendants })) },
-      definition: { ...instance.definition, mode: saved.mode, domains: saved.domains, additionalExes: [], processes: saved.members.map(m => ({ exe: basename(m.value), role: basename(m.value).toLowerCase() === main.toLowerCase() ? "main" as const : "helper" as const, description: "", includeDescendants: m.descendants })) },
+      definition: { ...instance.definition, mode: saved.mode, domains: saved.domains, additionalExes: [], processes: saved.members.map(m => ({ exe: basename(m.value), role: basename(m.value).toLowerCase() === main.toLowerCase() ? "main" as const : "helper" as const, description: "", includeDescendants: m.descendants })), policy: saved.policy ?? instance.definition.policy },
     }];
   });
 }

@@ -37,6 +37,7 @@ pub struct Bundle {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub block_ipv6: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub block_udp: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub sniff_sni: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub policy: Option<crate::routing_overrides::model::BundlePolicy>,
 }
 impl Bundle {
     pub fn effective_block_ipv6(&self, global: &Config) -> bool { self.block_ipv6.unwrap_or(global.block_ipv6) }
