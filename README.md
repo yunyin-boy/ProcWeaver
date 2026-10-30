@@ -1,6 +1,6 @@
 # ProcWeaver
 
-当前版本：**V2.2.7** · [Windows x64 绿色便携版发布](https://github.com/yunyin-boy/ProcWeaver/releases) · [Linux.do 官方讨论专帖](https://linux.do/t/topic/2940957)
+当前版本：**V2.3.3** · [Windows x64 绿色便携版发布](https://github.com/yunyin-boy/ProcWeaver/releases) · [Linux.do 官方讨论专帖](https://linux.do/t/topic/2940957)
 
 > 📢 **仓库状态说明**：  
 > - **主仓库**：[jojhaa/ProcWeaver](https://github.com/jojhaa/ProcWeaver)（目前处于账号与服务维护中）；  
