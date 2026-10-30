@@ -310,11 +310,15 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   // 保存二次编辑 (B03)
   const handleSaveEdit = (updatedDef: BusinessBundleDefinition, processBindings?: BundleProcessBindings, policy?: BundlePolicy) => {
     if (!editingTarget) return;
+    const effectivePolicy = policy !== undefined ? policy : (updatedDef.policy ?? editingTarget.policy);
     const next = updateBundleInstance(editingTarget.instanceId, (prev) => ({
       ...prev,
-      definition: updatedDef,
+      definition: {
+        ...updatedDef,
+        policy: effectivePolicy,
+      },
       processBindings,
-      policy: policy !== undefined ? policy : (updatedDef.policy ?? prev.policy),
+      policy: effectivePolicy,
       isModified: true,
     }));
     persistAndSync(next);
@@ -328,6 +332,10 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     const next = updateBundleInstance(policyTarget.instanceId, (prev) => ({
       ...prev,
       policy: newPolicy,
+      definition: {
+        ...prev.definition,
+        policy: newPolicy,
+      },
       isModified: true,
     }));
     persistAndSync(next);

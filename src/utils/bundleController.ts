@@ -29,7 +29,7 @@ export interface BundleStatus {
 
 // After reopening, local drafts may contain a failed edit. Recover the last saved
 // network definition from the backend so editing another bundle never retries it.
-function savedInstances(instances: BundleLocalInstance[], view?: RoutingView): BundleLocalInstance[] {
+export function savedInstances(instances: BundleLocalInstance[], view?: RoutingView): BundleLocalInstance[] {
   return instances.flatMap(instance => {
     const saved = view?.config.bundles?.find(b => b.id === instance.instanceId);
     if (!saved || !view) return [];
@@ -48,17 +48,19 @@ function savedInstances(instances: BundleLocalInstance[], view?: RoutingView): B
         description: rule.label, includeDescendants: rule.includeDescendants }] as const;
     })).values()].sort((a, b) => Number(b.role === "main") - Number(a.role === "main"));
     return [{ ...instance, backend: "core" as const, enabled: saved.enabled,
+      policy: saved.policy ?? instance.policy,
       ...(os !== "android" && processes.length ? { processBindings: { ...instance.processBindings, [os]: processes.filter(r => r.matchKind === "path").map(r => ({ exe: basename(r.matchValue), executablePath: r.matchValue, includeDescendants: r.includeDescendants })) } } : {}),
       slotBindings: { main: saved.mainTarget?.name || instance.slotBindings.main, dns: saved.dnsTarget?.name || "FOLLOW_MAIN" },
       slotTargets: { main: saved.mainTarget || undefined, dns: saved.dnsTarget || undefined },
       definition: { ...instance.definition, mode: saved.mode === "sandbox" ? "sandbox" as const : "strict" as const,
         fallback: saved.fallback ?? "rules",
+        policy: saved.policy ?? instance.definition.policy,
         [os === "macos" ? "macosProcesses" : "processes"]: restored.length ? restored : (os === "macos" ? instance.definition.macosProcesses : instance.definition.processes) ?? [],
         ...(bundlePlatform() === "windows" ? { additionalExes: [] } : {}), domains: saved.domains ?? dns.map(rule => `${rule.domainKind === "suffix" ? "*." : ""}${rule.domain}`) },
     }];
   });
 }
-function savedExternalInstances(instances: BundleLocalInstance[], view?: ExternalProxyView): BundleLocalInstance[] {
+export function savedExternalInstances(instances: BundleLocalInstance[], view?: ExternalProxyView): BundleLocalInstance[] {
   if (!view) return [];
   return instances.flatMap(instance => {
     const saved = view.bundles.find(b => b.id === instance.instanceId);
