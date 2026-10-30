@@ -64,6 +64,10 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   // 弹窗状态
   const [selectExitTarget, setSelectExitTarget] = useState<BundleLocalInstance | null>(null);
   const openExit = (instance: BundleLocalInstance) => {
+    if (processOnly) {
+      showToast("独立进程版请前往顶部【外部代理】页面管理和分配代理出口");
+      return;
+    }
     setSelectExitTarget(instance);
   };
   const [detailTarget, setDetailTarget] = useState<BundleLocalInstance | null>(null);
@@ -127,6 +131,16 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     });
   }, []);
 
+  const getExternalLabel = useCallback((inst?: BundleLocalInstance | null) => {
+    if (!inst || inst.backend !== "external") return undefined;
+    const endpoints = bundleState.external?.endpoints || [];
+    const epId = inst.externalEndpointId || bundleState.external?.defaultEndpointId;
+    if (!epId) return undefined;
+    const ep = endpoints.find(e => e.id === epId);
+    if (!ep) return undefined;
+    return inst.externalEndpointId ? ep.name : `${ep.name} (默认)`;
+  }, [bundleState.external]);
+
   // 存量旧长连接检测
   const checkStaleConnectionsForInstance = async (inst: BundleLocalInstance) => {
     if (platform.os !== "windows") return;
@@ -187,7 +201,10 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     persistAndSync(next);
     if (nextState) {
       const targetInst = next.find(i => i.instanceId === instanceId);
-      if (targetInst && targetInst.slotBindings.main) {
+      const isBound = targetInst?.backend === "external"
+        ? Boolean(targetInst.externalEndpointId || bundleState.external?.defaultEndpointId)
+        : Boolean(targetInst?.slotBindings.main);
+      if (targetInst && isBound) {
         void checkStaleConnectionsForInstance(targetInst);
       }
     }
@@ -680,6 +697,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                       status={getBundleStatus(instance, bundleState)}
                       entry={entryStates[instance.instanceId]}
                       proxyLabels={bundleState.view?.targetLabels}
+                      externalLabel={getExternalLabel(instance)}
                       unavailable={processOnly && instance.backend !== "external"}
                       compact={processOnly}
                       onLaunch={() => void bundleTools.launch({ instanceId: instance.instanceId })}
@@ -741,6 +759,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         status={detailTarget ? getBundleStatus(instances.find(i => i.instanceId === detailTarget.instanceId) || detailTarget, bundleState) : undefined}
         entry={detailTarget ? entryStates[detailTarget.instanceId] : undefined}
         proxyLabels={bundleState.view?.targetLabels}
+        externalLabel={getExternalLabel(detailTarget)}
         drawer={processOnly}
         unavailable={processOnly && detailTarget?.backend !== "external"}
         onChangeWatcherMode={handleChangeWatcherMode}

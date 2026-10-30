@@ -77,6 +77,7 @@ pub fn run() {
             crate::bundle_repository::cancel_bundle_repository_request,
             commands::bundle_launch::launch_bundle_app, commands::bundle_launch::get_bundle_entry_states,
             commands::bundle_launch::take_bundle_launch_requests, commands::bundle_launch::choose_bundle_executable,
+            commands::bundle_launch::inspect_bundle_stale_connections, commands::bundle_launch::reset_bundle_stale_connections,
             commands::bundle_shortcuts::get_bundle_shortcuts, commands::bundle_shortcuts::change_bundle_shortcut,
             commands::routing_overrides::get_process_tree, commands::routing_overrides::choose_routing_executable,
             commands::window::window_minimize, commands::window::window_start_dragging,
