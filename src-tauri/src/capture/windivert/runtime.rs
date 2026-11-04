@@ -52,6 +52,7 @@ struct Route {
     touched: Mutex<Instant>,
     claimed: AtomicBool,
     finished: AtomicBool,
+    cancel: tokio::sync::Notify,
 }
 #[derive(Default)]
 struct Tables {
@@ -61,6 +62,20 @@ struct Tables {
     bypass: HashMap<Flow, Instant>,
     next: u16,
     generation: u64,
+}
+fn withdraw_routes(table: &mut Tables, old: &Plan, next: &Plan) {
+    for route in table.flows.values() {
+        if !next.entries.iter().any(|entry| entry.port == route.port) {
+            route.finished.store(true, Ordering::Release);
+            route.cancel.notify_one();
+        }
+    }
+    table.udp.retain(|flow, (_, owner, _)| {
+        let identity = &owner.identity;
+        let before = old.port_for(&identity.path, identity.pid, identity.created_at);
+        before.is_some() && before == next.port_for(&identity.path, identity.pid, identity.created_at)
+            && flow.protocol == 17
+    });
 }
 struct Shared {
     external: bool,
@@ -194,6 +209,11 @@ impl Engine {
             return Err("接管工作线程已停止".into());
         }
         plan.validate()?;
+        if !self.shared.external {
+            let old = self.shared.plan.read().unwrap();
+            let mut table = self.shared.table.lock().unwrap();
+            withdraw_routes(&mut table, &old, &plan);
+        }
         *self.shared.plan.write().unwrap() = plan;
         self.shared.paused.store(false, Ordering::Release);
         Ok(())
@@ -482,31 +502,8 @@ fn network(s: Arc<Shared>) {
             })};
         let choice = if let Some(port) = matched_port {
             Some(port)
-        } else if !is_excluded && !s.external && is_fake_ip(flow.destination.ip()) {
-            // 方案 B：底层安全兜底门禁
-            // 若数据包的目的地址属于 Fake-IP (198.18.0.0/15)，说明此前已被内核 DNS 记录；
-            // 仅在当前所有受控业务包入口具有单一确定端口时执行安全兜底；
-            // 若存在多个不同业务包入口（多端口），避免未知归属数据包盲目串流污染首个业务包，记录未知归属失败计数。
-            let plan = s.plan.read().unwrap();
-            let mut single_port = None;
-            let mut has_ambiguity = false;
-            for entry in &plan.entries {
-                if let Some(p) = single_port {
-                    if p != entry.port {
-                        has_ambiguity = true;
-                        break;
-                    }
-                } else {
-                    single_port = Some(entry.port);
-                }
-            }
-            if !has_ambiguity {
-                single_port
-            } else {
-                s.failures.fetch_add(1, Ordering::Relaxed);
-                None
-            }
         } else {
+            // A single available outlet is not evidence of process ownership.
             None
         };
         let Some(port) = choice else {
@@ -604,6 +601,7 @@ fn network(s: Arc<Shared>) {
                 touched: Mutex::new(Instant::now()),
                 claimed: AtomicBool::new(false),
                 finished: AtomicBool::new(false),
+                cancel: tokio::sync::Notify::new(),
             });
             t.tokens.insert(token, route.clone());
             t.flows.insert(flow, route.clone());
@@ -693,15 +691,18 @@ async fn accept(s: Arc<Shared>, listener: TcpListener) {
         s.worker.spawn(async move {
             let _permit = permit;
             shared.tcp.fetch_add(1, Ordering::Relaxed);
-            let result = async {
+            let relay = async {
                 if let Some(context)=route.external.clone() {
                     return crate::external_proxy::captured::tcp(context,stream,route.flow.destination).await.map_err(std::io::Error::other);
                 }
                 let (mut upstream, _) = socks(route.port, route.flow.destination, false).await?;
                 tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
                 Ok::<(), std::io::Error>(())
-            }
-            .await;
+            };
+            let result = tokio::select! {
+                result = relay => result,
+                _ = route.cancel.notified() => Ok(()),
+            };
             if result.is_err() {
                 shared.failures.fetch_add(1, Ordering::Relaxed);
             }

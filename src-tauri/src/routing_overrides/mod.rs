@@ -4,6 +4,7 @@ pub mod tracker;
 pub mod ownership;
 pub mod native;
 pub mod bundles;
+pub mod public_mode;
 pub mod foreign_targets;
 mod target_cache;
 #[cfg(test)] mod tests;
@@ -42,9 +43,10 @@ pub fn prepare(raw: &str, config: &Overrides, profile_id: &str) -> Result<String
     prepare_with_nodes(raw, config, profile_id, &crate::local_nodes::read()?)
 }
 pub fn prepare_with_nodes(raw: &str, config: &Overrides, profile_id: &str, nodes: &crate::local_nodes::Store) -> Result<String, String> {
+    validate_business_capture(config)?;
     let follows_system = !cfg!(target_os = "android") && config.bundles_enabled && config.bundles.iter().any(|b| b.enabled && b.mode == "sandbox" && b.fallback == "system");
     let enabled = if follows_system { crate::commands::sysproxy::get_system_proxy_status()? } else { false };
-    prepare_plan(raw, config, profile_id, enabled, nodes)
+    prepare_plan(raw, config, profile_id, enabled, nodes, None)
 }
 
 /// The lifecycle observer calls this under LIFECYCLE. Unknown reads never change routing.
@@ -68,12 +70,26 @@ pub(crate) async fn reconcile_system_proxy(status: &crate::commands::sysproxy::S
     Ok(())
 }
 fn prepare_with_system_proxy(raw: &str, config: &Overrides, profile_id: &str, system_proxy: bool) -> Result<String, String> {
-    prepare_plan(raw, config, profile_id, system_proxy, &crate::local_nodes::read()?)
+    validate_business_capture(config)?;
+    prepare_plan(raw, config, profile_id, system_proxy, &crate::local_nodes::read()?, None)
 }
-fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: bool, nodes: &crate::local_nodes::Store) -> Result<String, String> {
+pub(crate) fn prepare_public_mode(raw: &str, config: &Overrides, profile_id: &str, mode: &str) -> Result<String, String> {
+    validate_business_capture(config)?;
+    let system = crate::commands::sysproxy::get_system_proxy_status()?;
+    prepare_plan(raw, config, profile_id, system, &crate::local_nodes::read()?, Some(mode))
+}
+fn validate_business_capture(config: &Overrides) -> Result<(), String> {
+    let general = settings::get_general_settings()?;
+    crate::capture::validate_business_remote_dns(&config.effective(), &general.traffic_mode, general.tun_mode)
+}
+fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: bool, nodes: &crate::local_nodes::Store, mode: Option<&str>) -> Result<String, String> {
     let effective = config.effective();
     let config = &effective;
-    let general = settings::get_general_settings()?;
+    let mut general = settings::get_general_settings()?;
+    if let Some(mode) = mode { general.run_mode = public_mode::normalize(mode)?.into(); }
+    if public_mode::enabled() && serde_yaml::from_str::<serde_yaml::Value>(raw).ok().is_some_and(|v| v.get(public_mode::KEY).is_some()) {
+        return Err("订阅包含公共模式保留字段".into());
+    }
     let base = settings::prepare_with(raw, &general)?;
     let base = crate::local_nodes::compose(&base, nodes)?;
     let base = local_rules::compose(&base, &local_rules::get_local_rule_plan()?)?;
@@ -131,6 +147,7 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
         let raw=if config.process_enabled {composer::safety(&raw)?}else{raw};
         composer::ensure_bt_pt_and_proxy_group(&raw)
     };
+    let base = public_mode::compose(&finish(&base)?, &general.run_mode)?;
     #[cfg(windows)]
     let mut owner_policies = std::collections::BTreeMap::new();
     #[cfg(windows)]
@@ -143,12 +160,12 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
             let policy = if bundles::owner(&rule.id, &config.bundles).is_some() {
                 selected.dns_enabled = false;
                 composer::compose_owned(&base, &selected, profile_id)?
-            } else { compose_base(&selected, true)? };
-            owner_policies.insert(key, serde_yaml::from_str(&finish(&policy)?).map_err(|_| "实例分流策略无效")?);
+            } else { public_mode::compose(&finish(&compose_base(&selected, true)?)?, &general.run_mode)? };
+            owner_policies.insert(key, serde_yaml::from_str(&policy).map_err(|_| "实例分流策略无效")?);
         }
     }
     // Capture the existing routing plan before adding any bundle-owned process rules.
-    let fallback:serde_yaml::Value=serde_yaml::from_str(&finish(&base)?).map_err(|_|"原有分流规则无效")?;
+    let fallback:serde_yaml::Value=serde_yaml::from_str(&base).map_err(|_|"原有分流规则无效")?;
     let fallback=fallback["rules"].as_sequence().cloned().unwrap_or_default();
     let bundles = Overrides {
         process_enabled: config.process_enabled,
@@ -158,9 +175,11 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
         ..Overrides::default()
     };
     let bundle_derived: Vec<_> = state.derived.iter().filter(|r| bundles::owner(&r.id, &config.bundles).is_some()).cloned().collect();
-    let base = composer::compose(&base, &bundles, profile_id, &bundle_derived)?;
+    // Explicit owners precede domain-wide package rules and every public bypass.
     let base = bundles::compose_bundle_rules(&base, config)?;
-    let base = finish(&base)?;
+    let base = composer::compose(&base, &bundles, profile_id, &bundle_derived)?;
+    let base = if public_mode::enabled() { composer::core_bypass(&base)? } else { base };
+    bundles::validate_remote_names(&base, config)?;
     #[cfg(windows)]
     let base = crate::commands::dns_listener::compose(&base, config)?;
     let base = crate::capture::compose(&base, config, profile_id, &fallback)?;
@@ -357,5 +376,22 @@ pub async fn save(config: Overrides, selections: Vec<Selection>) -> Result<View,
         return Err(format!("保存失败，已恢复原运行配置：{e}"));
     }
     set_applied(config.revision, tracker::status(&config).generation);
+    #[cfg(windows)] {
+        let ports: Vec<_> = config.effective().bundles.iter().filter(|b| b.enabled).map(|b| b.port).collect();
+        crate::capture::user_mode::control::retain_ports(&ports);
+        if old.bundles_enabled && !config.bundles_enabled {
+            let mut errors = Vec::new();
+            let closed = tokio::time::timeout(std::time::Duration::from_secs(10), crate::commands::mihomo_api::close_withdrawn_bundle_connections(&old)).await
+                .map_err(|_| "旧业务连接清理超时".to_string()).and_then(|r| r);
+            if let Err(error) = closed { errors.push(error); }
+            // Attempt DNS cleanup even when a controller connection failed.
+            match crate::commands::dns_adapter::restore_bundle_dns_guard_locked().await {
+                Ok(true) => if let Err(error) = reapply(&config).await { errors.push(format!("公共 DNS 运行状态未确认：{error}")); },
+                Ok(false) => {},
+                Err(error) => errors.push(format!("业务包托管的 DNS 护航恢复失败：{error}")),
+            }
+            if !errors.is_empty() { return Err(format!("业务规则与接管已撤销，但清理尚未全部确认：{}；请正常重启相关应用", errors.join("；"))); }
+        }
+    }
     view()
 }

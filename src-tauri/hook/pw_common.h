@@ -87,6 +87,7 @@ struct HookPolicy {
     std::unordered_set<uint16_t> custom_ports;
     TargetFilterMode target_filter_mode; // 默认 All
     std::vector<std::string> target_rules;
+    bool remote_dns_required = false;
 };
 
 struct HookConfig {
@@ -101,5 +102,6 @@ extern HMODULE g_hModule;
 extern HookTier g_hook_tier;
 
 void LoadHookConfig();
+bool IsHookEnabled();
 void ReportHookTier(HookTier tier);
 std::string GetCurrentDllDir();

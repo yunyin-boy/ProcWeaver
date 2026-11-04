@@ -6,6 +6,15 @@ use std::{
 };
 
 pub const MODE: &str = "user_mode";
+#[cfg(windows)]
+#[path = "hook_control.rs"]
+pub(crate) mod control;
+#[cfg(windows)]
+struct PendingLease { name: Option<String>, committed: bool }
+#[cfg(windows)]
+impl Drop for PendingLease {
+    fn drop(&mut self) { if !self.committed { if let Some(name) = &self.name { control::revoke(name); } } }
+}
 
 pub fn is_executable_64bit(path: &Path) -> Result<bool, String> {
     let mut file = File::open(path).map_err(|e| format!("无法读取可执行文件 {}: {e}", path.display()))?;
@@ -44,6 +53,12 @@ pub fn is_executable_64bit(path: &Path) -> Result<bool, String> {
 }
 
 pub fn hook_dll_path(is_64bit: bool) -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os(if is_64bit { "PROCWEAVER_TEST_HOOK64" } else { "PROCWEAVER_TEST_HOOK32" }) {
+        let path = PathBuf::from(path);
+        if path.is_file() { return Ok(path); }
+        return Err("隔离 Hook 测试组件不存在".into());
+    }
     let filename = if is_64bit { "pw_hook64.dll" } else { "pw_hook32.dll" };
 
     if let Ok(exe) = std::env::current_exe() {
@@ -90,6 +105,7 @@ type PfnPwLaunchProcess = unsafe extern "system" fn(
     lpCommandLine: *mut u16,
     lpCurrentDirectory: *const u16,
     lpDllPath: *const u8,
+    lpEnvironment: *mut std::ffi::c_void,
     lpPid: *mut u32,
 ) -> windows_sys::Win32::Foundation::BOOL;
 
@@ -101,6 +117,7 @@ pub fn launch_with_hook(
     bundle_port: u16,
     dns_port: u16,
     policy: Option<&crate::routing_overrides::model::BundlePolicy>,
+    native_proxy: bool,
 ) -> Result<u32, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -112,24 +129,9 @@ pub fn launch_with_hook(
         ensure_hook_dir_acl(parent);
     }
 
-    // 预设环境变量供子进程自然继承
-    std::env::set_var("PROCWEAVER_BUNDLE_PORT", bundle_port.to_string());
-    std::env::set_var("PROCWEAVER_DNS_PORT", dns_port.to_string());
-
-    let default_policy = crate::routing_overrides::model::BundlePolicy::default();
-    let pol = policy.unwrap_or(&default_policy);
-
-    std::env::set_var("PROCWEAVER_PROXY_TCP", if pol.proxy_tcp { "1" } else { "0" });
-    std::env::set_var("PROCWEAVER_BLOCK_IPV6", if pol.block_ipv6 { "1" } else { "0" });
-    std::env::set_var("PROCWEAVER_BLOCK_UDP", if pol.block_udp { "1" } else { "0" });
-    std::env::set_var("PROCWEAVER_PROXY_UDP", if pol.proxy_udp { "1" } else { "0" });
-    std::env::set_var("PROCWEAVER_PROXY_SUBPROCESSES", if pol.proxy_subprocesses { "1" } else { "0" });
-    std::env::set_var("PROCWEAVER_BYPASS_LAN", if pol.bypass_lan { "1" } else { "0" });
-    std::env::set_var("PROCWEAVER_DNS_MODE", &pol.dns_mode);
-    std::env::set_var("PROCWEAVER_PORT_FILTER_MODE", &pol.port_filter_mode);
-    std::env::set_var("PROCWEAVER_CUSTOM_PORTS", &pol.custom_ports);
-    std::env::set_var("PROCWEAVER_TARGET_FILTER_MODE", &pol.target_filter_mode);
-    std::env::set_var("PROCWEAVER_TARGET_RULES", pol.target_rules.join(","));
+    let mut environment = hook_environment(bundle_port, dns_port, policy, native_proxy)?;
+    let mut lease = PendingLease { name: environment.iter().find(|(k, _)| k == "PROCWEAVER_HOOK_CONTROL").map(|(_, v)| v.to_string_lossy().into_owned()), committed: false };
+    let mut environment_block = environment_block(&environment);
 
     // 优先尝试使用 Detours 官方原生导入表注入器 (PwLaunchProcess)
     let launcher_dll = hook_dll_path(true)?;
@@ -168,7 +170,8 @@ pub fn launch_with_hook(
     unsafe {
         let h_launcher = LoadLibraryW(launcher_dll_wide.as_ptr());
         if !h_launcher.is_null() {
-            let proc_addr = GetProcAddress(h_launcher, b"PwLaunchProcess\0".as_ptr());
+            let proc_addr = GetProcAddress(h_launcher, b"PwLaunchProcessWithEnvironment\0".as_ptr());
+            if proc_addr.is_none() { return Err("Hook 组件版本过旧，无法可靠撤销接管；请更新 Hook 组件后重试".into()); }
             if let Some(fn_ptr) = proc_addr {
                 let pfn: PfnPwLaunchProcess = std::mem::transmute(fn_ptr);
                 let mut pid: u32 = 0;
@@ -177,9 +180,12 @@ pub fn launch_with_hook(
                     cmd_wide.as_mut_ptr(),
                     dir_wide.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
                     dll_path_ansi.as_ptr() as *const u8,
+                    environment_block.as_mut_ptr().cast(),
                     &mut pid,
                 );
                 if ok != 0 && pid != 0 {
+                    lease.committed = true;
+                    if let Some(name) = &lease.name { control::confirm(name)?; }
                     return Ok(pid);
                 }
             }
@@ -187,7 +193,57 @@ pub fn launch_with_hook(
     }
 
     // Fallback：挂起远程线程方式
-    launch_with_remote_thread_fallback(exe, args, working_dir, bundle_port, dns_port, &target_dll, policy)
+    let result = launch_with_remote_thread_fallback(exe, args, working_dir, bundle_port, dns_port, &target_dll, policy, &mut environment);
+    lease.committed = result.is_ok();
+    if lease.committed { if let Some(name) = &lease.name { control::confirm(name)?; } }
+    result
+}
+
+#[cfg(windows)]
+fn hook_environment(port: u16, dns: u16, policy: Option<&crate::routing_overrides::model::BundlePolicy>, native_proxy: bool) -> Result<Vec<(std::ffi::OsString, std::ffi::OsString)>, String> {
+    let default = crate::routing_overrides::model::BundlePolicy::default();
+    let p = policy.unwrap_or(&default);
+    let mut values: std::collections::BTreeMap<String, (std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        .filter(|(k, _)| !k.to_string_lossy().to_ascii_uppercase().starts_with("PROCWEAVER_"))
+        .map(|(k, v)| (k.to_string_lossy().to_ascii_uppercase(), (k, v))).collect();
+    let mut set = |key: &str, value: String| { values.insert(key.to_ascii_uppercase(), (key.into(), value.into())); };
+    for (key, value) in [("PROCWEAVER_BUNDLE_PORT", port.to_string()), ("PROCWEAVER_DNS_PORT", dns.to_string()),
+        ("PROCWEAVER_PROXY_TCP", u8::from(p.proxy_tcp).to_string()), ("PROCWEAVER_BLOCK_IPV6", u8::from(p.block_ipv6).to_string()),
+        ("PROCWEAVER_BLOCK_UDP", u8::from(p.block_udp).to_string()), ("PROCWEAVER_PROXY_UDP", u8::from(p.proxy_udp).to_string()),
+        ("PROCWEAVER_PROXY_SUBPROCESSES", u8::from(p.proxy_subprocesses).to_string()), ("PROCWEAVER_BYPASS_LAN", u8::from(p.bypass_lan).to_string()),
+        ("PROCWEAVER_DNS_MODE", effective_dns_mode(port, p).into()), ("PROCWEAVER_REMOTE_DNS_REQUIRED", u8::from(remote_dns_required(port)).to_string()),
+        ("PROCWEAVER_PORT_FILTER_MODE", p.port_filter_mode.clone()),
+        ("PROCWEAVER_CUSTOM_PORTS", p.custom_ports.clone()), ("PROCWEAVER_TARGET_FILTER_MODE", p.target_filter_mode.clone()),
+        ("PROCWEAVER_TARGET_RULES", p.target_rules.join(","))] { set(key, value); }
+    if crate::function_mode::core_features_enabled() && !crate::external_proxy::routes().iter().any(|b| b.port == port) {
+        set("PROCWEAVER_HOOK_CONTROL", control::create(port)?);
+        set("PROCWEAVER_HOOK_HOST_PID", std::process::id().to_string());
+    }
+    if native_proxy {
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] { set(key, format!("http://127.0.0.1:{port}")); }
+        set("NO_PROXY", "localhost,127.0.0.1,::1".into()); set("NODE_USE_ENV_PROXY", "1".into());
+    }
+    Ok(values.into_values().collect())
+}
+
+fn remote_dns_required(port: u16) -> bool {
+    !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
+        && !crate::external_proxy::routes().iter().any(|route| route.port == port)
+}
+
+fn effective_dns_mode(port: u16, policy: &crate::routing_overrides::model::BundlePolicy) -> &str {
+    // Full-edition names are tokens for the bound outlet, never public DNS queries.
+    // Keep the independent process product's explicit DNS choice unchanged.
+    if remote_dns_required(port) { "fake_ip" }
+    else { &policy.dns_mode }
+}
+
+#[cfg(windows)]
+fn environment_block(values: &[(std::ffi::OsString, std::ffi::OsString)]) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut block = Vec::new();
+    for (key, value) in values { block.extend(key.encode_wide()); block.push(b'=' as u16); block.extend(value.encode_wide()); block.push(0); }
+    block.push(0); block
 }
 
 #[cfg(windows)]
@@ -199,6 +255,7 @@ fn launch_with_remote_thread_fallback(
     dns_port: u16,
     dll_path: &Path,
     policy: Option<&crate::routing_overrides::model::BundlePolicy>,
+    environment: &mut Vec<(std::ffi::OsString, std::ffi::OsString)>,
 ) -> Result<u32, String> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
@@ -249,6 +306,7 @@ fn launch_with_remote_thread_fallback(
     let mut command = std::process::Command::new(exe);
     command.args(args);
     command.creation_flags(CREATE_SUSPENDED);
+    command.env_clear().envs(environment.iter().map(|(k, v)| (k, v)));
     command.env("PROCWEAVER_BUNDLE_PORT", bundle_port.to_string());
     command.env("PROCWEAVER_DNS_PORT", dns_port.to_string());
 
@@ -260,7 +318,7 @@ fn launch_with_remote_thread_fallback(
     command.env("PROCWEAVER_PROXY_UDP", if pol.proxy_udp { "1" } else { "0" });
     command.env("PROCWEAVER_PROXY_SUBPROCESSES", if pol.proxy_subprocesses { "1" } else { "0" });
     command.env("PROCWEAVER_BYPASS_LAN", if pol.bypass_lan { "1" } else { "0" });
-    command.env("PROCWEAVER_DNS_MODE", &pol.dns_mode);
+    command.env("PROCWEAVER_DNS_MODE", effective_dns_mode(bundle_port, pol));
     command.env("PROCWEAVER_PORT_FILTER_MODE", &pol.port_filter_mode);
     command.env("PROCWEAVER_CUSTOM_PORTS", &pol.custom_ports);
     command.env("PROCWEAVER_TARGET_FILTER_MODE", &pol.target_filter_mode);
@@ -410,6 +468,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn business_dns_preserves_names_without_public_resolution() {
+        for mode in ["safe_pure", "system_native", "fake_ip"] {
+            let policy = crate::routing_overrides::model::BundlePolicy { dns_mode: mode.into(), ..Default::default() };
+            let expected = if !crate::edition::PROCESS && crate::function_mode::core_features_enabled() { "fake_ip" } else { mode };
+            assert_eq!(effective_dns_mode(34998, &policy), expected);
+        }
+    }
+
+    #[test]
     fn test_pe_bitness_detection() {
         if let Ok(exe) = std::env::current_exe() {
             let is_64 = is_executable_64bit(&exe).unwrap();
@@ -426,5 +493,116 @@ mod tests {
         assert!(path64.is_ok(), "Hook 64-bit DLL 应能被找到: {:?}", path64);
         let path32 = hook_dll_path(false);
         assert!(path32.is_ok(), "Hook 32-bit DLL 应能被找到: {:?}", path32);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires freshly built x64/x86 Hook and native fixture"]
+    fn native_business_names_reach_outlet_without_public_dns() {
+        if crate::edition::PROCESS { return; }
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::os::windows::process::CommandExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let dns = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        dns.set_nonblocking(true).unwrap();
+        let mut values = hook_environment(port, dns.local_addr().unwrap().port(), None, false).unwrap();
+        // The DLL must enforce the invariant even with inconsistent legacy input.
+        values.iter_mut().find(|(key, _)| key == "PROCWEAVER_DNS_MODE").unwrap().1 = "system_native".into();
+        let name = values.iter().find(|(k, _)| k == "PROCWEAVER_HOOK_CONTROL").unwrap().1.to_string_lossy().into_owned();
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = done.clone();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(12);
+            while !finished.load(Ordering::SeqCst) && Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else { std::thread::sleep(Duration::from_millis(5)); continue; };
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut auth = [0; 3]; if stream.read_exact(&mut auth).is_err() { continue; }
+                assert_eq!(auth, [5, 1, 0]); stream.write_all(&[5, 0]).unwrap();
+                let mut header = [0; 5];
+                // Unknown Fake-IP may open the loopback socket, but must not send CONNECT.
+                if stream.read_exact(&mut header).is_err() { continue; }
+                assert_eq!(&header[..4], &[5, 1, 0, 3]);
+                let mut host = vec![0; header[4] as usize]; stream.read_exact(&mut host).unwrap();
+                let mut target_port = [0; 2]; stream.read_exact(&mut target_port).unwrap();
+                requests.push((String::from_utf8(host).unwrap(), u16::from_be_bytes(target_port)));
+                stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
+            }
+            requests
+        });
+        let mut child = std::process::Command::new(std::env::var_os("PROCWEAVER_TEST_HOOK_FIXTURE").unwrap())
+            .arg(std::env::var_os("PROCWEAVER_TEST_HOOK_DLL").unwrap()).arg("remote-dns")
+            .env_clear().envs(values).creation_flags(0x08000000).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let result = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if Instant::now() > deadline { let _ = child.kill(); break child.wait().unwrap(); }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        done.store(true, Ordering::SeqCst);
+        let requests = server.join().unwrap();
+        control::revoke(&name);
+        assert!(result.success(), "native fixture: {result}, requests: {requests:?}");
+        let expected = [("a.remote-dns.invalid".into(), 443), ("w.remote-dns.invalid".into(), 8443),
+            ("legacy.remote-dns.invalid".into(), 9443), ("ex-a.remote-dns.invalid".into(), 443), ("ex-w.remote-dns.invalid".into(), 443)];
+        let expected: Vec<_> = expected.iter().cycle().take(10).cloned().collect();
+        assert_eq!(requests, expected, "自定义子进程环境也必须继承业务域名透传，且保留应用变量");
+        let mut query = [0; 512];
+        assert_eq!(dns.recv_from(&mut query).unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "业务不得查询配置的公共 DNS 端口");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires freshly built Hook DLL and the isolated native fixture"]
+    fn native_hook_withdrawal_restores_original_socket_behavior() {
+        if crate::edition::PROCESS { return; }
+        use std::io::{BufRead, Write};
+        use std::process::Stdio;
+        let fixture = std::env::var_os("PROCWEAVER_TEST_HOOK_FIXTURE").expect("native fixture path");
+        let dll = std::env::var_os("PROCWEAVER_TEST_HOOK_DLL").expect("fresh Hook DLL path");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let before = std::env::var_os("HTTP_PROXY");
+        let values = hook_environment(34998, 45053, None, false).unwrap();
+        assert_eq!(std::env::var_os("HTTP_PROXY"), before, "启动配置不得污染宿主环境");
+        let child = std::process::Command::new(&fixture).arg(&dll).arg(listener.local_addr().unwrap().port().to_string())
+            .env_clear().envs(values).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        struct Child(std::process::Child);
+        impl Drop for Child { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
+        let mut child = Child(child);
+        let stdout = child.0.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || { for line in std::io::BufReader::new(stdout).lines() { if tx.send(line.unwrap()).is_err() { break; } } });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "blocked");
+        control::retain_ports(&[]);
+        child.0.stdin.as_mut().unwrap().write_all(b"continue\n").unwrap();
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "native");
+        assert!(child.0.wait().unwrap().success());
+        reader.join().unwrap();
+        // Exercise the real cross-bitness launcher and its explicit environment,
+        // not only a DLL loaded by the fixture itself.
+        let report = std::env::temp_dir().join(format!("pw-hook-launch-{}.txt", std::process::id()));
+        let args = vec![dll.to_string_lossy().into_owned(), listener.local_addr().unwrap().port().to_string(), report.to_string_lossy().into_owned()];
+        let pid = launch_with_hook(Path::new(&fixture), &args, None, 34998, 45053, None, false).unwrap();
+        use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenProcess, TerminateProcess, WaitForSingleObject}};
+        let handle = unsafe { OpenProcess(0x00100001, 0, pid) };
+        assert!(!handle.is_null());
+        struct NativeProcess(windows_sys::Win32::Foundation::HANDLE);
+        impl Drop for NativeProcess { fn drop(&mut self) { unsafe { if WaitForSingleObject(self.0, 0) == 258 { TerminateProcess(self.0, 1); } CloseHandle(self.0); } } }
+        let native = NativeProcess(handle);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::fs::read_to_string(&report).unwrap_or_default().trim() != "blocked" {
+            assert!(std::time::Instant::now() < deadline, "新启动器未传递 Hook 策略或启动失败");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        control::stop();
+        assert_eq!(unsafe { WaitForSingleObject(native.0, 10000) }, 0);
+        assert_eq!(std::fs::read_to_string(&report).unwrap().lines().collect::<Vec<_>>(), ["blocked", "native"]);
+        assert_eq!(std::env::var_os("HTTP_PROXY"), before);
+        std::fs::remove_file(report).unwrap();
     }
 }

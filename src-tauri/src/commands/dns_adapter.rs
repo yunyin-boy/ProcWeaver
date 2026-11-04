@@ -119,6 +119,9 @@ pub async fn check_dns_service_ready() -> Result<(), String> {
 
 /// 启用本地 DNS 护航（WinDivert 模式采用驱动层 53 -> 动态高位端口透明转发；常规模式将网卡首选 DNS 指向 127.0.0.1）
 pub async fn enable_dns_guard(origin: Option<String>) -> Result<(), String> {
+    if origin.as_deref() == Some("bundle") {
+        return Err("业务 DNS 由绑定出口远端解析，不自动启用系统 DNS 护航".into());
+    }
     #[cfg(windows)]
     {
         let _guard = ADAPTER_LOCK.lock().await;
@@ -235,6 +238,10 @@ pub async fn enable_dns_guard(origin: Option<String>) -> Result<(), String> {
 
 /// 恢复网卡原始 DNS 配置 (C04: 验证恢复成功后再删除快照文件)
 pub async fn restore_dns_guard() -> Result<(), String> {
+    restore_dns_guard_inner(true).await
+}
+
+async fn restore_dns_guard_inner(flush: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         let _guard = ADAPTER_LOCK.lock().await;
@@ -249,15 +256,24 @@ pub async fn restore_dns_guard() -> Result<(), String> {
         if record.windivert_mode {
             tokio::fs::remove_file(&path).await.map_err(|_| "清理 DNS 护航状态失败，请重试")?;
             if crate::commands::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
-                if let Ok(config) = crate::routing_overrides::read() {
-                    let _ = crate::routing_overrides::reapply(&config).await;
+                let applied = async { crate::routing_overrides::reapply(&crate::routing_overrides::read()?).await }.await;
+                if let Err(error) = applied {
+                    crate::storage::replace(&path, &bytes).map_err(|restore| format!("撤销系统 DNS 接管失败：{error}；状态恢复失败：{restore}"))?;
+                    return Err(format!("撤销系统 DNS 接管失败，已保留恢复记录：{error}"));
                 }
             }
-            let _ = run_hidden_cmd_async("ipconfig", &["/flushdns"], 4).await;
+            if flush { let _ = run_hidden_cmd_async("ipconfig", &["/flushdns"], 4).await; }
             return Ok(());
         }
 
         let alias = &record.interface_alias;
+        let (automatic, servers) = get_interface_dns_info(alias).await?;
+        if !owns_adapter_dns(automatic, &servers) {
+            // Windows or the user changed DNS after our write. Relinquish ownership
+            // without overwriting that newer configuration or flushing its caches.
+            tokio::fs::remove_file(&path).await.map_err(|_| "保留当前 DNS，但旧护航记录清理失败")?;
+            return Ok(());
+        }
         let restore_res = if record.was_dhcp || record.static_dns.is_empty() {
             run_hidden_cmd_async(
                 "netsh",
@@ -288,7 +304,7 @@ pub async fn restore_dns_guard() -> Result<(), String> {
             return Err(format!("恢复网卡 DNS 失败: {}；已保留恢复记录以备重试", e));
         }
 
-        let _ = run_hidden_cmd_async("ipconfig", &["/flushdns"], 4).await;
+        if flush { let _ = run_hidden_cmd_async("ipconfig", &["/flushdns"], 4).await; }
 
         let (automatic, current_servers) = get_interface_dns_info(alias).await?;
         verify_restored(&record, automatic, &current_servers)?;
@@ -299,6 +315,10 @@ pub async fn restore_dns_guard() -> Result<(), String> {
     {
         Ok(())
     }
+}
+
+fn owns_adapter_dns(automatic: bool, servers: &[String]) -> bool {
+    !automatic && servers == ["127.0.0.1"]
 }
 
 fn verify_restored(record: &DnsAdapterRecovery, automatic: bool, servers: &[String]) -> Result<(), String> {
@@ -313,6 +333,32 @@ fn verify_restored(record: &DnsAdapterRecovery, automatic: bool, servers: &[Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn bundle_withdrawal_preserves_manual_dns_and_rejects_stale_enable() {
+        if crate::edition::PROCESS { return; }
+        const FLAG: &str = "PROCWEAVER_BUNDLE_DNS_WITHDRAW_TEST";
+        const NAME: &str = "commands::dns_adapter::tests::bundle_withdrawal_preserves_manual_dns_and_rejects_stale_enable";
+        if std::env::var_os(FLAG).is_none() {
+            assert!(std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", NAME]).env(FLAG, "1").status().unwrap().success());
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("pw-bundle-dns-withdraw-{}", std::process::id()));
+        crate::storage::initialize_test(dir.clone(), std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().into());
+        std::fs::write(dir.join("config/routing-overrides.json"), serde_json::to_vec(&crate::routing_overrides::model::Overrides {
+            bundles_enabled: false, ..Default::default()
+        }).unwrap()).unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            assert!(!toggle_dns_guard(true, Some("bundle".into())).await.unwrap(), "旧前端请求不能重开已关闭的业务 DNS");
+            assert!(enable_dns_guard(Some("bundle".into())).await.unwrap_err().contains("远端解析"));
+            let mut record = DnsAdapterRecovery {interface_alias:"fixture".into(),was_dhcp:true,static_dns:vec![],windivert_mode:true,origin:Some("manual".into())};
+            let path = recovery_path(); std::fs::write(&path,serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(!restore_bundle_dns_guard_locked().await.unwrap()); assert!(path.exists());
+            record.origin = Some("bundle".into()); std::fs::write(&path,serde_json::to_vec(&record).unwrap()).unwrap();
+            assert!(restore_bundle_dns_guard_locked().await.unwrap()); assert!(!path.exists());
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn performance_restoration_requires_mode_and_all_static_servers() {
         let mut record = DnsAdapterRecovery { interface_alias: "test".into(), was_dhcp: false, static_dns: vec!["1.1.1.1".into(), "8.8.8.8".into()], windivert_mode: false, origin: None };
@@ -322,6 +368,16 @@ mod tests {
         record.was_dhcp = true;
         assert!(verify_restored(&record, true, &["192.0.2.1".into()]).is_ok());
         assert!(verify_restored(&record, true, &["127.0.0.1".into()]).is_err());
+    }
+
+    #[test]
+    fn withdrawal_never_overwrites_newer_adapter_dns() {
+        assert!(owns_adapter_dns(false, &["127.0.0.1".into()]));
+        for (automatic, servers) in [(true, vec!["127.0.0.1".into()]),
+            (false, vec!["127.0.0.1".into(), "192.0.2.53".into()]),
+            (false, vec!["192.0.2.53".into()]), (false, vec![])] {
+            assert!(!owns_adapter_dns(automatic, &servers));
+        }
     }
 }
 
@@ -383,27 +439,25 @@ pub async fn toggle_dns_guard(enable: bool, origin: Option<String>) -> Result<bo
     let _lifecycle = super::process::LIFECYCLE.lock().await;
     if enable { crate::function_mode::require_full()?; }
     if crate::shutdown::in_progress() { return Err("正在恢复网络并退出，请稍候".into()); }
+    if origin.as_deref() == Some("bundle") {
+        // Only migration cleanup is accepted from legacy business guard callers.
+        if !enable { restore_bundle_dns_guard_locked().await?; }
+        return get_dns_guard_status();
+    }
     if enable {
         enable_dns_guard(origin).await?;
         Ok(true)
     } else {
-        // 如果是由业务包生命周期发起的关闭请求 (origin == "bundle")：
-        // 必须核验当前护航的归属：若用户已手动接管 ("manual")，则绝对不关闭，恪守用户最高主权！
-        if origin.as_deref() == Some("bundle") {
-            let path = recovery_path();
-            if path.exists() {
-                if let Ok(bytes) = std::fs::read(&path) {
-                    if let Ok(record) = serde_json::from_slice::<DnsAdapterRecovery>(&bytes) {
-                        if record.origin.as_deref() == Some("manual") {
-                            return Ok(true);
-                        }
-                    }
-                }
-            }
-        }
-        restore_dns_guard().await?;
+        restore_dns_guard_inner(true).await?;
         Ok(false)
     }
+}
+
+pub(crate) async fn restore_bundle_dns_guard_locked() -> Result<bool, String> {
+    let info = get_dns_guard_info()?;
+    if !info.enabled || info.origin != "bundle" { return Ok(false); }
+    restore_dns_guard_inner(false).await?;
+    Ok(true)
 }
 
 #[tauri::command]

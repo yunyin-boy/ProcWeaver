@@ -24,6 +24,7 @@ export const EditBundleModal: React.FC<Props> = ({
 }) => {
   const platform = usePlatform();
   const os = platform.os === "android" ? "android" : platform.os === "macos" ? "macos" : "windows";
+  const remoteDns = os === "windows" && bundleInstance?.backend !== "external";
   const [name, setName] = useState<string>("");
   const [description, setDescription] = useState<string>("");
   const [mode, setMode] = useState<"strict" | "sandbox">("strict");
@@ -217,7 +218,7 @@ export const EditBundleModal: React.FC<Props> = ({
             </select>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               {fallback === "system" ? "跟随 ProcWeaver 的系统代理开关：开启时按订阅和本地规则分流，关闭时直连。命中清单的请求不受影响。" : fallback === "direct" ? "未命中清单的请求由本地核心直接连接目标，不经过代理节点。" : "未命中清单的请求始终按现有订阅和本地规则分流，与系统代理开关无关。"}
-              切换影响新连接，已有连接不会自动迁移；DNS 策略单独生效。
+              {remoteDns ? "切换影响新连接，已有连接不会自动迁移；业务域名随主出口交远端解析。" : "切换影响新连接，已有连接不会自动迁移；DNS 策略单独生效。"}
             </p>
           </div>}
 
@@ -247,7 +248,7 @@ export const EditBundleModal: React.FC<Props> = ({
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="font-bold text-slate-700 dark:text-slate-200">
-                {mode === "sandbox" ? "独立出口域名清单" : "DNS 策略域名清单"} (可选，每行一个)
+                {mode === "sandbox" ? "独立出口域名清单" : remoteDns ? "业务域名清单" : "DNS 策略域名清单"} (可选，每行一个)
               </label>
               <span className="text-[11px] text-slate-400">*.example.com 包含根域名及子域名</span>
             </div>
@@ -259,8 +260,8 @@ export const EditBundleModal: React.FC<Props> = ({
               className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white font-mono text-xs focus:outline-none focus:border-indigo-500"
             />
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              {mode === "sandbox" ? "进程与域名同时命中才使用本包出口；留空则所有请求按“未命中域名时”的策略处理。" : "强锁模式不受域名清单限制；此清单仅用于核心 DNS 策略。"}
-              DNS 解析与网页连接分别匹配，应用自带加密 DNS 不由此自动接管。
+              {mode === "sandbox" ? "进程与域名同时命中才使用本包出口；留空则所有请求按“未命中域名时”的策略处理。" : "强锁模式下已接入进程不受域名清单限制；此清单用于业务域名路由。"}
+              {remoteDns ? "业务域名不注入公共 DNS 策略。应用自带加密 DNS 需另行核验。" : "DNS 解析与网页连接分别匹配，应用自带加密 DNS 不由此自动接管。"}
             </p>
           </div>
 
@@ -277,7 +278,7 @@ export const EditBundleModal: React.FC<Props> = ({
                   接管与网络防护策略
                 </span>
                 <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
-                  {policy.dnsMode === "fake_ip" ? "Fake-IP" : policy.dnsMode === "system_native" ? "原生DNS" : "纯净DNS"} · {policy.blockUdp ? "防QUIC" : policy.proxyUdp ? "UDP代理" : "UDP直连"}
+                  {remoteDns ? "出口远端解析 · TCP" : `${policy.dnsMode === "fake_ip" ? "Fake-IP" : policy.dnsMode === "system_native" ? "原生DNS" : "纯净DNS"} · ${policy.blockUdp ? "防QUIC" : policy.proxyUdp ? "UDP代理" : "UDP直连"}`}
                 </span>
               </div>
               {showPolicy ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
@@ -289,6 +290,7 @@ export const EditBundleModal: React.FC<Props> = ({
                   policy={policy}
                   onChange={setPolicy}
                   isHttpUpstream={bundleInstance.backend === "external"}
+                  remoteDns={remoteDns}
                 />
               </div>
             )}

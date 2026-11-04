@@ -1,6 +1,43 @@
 #include "process_hook.h"
 #include <cwchar>
 #include <cstring>
+#include <map>
+
+struct EnvLess { bool operator()(const std::wstring& a, const std::wstring& b) const { return _wcsicmp(a.c_str(), b.c_str()) < 0; } };
+
+// Preserve the application's environment while carrying our one-way lease into
+// children that supply a sanitized custom block. Never mutate the host's env.
+static std::vector<wchar_t> ChildEnvironment(LPVOID supplied, bool unicode) {
+    std::map<std::wstring, std::wstring, EnvLess> entries;
+    auto add = [&](const std::wstring& entry) {
+        auto equal = entry.find(L'=', entry[0] == L'=' ? 1 : 0);
+        if (equal != std::wstring::npos) entries[entry.substr(0, equal)] = entry.substr(equal + 1);
+    };
+    LPWCH parent = GetEnvironmentStringsW();
+    if (!parent) return {};
+    if (!supplied) { for (auto* p = parent; *p; p += wcslen(p) + 1) add(p); }
+    else if (unicode) { for (auto* p = static_cast<wchar_t*>(supplied); *p; p += wcslen(p) + 1) add(p); }
+    else {
+        for (auto* p = static_cast<char*>(supplied); *p; p += strlen(p) + 1) {
+            int size = MultiByteToWideChar(CP_ACP, 0, p, -1, nullptr, 0);
+            if (!size) { FreeEnvironmentStringsW(parent); return {}; }
+            std::wstring value(size, L'\0'); MultiByteToWideChar(CP_ACP, 0, p, -1, value.data(), size);
+            value.pop_back(); add(value);
+        }
+    }
+    for (auto* p = parent; *p; p += wcslen(p) + 1) { if (_wcsnicmp(p, L"PROCWEAVER_", 11) == 0) add(p); }
+    FreeEnvironmentStringsW(parent);
+    entries[L"PROCWEAVER_BUNDLE_PORT"] = std::to_wstring(g_config.bundle_port);
+    entries[L"PROCWEAVER_DNS_PORT"] = std::to_wstring(g_config.dns_port);
+    entries[L"PROCWEAVER_DNS_MODE"] = L"fake_ip";
+    entries[L"PROCWEAVER_REMOTE_DNS_REQUIRED"] = L"1";
+    std::vector<wchar_t> result;
+    for (auto& entry : entries) {
+        result.insert(result.end(), entry.first.begin(), entry.first.end()); result.push_back(L'=');
+        result.insert(result.end(), entry.second.begin(), entry.second.end()); result.push_back(L'\0');
+    }
+    result.push_back(L'\0'); return result;
+}
 
 PFN_CreateProcessW TrueCreateProcessW = CreateProcessW;
 PFN_CreateProcessA TrueCreateProcessA = CreateProcessA;
@@ -45,8 +82,8 @@ static bool ShouldSkipInjectA(LPCSTR appName, LPCSTR cmdLine) {
     return false;
 }
 
-static void InjectChildProcess(HANDLE hProcess) {
-    if (!hProcess) return;
+static bool InjectChildProcess(HANDLE hProcess) {
+    if (!hProcess) return false;
 
     BOOL isWow64 = FALSE;
     typedef BOOL (WINAPI *LPFN_ISWOW64PROCESS)(HANDLE, PBOOL);
@@ -55,7 +92,7 @@ static void InjectChildProcess(HANDLE hProcess) {
     );
 
     if (fnIsWow64) {
-        fnIsWow64(hProcess, &isWow64);
+        if (!fnIsWow64(hProcess, &isWow64)) return false;
     }
 
     std::string dir = GetCurrentDllDir();
@@ -77,8 +114,19 @@ static void InjectChildProcess(HANDLE hProcess) {
     DWORD attr = GetFileAttributesA(target_dll.c_str());
     if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
         LPCSTR dll_path = target_dll.c_str();
-        DetourUpdateProcessWithDll(hProcess, &dll_path, 1);
+        return DetourUpdateProcessWithDll(hProcess, &dll_path, 1) != FALSE;
     }
+    return false;
+}
+
+static bool ProtectChild(LPPROCESS_INFORMATION child) {
+    if (InjectChildProcess(child->hProcess) || !g_config.policy.remote_dns_required) return true;
+    // This is our newly created, still-suspended child. Do not release it into
+    // native networking after an injection failure.
+    TerminateProcess(child->hProcess, ERROR_DLL_INIT_FAILED);
+    WaitForSingleObject(child->hProcess, 1000);
+    CloseHandle(child->hThread); CloseHandle(child->hProcess);
+    ZeroMemory(child, sizeof(*child)); SetLastError(ERROR_DLL_INIT_FAILED); return false;
 }
 
 BOOL WINAPI HookCreateProcessW(
@@ -93,7 +141,7 @@ BOOL WINAPI HookCreateProcessW(
     LPSTARTUPINFOW lpStartupInfo,
     LPPROCESS_INFORMATION lpProcessInformation
 ) {
-    if (!g_config.enabled || !g_config.policy.proxy_subprocesses || ShouldSkipInjectW(lpApplicationName, lpCommandLine)) {
+    if (!IsHookEnabled() || !g_config.policy.proxy_subprocesses || ShouldSkipInjectW(lpApplicationName, lpCommandLine)) {
         return TrueCreateProcessW(
             lpApplicationName, lpCommandLine, lpProcessAttributes,
             lpThreadAttributes, bInheritHandles, dwCreationFlags,
@@ -104,6 +152,13 @@ BOOL WINAPI HookCreateProcessW(
     bool was_suspended = (dwCreationFlags & CREATE_SUSPENDED) != 0;
     DWORD modified_flags = dwCreationFlags | CREATE_SUSPENDED;
 
+    std::vector<wchar_t> environment;
+    if (g_config.policy.remote_dns_required) {
+        environment = ChildEnvironment(lpEnvironment, (dwCreationFlags & CREATE_UNICODE_ENVIRONMENT) != 0);
+        if (environment.empty()) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+        lpEnvironment = environment.data(); modified_flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
+
     BOOL ok = TrueCreateProcessW(
         lpApplicationName, lpCommandLine, lpProcessAttributes,
         lpThreadAttributes, bInheritHandles, modified_flags,
@@ -113,7 +168,7 @@ BOOL WINAPI HookCreateProcessW(
     if (!ok) return FALSE;
 
     if (lpProcessInformation && lpProcessInformation->hProcess) {
-        InjectChildProcess(lpProcessInformation->hProcess);
+        if (!ProtectChild(lpProcessInformation)) return FALSE;
 
         // 如果调用方本来未要求挂起，则恢复主线程
         if (!was_suspended && lpProcessInformation->hThread) {
@@ -136,7 +191,7 @@ BOOL WINAPI HookCreateProcessA(
     LPSTARTUPINFOA lpStartupInfo,
     LPPROCESS_INFORMATION lpProcessInformation
 ) {
-    if (!g_config.enabled || !g_config.policy.proxy_subprocesses || ShouldSkipInjectA(lpApplicationName, lpCommandLine)) {
+    if (!IsHookEnabled() || !g_config.policy.proxy_subprocesses || ShouldSkipInjectA(lpApplicationName, lpCommandLine)) {
         return TrueCreateProcessA(
             lpApplicationName, lpCommandLine, lpProcessAttributes,
             lpThreadAttributes, bInheritHandles, dwCreationFlags,
@@ -147,6 +202,13 @@ BOOL WINAPI HookCreateProcessA(
     bool was_suspended = (dwCreationFlags & CREATE_SUSPENDED) != 0;
     DWORD modified_flags = dwCreationFlags | CREATE_SUSPENDED;
 
+    std::vector<wchar_t> environment;
+    if (g_config.policy.remote_dns_required) {
+        environment = ChildEnvironment(lpEnvironment, (dwCreationFlags & CREATE_UNICODE_ENVIRONMENT) != 0);
+        if (environment.empty()) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+        lpEnvironment = environment.data(); modified_flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
+
     BOOL ok = TrueCreateProcessA(
         lpApplicationName, lpCommandLine, lpProcessAttributes,
         lpThreadAttributes, bInheritHandles, modified_flags,
@@ -156,7 +218,7 @@ BOOL WINAPI HookCreateProcessA(
     if (!ok) return FALSE;
 
     if (lpProcessInformation && lpProcessInformation->hProcess) {
-        InjectChildProcess(lpProcessInformation->hProcess);
+        if (!ProtectChild(lpProcessInformation)) return FALSE;
 
         if (!was_suspended && lpProcessInformation->hThread) {
             ResumeThread(lpProcessInformation->hThread);

@@ -122,16 +122,31 @@ impl Overrides {
         let mut config = self.clone();
         let owned = |id: &str| super::bundles::owner(id, &self.bundles).is_some();
         let dns_owned = |id: &str| self.bundles.iter().any(|b| id.starts_with(&format!("bundle-dns-{}-", b.id)));
+        // Legacy bundle DNS upstream definitions remain on disk for compatibility.
+        // Business target names travel through their outlet, not nameserver-policy.
+        if cfg!(windows) && !crate::edition::PROCESS {
+            config.dns_rules.retain(|r| !dns_owned(&r.id));
+            for bundle in &mut config.bundles {
+                bundle.dns_target = None;
+                // UDP adapters may resolve target domains locally. Until a remote
+                // domain-capable UDP path is available, keep this runtime blocked.
+                bundle.policy.get_or_insert_with(BundlePolicy::default).block_udp = true;
+            }
+        }
         // Manual feature switches and the bundle master are independent gates.
         if !self.process_enabled { config.process_rules.retain(|r| owned(&r.id)); }
         if !self.dns_enabled { config.dns_rules.retain(|r| dns_owned(&r.id)); }
         if !config.bundles_enabled {
             config.process_rules.retain(|r| !owned(&r.id));
             config.dns_rules.retain(|r| !dns_owned(&r.id));
-            for bundle in &mut config.bundles { bundle.enabled = false; }
+            // This is a runtime copy. Pausing withdraws the listeners and capture
+            // scope too; stored definitions retain their individual switches.
+            config.bundles.clear();
         }
         config.process_enabled |= config.bundles.iter().any(|b| b.enabled);
-        config.dns_enabled |= config.bundles_enabled && config.dns_rules.iter().any(|r| dns_owned(&r.id) && r.enabled);
+        if !cfg!(windows) || crate::edition::PROCESS {
+            config.dns_enabled |= config.bundles_enabled && config.dns_rules.iter().any(|r| dns_owned(&r.id) && r.enabled);
+        }
         config
     }
 }

@@ -102,10 +102,24 @@ pub fn stop_owned_child(state: &mut CoreState) -> Result<(), String> {
 }
 
 pub fn stop_owned_child_ex(state: &mut CoreState, keep_proxy: bool) -> Result<(), String> {
+    stop_owned_child_inner(state, keep_proxy, false)
+}
+
+pub(crate) fn stop_owned_child_for_restart(state: &mut CoreState, keep_proxy: bool) -> Result<(), String> {
+    stop_owned_child_inner(state, keep_proxy, true)
+}
+
+fn stop_owned_child_inner(state: &mut CoreState, keep_proxy: bool, restarting: bool) -> Result<(), String> {
     // 先恢复本程序接管的系统代理；失败时保留仍可服务的核心供重试。
     if !keep_proxy { set_system_proxy_raw(false, None)?; }
     crate::routing_overrides::reset_system_proxy_observation();
-    crate::capture::stop();
+    if restarting {
+        crate::capture::pause();
+    } else {
+        crate::capture::stop();
+        #[cfg(windows)]
+        crate::capture::user_mode::control::stop();
+    }
     if let Some(child) = state.child.as_mut() {
         if child.try_wait().map_err(|e| e.to_string())?.is_none() {
             #[cfg(target_os = "macos")]
@@ -321,8 +335,8 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
         super::dns_runtime::confirm(&raw, child.id()).await?;
         crate::routing_overrides::bundles::select(&raw).await?;
         crate::capture::confirm_runtime_for_core(&raw, child.id()).await?;
-        if preferences.run_mode != "rule" {
-            let _ = super::mihomo_api::set_mihomo_mode(preferences.run_mode.clone()).await;
+        if !crate::routing_overrides::public_mode::enabled() && preferences.run_mode != "rule" {
+            super::mihomo_api::set_kernel_mode_locked(preferences.run_mode.clone()).await?;
         }
         Ok(())
     }.await;
@@ -450,17 +464,17 @@ pub async fn restart_core_transaction(app: &tauri::AppHandle) -> Result<CoreStat
             }
         }
     }
-    if let Ok(cfg) = crate::commands::mihomo_api::get_mihomo_config().await {
+    if !crate::routing_overrides::public_mode::enabled() { if let Ok(cfg) = crate::commands::mihomo_api::get_mihomo_config().await {
         if let Some(m) = cfg.get("mode").and_then(|v| v.as_str()) {
             last_mode = Some(m.to_string());
         }
-    }
+    } }
 
     // 2. 停掉旧核心（设置 keep_proxy 为 true，避免断开 Windows 系统代理）
     {
         let state = app.state::<CoreStateMutex>();
         let mut state_guard = state.lock().map_err(|e| e.to_string())?;
-        stop_owned_child_ex(&mut state_guard, true)?;
+        stop_owned_child_for_restart(&mut state_guard, true)?;
     }
 
     // 3. 启动新核心（持锁状态下调用 start_core_locked，避免 LIFECYCLE 死锁）
@@ -490,11 +504,11 @@ pub async fn restart_core_transaction(app: &tauri::AppHandle) -> Result<CoreStat
     }
     if let Some(node) = last_active_node {
         for group in ["节点选择", "🚀 节点选择", "PROXY", "GLOBAL"] {
-            let _ = crate::commands::mihomo_api::switch_mihomo_proxy(group.into(), node.clone()).await;
+            let _ = crate::commands::mihomo_api::switch_mihomo_proxy_locked(group.into(), node.clone()).await;
         }
     }
     if let Some(m) = last_mode {
-        let _ = crate::commands::mihomo_api::set_mihomo_mode(m).await;
+        crate::commands::mihomo_api::set_kernel_mode_locked(m).await?;
     }
 
     // 5. 全局广播与托盘刷新

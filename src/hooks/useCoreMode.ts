@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { fetchMihomoConfig, updateCoreMode } from "../api/mihomo";
+import { fetchMihomoConfig, fetchPublicRoutingMode, updateCoreMode } from "../api/mihomo";
 import { createCoreModeController } from "../utils/coreModeController";
 import { usePlatform } from "../context/PlatformContext";
 import { isAppHidden } from "../utils/appVisibility";
 
 export function useCoreMode(corePid?: number) {
-  const mobile = usePlatform().os === "android";
-  const controller = useMemo(() => createCoreModeController({ read: fetchMihomoConfig, write: updateCoreMode }), []);
+  const os = usePlatform().os;
+  const mobile = os === "android";
+  const controller = useMemo(() => createCoreModeController({ read: os === "windows" ? fetchPublicRoutingMode : fetchMihomoConfig, write: updateCoreMode }), [os]);
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   useEffect(() => {
     const refresh = () => { if (!mobile || (!isAppHidden() && corePid)) void controller.refresh(); };

@@ -33,9 +33,9 @@ import { DEFAULT_REPOSITORY, repositoryPage } from "../services/bundleRepositori
 import type { RepositoryPackage } from "../types/bundleRepository";
 import { type BundlePolicy, defaultBundlePolicy } from "../types/businessBundle";
 import { usePlatform } from "../context/PlatformContext";
+import { getGeneralSettings } from "../api/settings";
 import { bundleExes, processKey, bundleProcesses } from "../utils/bundlePlatform";
 import { toggleDnsGuard, getDnsGuardInfo, isTauri } from "../api";
-import { dismissBundleDnsGuard, resetBundleDnsGuardDismissal } from "../services/bundleDnsGuard";
 import {
   Wrench,
   Download,
@@ -109,9 +109,17 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         }).catch(() => {});
       }
     };
+    const refreshTrafficMode = () => {
+      void getGeneralSettings().then(s => {
+        const mode = (s.trafficMode as string) || (s.tunMode ? "tun" : "app_proxy");
+        if (!disposed) setCurrentTrafficMode(mode);
+      }).catch(() => {});
+    };
+    refreshTrafficMode();
     refreshDns();
     window.addEventListener("focus", refreshDns);
     window.addEventListener("procweaver-dns-guard-changed", refreshDns);
+    window.addEventListener("netbox-settings-saved", refreshTrafficMode);
     if (isTauri()) void import("@tauri-apps/api/event").then(({ listen }) => listen("procweaver-dns-guard-changed", refreshDns))
       .then(remove => { if (disposed) remove(); else unlisten = remove; }).catch(() => {});
 
@@ -120,6 +128,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
       unlisten?.();
       window.removeEventListener("focus", refreshDns);
       window.removeEventListener("procweaver-dns-guard-changed", refreshDns);
+      window.removeEventListener("netbox-settings-saved", refreshTrafficMode);
     };
   }, []);
 
@@ -226,7 +235,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         slotTargets: {
           ...prev.slotTargets,
           main: bundleState.view?.targets.find(t => t.name === mainExit),
-          dns: dnsExit && dnsExit !== "FOLLOW_MAIN" ? bundleState.view?.targets.find(t => t.name === dnsExit) : undefined,
+          dns: dnsExit === undefined ? prev.slotTargets?.dns : dnsExit && dnsExit !== "FOLLOW_MAIN" ? bundleState.view?.targets.find(t => t.name === dnsExit) : undefined,
         },
         // 如果解除绑定，则自动停用；若选了有效节点，则自动开启强锁
         enabled: !isUnbinding,
@@ -305,13 +314,11 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     try {
       const next = !dnsGuardEnabled;
       if (!next) {
-        dismissBundleDnsGuard();
         const res = await toggleDnsGuard(false, "manual");
         setDnsGuardEnabled(res);
         setDnsGuardOrigin("none");
         showToast("ℹ️ 已手动关闭本地 DNS 防投毒护航");
       } else {
-        resetBundleDnsGuardDismissal();
         const res = await toggleDnsGuard(true, "manual");
         setDnsGuardEnabled(res);
         setDnsGuardOrigin("manual");
@@ -400,7 +407,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
       <div className="max-w-6xl w-full mx-auto space-y-4">
         {(bundleState.error || bundleState.readError || bundleState.pending) && (
           <div role={bundleState.pending ? "status" : "alert"} className="p-3 rounded-xl border border-amber-400/50 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 text-xs flex flex-wrap items-center gap-2">
-            <span className="flex-1 min-w-0 break-words">{bundleState.pending ? "正在保存本次变更；未修改的业务包保持原配置。节点切换仅影响该包的新连接。" : `${bundleState.error || bundleState.readError}。本次变更未确认生效，请查看受影响业务包的上次保存出口。`}</span>
+            <span className="flex-1 min-w-0 break-words">{bundleState.pending ? "正在保存本次变更；未修改的业务包保持原配置。节点切换仅影响该包的新连接。" : `${bundleState.error || bundleState.readError}。本次变更未确认生效；已选择出口不代表实际出口，请查看各业务包的应用状态和新连接记录。`}</span>
             <button type="button" disabled={bundleState.pending} onClick={() => persistAndSync(instances)} className="px-3 py-1 rounded border border-current disabled:opacity-50">重新应用</button>
           </div>
         )}
@@ -522,13 +529,13 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   ? "macOS 首版不修改网卡 DNS；核心 DNS 策略仅作用于进入核心的查询"
                   : dnsGuardEnabled
                     ? dnsGuardOrigin === "bundle"
-                      ? "当前由运行中的业务规则包自动托管 DNS 解析，防止 DNS 投毒与泄漏；业务包全部停止后将自动恢复系统默认。点击可手动关闭。"
-                      : "已手动开启网卡 DNS 防投毒护航（不受业务包启停影响）。点击可关闭。"
-                    : "开启后将 Windows 网卡首选 DNS 指向本地核心，防止 DNS 投毒与泄漏。点击可开启。"
+                      ? "旧版业务自动护航等待清理。业务目标域名改由绑定出口远端解析。点击可关闭系统护航。"
+                      : "已手动开启系统 DNS 护航，使用公共 DNS 配置，独立于业务包启停。点击可关闭。"
+                    : "手动接管系统 DNS，使用公共 DNS 配置；业务目标域名由绑定出口远端解析，无需开启此项。"
               }
             >
               <span>🛡️</span>
-              <span>DNS护航: <strong className={
+              <span>系统DNS护航: <strong className={
                 dnsGuardEnabled
                   ? dnsGuardOrigin === "bundle"
                     ? "text-emerald-700 dark:text-emerald-300 font-bold"
@@ -541,7 +548,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   ? "切换中..."
                   : dnsGuardEnabled
                   ? dnsGuardOrigin === "bundle"
-                    ? "开启 (业务托管)"
+                    ? "旧版待清理"
                     : "开启"
                   : "关闭"}
               </strong></span>
@@ -585,7 +592,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         </header>}
         {!processOnly && bundleState.view?.config.bundlesEnabled === false && (
           <p className="text-xs text-amber-600 dark:text-amber-400 px-1">
-            业务规则包总开关已暂停，单包设置与快捷方式保留。已有核心连接可能继续使用原出口。
+            业务包规则与新接管已撤销，单包设置保留。应用遵循自身及系统网络设置；已有 Hook、代理启动参数或 Fake-IP 缓存的应用，请正常退出并重启。
           </p>
         )}
 
@@ -698,6 +705,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                       entry={entryStates[instance.instanceId]}
                       proxyLabels={bundleState.view?.targetLabels}
                       externalLabel={getExternalLabel(instance)}
+                      trafficMode={currentTrafficMode}
                       unavailable={processOnly && instance.backend !== "external"}
                       compact={processOnly}
                       onLaunch={() => void bundleTools.launch({ instanceId: instance.instanceId })}
@@ -730,6 +738,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         {/* ================= 视图 3：自定义工坊 (全新重构) ================= */}
         {activeTab === "studio" && (
           <BundleStudio
+            remoteDns={platform.os === "windows" && !processOnly}
             os={os}
             existingInstances={instances}
             availableProxies={availableProxies}

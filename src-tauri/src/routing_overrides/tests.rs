@@ -51,12 +51,16 @@ fn bundle_master_and_manual_switches_are_independent() {
     }
     c.process_enabled = false; c.dns_enabled = false;
     let active = c.effective();
-    assert!(active.process_enabled && active.dns_enabled);
-    assert_eq!(active.process_rules.len(), 1); assert_eq!(active.dns_rules.len(), 1);
+    assert!(active.process_enabled);
+    assert_eq!(active.process_rules.len(), 1);
+    if cfg!(windows) && !crate::edition::PROCESS {
+        assert!(!active.dns_enabled && active.dns_rules.is_empty(), "业务不注入公共 DNS 上游规则");
+    } else { assert!(active.dns_enabled); assert_eq!(active.dns_rules.len(), 1); }
     c.bundles_enabled = false;
     let paused = c.effective();
     assert!(!paused.process_enabled && !paused.dns_enabled);
     assert!(paused.process_rules.is_empty() && paused.dns_rules.is_empty());
+    assert!(paused.bundles.is_empty(), "暂停后运行计划不能保留业务监听与出口组");
     assert!(c.bundles[0].enabled); assert_eq!(c.process_rules.len(), 2);
     c.process_enabled = true; c.dns_enabled = true;
     let manual = c.effective();
@@ -64,6 +68,73 @@ fn bundle_master_and_manual_switches_are_independent() {
     assert_eq!(manual.dns_rules[0].id, "manual-dns");
     let mut legacy = serde_json::to_value(c).unwrap(); legacy.as_object_mut().unwrap().remove("bundlesEnabled");
     assert!(serde_json::from_value::<Overrides>(legacy).unwrap().bundles_enabled);
+}
+
+#[test]
+fn transparent_business_dns_allowed_and_compatible() {
+    if !cfg!(windows) || crate::edition::PROCESS { return; }
+    let mut c = config();
+    c.bundles.push(BundleRoute { id: "b".into(), name: "业务".into(), main_exe: "root.exe".into(), enabled: true,
+        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(), domains: vec![], fallback: "rules".into(), policy: None });
+    for mode in ["windivert_v1", "tun", "user_mode", "app_proxy"] {
+        assert!(crate::capture::validate_business_remote_dns(&c, mode, false).is_ok());
+        assert!(crate::capture::validate_business_remote_dns(&c, mode, true).is_ok());
+    }
+}
+
+#[test]
+fn public_hosts_and_sniffer_cannot_silently_replace_business_names() {
+    if !cfg!(windows) || crate::edition::PROCESS { return; }
+    let mut c = config();
+    c.bundles.push(BundleRoute { id: "b".into(), name: "业务".into(), main_exe: "root.exe".into(), enabled: true,
+        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(), domains: vec!["*.owned.test".into()], fallback: "rules".into(), policy: None });
+    for raw in ["hosts: {alias.test: canonical.test}"] {
+        assert!(bundles::validate_remote_names(raw, &c).is_err());
+        c.bundles_enabled = false;
+        assert!(bundles::validate_remote_names(raw, &c).is_ok(), "暂停业务不得修改或限制公共手动设置");
+        c.bundles_enabled = true;
+    }
+    c.bundles[0].mode = "sandbox".into();
+    assert!(bundles::validate_remote_names("hosts: {public.test: 127.0.0.1}", &c).is_ok());
+    assert!(bundles::validate_remote_names("hosts: {'+.owned.test': 127.0.0.1}", &c).is_err());
+}
+
+#[test]
+fn business_names_allow_public_sniffing_without_forced_domain_replacement() {
+    if !cfg!(windows) || crate::edition::PROCESS { return; }
+    let mut c = config();
+    c.bundles.push(BundleRoute { id: "b".into(), name: "业务".into(), main_exe: "root.exe".into(), enabled: true,
+        main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(), domains: vec!["*.owned.test".into()], fallback: "rules".into(), policy: None });
+    for raw in [
+        "sniffer: {enable: true}",
+        "sniffer: {enable: true, override-destination: true, force-dns-mapping: true, parse-pure-ip: true, sniff: {HTTP: {ports: [80]}, TLS: {ports: [443]}}}",
+        "sniffer: {enable: true, override-destination: false, force-domain: ['+.owned.test'], sniff: {HTTP: {override-destination: false}, TLS: {override-destination: false}}}",
+        "sniffer: {enable: true, override-destination: true, force-domain: ['+.owned.test'], sniff: {HTTP: {override-destination: false}, TLS: {override-destination: false}}}",
+        "sniffer: {enable: true, override-destination: true, force-domain: ['+.owned.test'], sniff: {QUIC: {ports: [443]}}}",
+        "sniffer: {enable: false, force-domain: ['+.owned.test'], sniff: {TLS: {ports: [443]}}}",
+    ] { assert!(bundles::validate_remote_names(raw, &c).is_ok(), "已携带原始域名的业务入口不得被公共嗅探开关整体拒绝：{raw}"); }
+    let raw = |pattern: &str, extra: &str| format!("sniffer: {{enable: true, override-destination: false, force-domain: ['{pattern}'], {extra}}}");
+    let tcp = "sniff: {TLS: {ports: [443], override-destination: true}}";
+    assert!(bundles::validate_remote_names(&raw("+.public.test", tcp), &c).is_err(), "强锁保护全部域名，也要检查 force-domain");
+    c.bundles[0].mode = "sandbox".into();
+    for pattern in ["+.public.test", "badowned.test", "owned.test.public", "*.public.test"] {
+        assert!(bundles::validate_remote_names(&raw(pattern, tcp), &c).is_ok(), "无交集的公共强制嗅探应保留：{pattern}");
+    }
+    for pattern in ["+.owned.test", ".owned.test", "owned.test", "*.owned.test", "api.*.owned.test", "*.test", "+.test", "rule-set:dynamic"] {
+        let candidate = raw(pattern, tcp);
+        let error = bundles::validate_remote_names(&candidate, &c).unwrap_err();
+        assert!(error.contains("force-domain") && error.contains("业务"), "应指出具体强制嗅探冲突：{error}");
+        c.bundles_enabled = false;
+        assert!(bundles::validate_remote_names(&candidate, &c).is_ok(), "总关闭不得限制公共手动设置");
+        c.bundles_enabled = true;
+    }
+    c.bundles[0].domains = vec!["owned.test".into()];
+    assert!(bundles::validate_remote_names(&raw("*.owned.test", tcp), &c).is_ok(), "Mihomo 单标签通配不包含根域");
+    assert!(bundles::validate_remote_names(&raw(".owned.test", tcp), &c).is_ok(), "仅子域模式不包含根域");
+    assert!(bundles::validate_remote_names(&raw("+.owned.test", tcp), &c).is_err());
+    assert!(bundles::validate_remote_names("sniffer: {enable: true, force-domain: [owned.test], sniffing: [TLS], override-destination: true}", &c).is_err());
+    c.bundles[0].enabled = false;
+    assert!(bundles::validate_remote_names(&raw("owned.test", tcp), &c).is_ok());
 }
 
 #[cfg(windows)]
@@ -83,6 +154,7 @@ fn native_bundle_outlet_is_independent_of_public_selection() {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     crate::storage::initialize_test(dir.clone(), root.clone());
     std::fs::write(dir.join("config/local-rules.json"), r#"{"enabled":false,"providers":[]}"#).unwrap();
+    std::fs::write(dir.join("config/exclusions.json"), r#"{"enabled":true,"entries":["excluded.example.net"]}"#).unwrap();
     let reserve = || TcpListener::bind("127.0.0.1:0").unwrap();
     let mixed = crate::storage::reserve_test_mixed_port(); let mixed_port = mixed.local_addr().unwrap().port();
     let controller = reserve(); let controller_port = controller.local_addr().unwrap().port();
@@ -126,20 +198,32 @@ fn native_bundle_outlet_is_independent_of_public_selection() {
     c.process_rules[0].include_descendants = false;
     c.process_rules[0].rule_mode = Some("strict".into());
     c.process_rules[0].target = Some(Target { profile_id: "actual-subscription".into(), kind: "node".into(), name: "HK-fixture".into() });
+    let entry = reserve(); let bundle_port = entry.local_addr().unwrap().port(); drop(entry);
+    c.bundles.push(BundleRoute {id:"fixture".into(),name:"独立业务".into(),main_exe:c.process_rules[0].match_value.clone(),enabled:true,
+        main_target:c.process_rules[0].target.clone(),dns_target:None,port:bundle_port,mode:"strict".into(),domains:vec!["example.net".into()],fallback:"rules".into(),policy:None});
+    let bundle_group = bundles::group("fixture", "main");
     for priority in ["domain_first", "direct_first", "process_first"] {
         let prefs = settings::GeneralSettings { mixed_port, controller_port, routing_priority: priority.into(), ..Default::default() };
         std::fs::write(dir.join("config/preferences.json"), serde_json::to_vec(&prefs).unwrap()).unwrap();
         let prepared = prepare(&raw, &c, "actual-subscription").unwrap();
         let yaml: Value = serde_yaml::from_str(&prepared).unwrap();
         let rules = yaml["rules"].as_sequence().unwrap();
-        let process_position = rules.iter().position(|r| r.as_str().is_some_and(|r| r.starts_with("PROCESS-NAME,proc_weaver_lib-") && r.ends_with(",HK-fixture"))).unwrap();
+        let process_position = rules.iter().position(|r| r.as_str().is_some_and(|r| r.starts_with("PROCESS-NAME,proc_weaver_lib-") && r.ends_with(&format!(",{bundle_group}")))).unwrap();
         let domain_position = rules.iter().position(|r| r.as_str() == Some("DOMAIN-SUFFIX,example.net,PROXY")).unwrap();
         assert!(process_position < domain_position, "{priority}");
+        for public_bypass in ["DOMAIN,excluded.example.net,DIRECT", "DOMAIN-KEYWORD,tracker,DIRECT"] {
+            assert!(process_position < rules.iter().position(|r| r.as_str() == Some(public_bypass)).unwrap(), "业务绑定必须先于 {public_bypass}，{priority}");
+        }
         assert!(matches!(yaml["find-process-mode"].as_str(), Some("strict" | "always")));
         std::fs::write(dir.join("config.yaml"), prepared.replace("log-level: silent", "log-level: debug")).unwrap();
     }
-    let missing: Value = serde_yaml::from_str(&prepare(&raw, &c, "different-subscription").unwrap()).unwrap();
-    assert!(missing["rules"].as_sequence().unwrap().iter().any(|r| r.as_str().is_some_and(|r| r.starts_with("PROCESS-NAME,proc_weaver_lib-") && r.ends_with(",REJECT"))));
+    if let Ok(missing) = prepare(&raw, &c, "different-subscription") {
+        let missing: Value = serde_yaml::from_str(&missing).unwrap();
+        let held = missing[bundles::SELECTIONS][&bundle_group].as_str().unwrap();
+        assert!(missing["proxy-groups"].as_sequence().unwrap().iter().any(|g|
+            g["name"].as_str() == Some(held) && g["proxies"] == serde_yaml::to_value(["REJECT"]).unwrap()),
+            "失效业务绑定只能进入拒绝组，不能回落公共出口");
+    }
     drop(mixed); drop(controller);
     struct Core(std::process::Child);
     impl Drop for Core { fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); } }
@@ -150,8 +234,11 @@ fn native_bundle_outlet_is_independent_of_public_selection() {
         .creation_flags(0x08000000).stdout(core_log.try_clone().unwrap()).stderr(core_log).spawn().unwrap());
     for _ in 0..100 { if TcpStream::connect(("127.0.0.1", controller_port)).is_ok() { break; } std::thread::sleep(Duration::from_millis(50)); }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
+        bundles::select(&std::fs::read_to_string(dir.join("config.yaml")).unwrap()).await.unwrap();
         let control = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(5)).build().unwrap();
         let selected = reqwest::Client::builder().proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{mixed_port}")).unwrap())
+            .pool_max_idle_per_host(0).timeout(Duration::from_secs(5)).build().unwrap();
+        let entry = reqwest::Client::builder().proxy(reqwest::Proxy::http(format!("http://127.0.0.1:{bundle_port}")).unwrap())
             .pool_max_idle_per_host(0).timeout(Duration::from_secs(5)).build().unwrap();
         for (public, expected) in [("JP-fixture", "public-JP"), ("SG-fixture", "public-SG")] {
             control.put(format!("http://127.0.0.1:{controller_port}/proxies/PROXY"))
@@ -162,6 +249,27 @@ fn native_bundle_outlet_is_independent_of_public_selection() {
             let output = std::process::Command::new("pwsh").args(["-NoProfile", "-Command", &script]).creation_flags(0x08000000).output().unwrap();
             assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
             assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected, "未匹配进程必须遵循公共出口");
+        }
+        for mode in ["global", "direct", "rule"] {
+            let prefs = settings::GeneralSettings {mixed_port,controller_port,run_mode:mode.into(),..Default::default()};
+            std::fs::write(dir.join("config/preferences.json"), serde_json::to_vec(&prefs).unwrap()).unwrap();
+            let prepared = prepare(&raw, &c, "actual-subscription").unwrap();
+            let switched_file = dir.join("core_data/public-switch.yaml");
+            std::fs::write(&switched_file, &prepared).unwrap();
+            let response = control.put(format!("http://127.0.0.1:{controller_port}/configs?force=true")).json(&serde_json::json!({"path":switched_file}))
+                .send().await.unwrap();
+            assert!(response.status().is_success(), "{}", response.text().await.unwrap());
+            bundles::select(&prepared).await.unwrap();
+            let actual: serde_json::Value = control.get(format!("http://127.0.0.1:{controller_port}/configs")).send().await.unwrap().json().await.unwrap();
+            assert_eq!(actual["mode"], "rule");
+            let body = selected.get("http://198.51.100.42/").send().await.unwrap().text().await.unwrap();
+            assert_eq!(body, "bundle-HK", "公共 {mode} 不能覆盖业务绑定");
+            for client in [&selected, &entry] {
+                for domain in ["excluded.example.net", "tracker.example.net"] {
+                    let body = client.get(format!("http://{domain}/")).send().await.unwrap().error_for_status().unwrap().text().await.unwrap();
+                    assert_eq!(body, "bundle-HK", "{mode} 下公共排除/BT 规则不能覆盖业务进程或专用入口：{domain}");
+                }
+            }
         }
     });
     done.store(true, Ordering::SeqCst);

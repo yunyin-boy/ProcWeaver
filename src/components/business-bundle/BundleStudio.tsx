@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 
 interface Props {
+  remoteDns?: boolean;
   os: BundlePlatform;
   existingInstances: BundleLocalInstance[];
   availableProxies: string[];
@@ -47,6 +48,7 @@ interface Props {
 const PRESET_ICONS = ["🤖", "💬", "🎮", "🧑‍💻", "🌐", "📦", "🎨", "⚡", "🚀", "🛡️"];
 
 export const BundleStudio: React.FC<Props> = ({
+  remoteDns = false,
   os,
   existingInstances,
   availableProxies,
@@ -547,7 +549,7 @@ export const BundleStudio: React.FC<Props> = ({
                     高级网络与接管防护策略
                   </span>
                   <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
-                    {policy.dnsMode === "fake_ip" ? "Fake-IP" : policy.dnsMode === "system_native" ? "原生DNS" : "纯净DNS"} · {policy.blockUdp ? "防QUIC" : policy.proxyUdp ? "UDP代理" : "UDP直连"}
+                    {remoteDns ? "出口远端解析 · TCP" : `${policy.dnsMode === "fake_ip" ? "Fake-IP" : policy.dnsMode === "system_native" ? "原生DNS" : "纯净DNS"} · ${policy.blockUdp ? "防QUIC" : policy.proxyUdp ? "UDP代理" : "UDP直连"}`}
                   </span>
                 </div>
                 {showPolicy ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
@@ -556,6 +558,7 @@ export const BundleStudio: React.FC<Props> = ({
               {showPolicy && (
                 <div className="p-3.5 pt-1 border-t border-slate-200/60 dark:border-slate-800/60">
                   <BundlePolicyForm
+                    remoteDns={remoteDns}
                     policy={policy}
                     onChange={setPolicy}
                   />

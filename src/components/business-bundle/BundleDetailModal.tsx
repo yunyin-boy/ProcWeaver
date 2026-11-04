@@ -76,6 +76,7 @@ export const BundleDetailModal: React.FC<Props> = ({
 
   const def = instance.definition;
   const independent = instance.backend === "external";
+  const remoteDns = platform.os === "windows" && !independent;
   const boundNode = independent ? externalLabel || "未选择代理" : instance.slotBindings.main;
   const isEnabled = instance.enabled && Boolean(boundNode) && status?.phase === "applied";
   const processes = bundleProcesses(
@@ -143,7 +144,7 @@ export const BundleDetailModal: React.FC<Props> = ({
               </span>
               <span className={`font-bold flex items-center space-x-1 ${isEnabled ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
                 {isEnabled ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
-                <span>{isEnabled ? (independent ? "独立入口已就绪" : "核心已应用 · 规则正常生效") : status?.message || "未确认就绪"}</span>
+                <span>{isEnabled ? (independent ? "独立入口已就绪" : "核心配置已应用") : status?.message || "未确认就绪"}</span>
               </span>
             </div>
 
@@ -182,8 +183,10 @@ export const BundleDetailModal: React.FC<Props> = ({
                     <span className="text-sky-600 dark:text-sky-400">🔵 原生参数直通 ({entry?.hookTierReason || "沙盒或受限子进程，Hook 安全旁路"})</span>
                   ) : entry?.hookTier === "Failed" ? (
                     <span className="text-rose-600 dark:text-rose-400">🔴 接管异常 ({entry?.hookTierReason || "挂钩注入失败"})</span>
+                  ) : entry?.hookTier === "FullInline" ? (
+                    <span className="text-emerald-600 dark:text-emerald-400" title={entry.hookTierReason || "已取得 Hook 加载证据；应用接入及实际出口以新连接核验为准"}>🟢 深度内联 Hook 已加载</span>
                   ) : (
-                    <span className="text-emerald-600 dark:text-emerald-400">🟢 深度内联接管 (Winsock / DNS / CreateProcessW 完整就绪)</span>
+                    <span className="text-slate-500 dark:text-slate-400" title={entry?.hookTierReason || "尚未取得 Hook 加载证据；应用层代理与 Hook 接管需分别核验"}>Hook 未核实</span>
                   )}
                 </span>
               </p>
@@ -248,37 +251,39 @@ export const BundleDetailModal: React.FC<Props> = ({
               </div>
               <p className="text-slate-600 dark:text-slate-300 font-mono text-xs">
                 {boundNode ? (
-                  <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                  <span className={`font-bold ${isEnabled ? "text-emerald-600 dark:text-emerald-400" : "text-slate-600 dark:text-slate-300"}`}>
                     {proxyLabels[boundNode] || boundNode}
                   </span>
                 ) : (
-                  <span className="text-slate-400">未指定（跟随系统默认网络）</span>
+                  <span className="text-slate-400">未选择出口</span>
                 )}
               </p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                {independent ? status?.message : boundNode && isEnabled ? "核心已正确应用该节点并保持长连接监听" : "需绑定有效节点后方可生效"}
+                {independent ? status?.message : !boundNode ? "需绑定有效节点后方可生效" : isEnabled
+                  ? "核心配置已应用；应用接入及实际出口以新连接核验为准"
+                  : status?.message || "已选择出口，尚未确认应用"}
               </p>
+              {!independent && !isEnabled && status && status.previousTargets.length > 0 && (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 break-words">
+                  上次保存出口：{status.previousTargets.map(target => proxyLabels[target] || target).join("、")}。保存记录不代表当前连接出口。
+                </p>
+              )}
             </div>
 
             <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-2">
               <span className="font-bold text-slate-800 dark:text-slate-200 text-xs block">
-                {independent ? "域名解析与协议范围" : "DNS 解析出口插槽 [dns]"}
+                {independent ? "域名解析与协议范围" : remoteDns ? "业务域名远端解析" : "DNS 解析出口插槽 [dns]"}
               </span>
               <p className="text-slate-600 dark:text-slate-300 font-mono text-xs">
-                {independent ? "有域名的代理请求交由上游解析" : instance.slotBindings.dns && instance.slotBindings.dns !== "FOLLOW_MAIN" ? (
-                  <span className="text-indigo-600 dark:text-indigo-400 font-bold">
-                    独立节点: {instance.slotBindings.dns}
-                  </span>
-                ) : (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                    跟随主业务出口
+                {independent ? "有域名的代理请求交由上游解析" : !remoteDns && instance.slotBindings.dns && instance.slotBindings.dns !== "FOLLOW_MAIN" ? `独立节点: ${instance.slotBindings.dns}` : (
+                  <span className="text-slate-600 dark:text-slate-300 font-bold">
+                    解析策略：跟随主业务出口
                   </span>
                 )}
               </p>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                {independent ? "支持 SOCKS5 TCP / UDP；可在独立代理设置中开启本包 DNS 入口，按查询域名分流。系统 DNS 不自动修改；只有 IP 的请求不推测域名。代理失败不自动直连。" : isEnabled && def.domains?.length
-                  ? "核心域名专属 DNS 规则已应用，有效防止 DNS 投毒与污染"
-                  : "尚未确认域名 DNS 生效，应用自带加密 DNS 不由此规则接管"}
+                {independent ? "支持 SOCKS5 TCP / UDP；可在独立代理设置中开启本包 DNS 入口，按查询域名分流。系统 DNS 不自动修改；只有 IP 的请求不推测域名。代理失败不自动直连。"
+                  : remoteDns ? "受控域名请求保留原始域名，通过主出口交远端解析，不注入公共 DNS 策略。当前支持 TCP；只有 IP 的请求不推测域名，应用自带解析器需另行核验。" : "核心域名解析规则作用于进入核心的查询，应用自带加密 DNS 需单独核验。"}
               </p>
             </div>
           </div>

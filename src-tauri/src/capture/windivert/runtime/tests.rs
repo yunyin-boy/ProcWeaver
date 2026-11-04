@@ -152,3 +152,23 @@ fn default_filter_excludes_loopback_to_prevent_local_proxy_packet_storm() {
     assert!(default_filter.contains("!loopback"));
     assert_eq!(default_filter, "outbound and !loopback and (tcp or udp)");
 }
+
+#[tokio::test]
+async fn withdrawing_bundle_context_cancels_only_its_existing_relay() {
+    let route = |port| Arc::new(Route {
+        external: None,
+        flow: Flow {source: "127.0.0.1:19000".parse().unwrap(), destination: "192.0.2.123:443".parse().unwrap(), protocol:6},
+        token: port, port, touched: Mutex::new(Instant::now()), claimed: AtomicBool::new(true), finished: AtomicBool::new(false), cancel: tokio::sync::Notify::new(),
+    });
+    let withdrawn = route(61000); let retained = route(61001);
+    let mut table = Tables::default();
+    table.flows.insert(withdrawn.flow, withdrawn.clone());
+    let other_flow = Flow {source: "127.0.0.1:19001".parse().unwrap(), ..retained.flow};
+    table.flows.insert(other_flow, retained.clone());
+    let next = Plan {entries:vec![Entry{kind:"any".into(),value:"*".into(),port:61001,owner:"manual".into()}], ..Default::default()};
+    withdraw_routes(&mut table, &Plan::default(), &next);
+    assert!(withdrawn.finished.load(Ordering::Acquire), "重连 SYN 不能复用撤销中的旧映射");
+    assert!(!retained.finished.load(Ordering::Acquire));
+    tokio::time::timeout(Duration::from_millis(50), withdrawn.cancel.notified()).await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(10), retained.cancel.notified()).await.is_err(), "公共/手工接管不能被一并撤销");
+}

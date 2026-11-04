@@ -46,6 +46,7 @@ export const TrafficModeSelector: React.FC<Props> = ({ onModeChanged, className 
       ]);
       const mode = (settings.trafficMode as TrafficModeType) || (settings.tunMode ? "tun" : "app_proxy");
       setCurrentMode(mode);
+      onModeChanged?.(mode);
       setActiveDriver(driver);
       setLoadError(null);
     } catch (e) {

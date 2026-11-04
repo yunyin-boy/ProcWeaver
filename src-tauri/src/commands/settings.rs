@@ -115,7 +115,6 @@ impl Default for GeneralSettings {
 }
 pub fn update_persisted_run_mode(mode: &str) -> Result<(), String> {
     let path = crate::storage::data_dir().join("config/preferences.json");
-    if !path.exists() { return Ok(()); }
     let mut settings = get_general_settings()?;
     settings.run_mode = mode.to_ascii_lowercase();
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
@@ -161,10 +160,18 @@ pub async fn save_general_settings(settings: GeneralSettings, state: tauri::Stat
     save_and_restart(settings, &state).await
 }
 
-async fn save_and_restart(settings: GeneralSettings, state: &super::process::CoreStateMutex) -> Result<GeneralSettings, String> {
+async fn save_and_restart(mut settings: GeneralSettings, state: &super::process::CoreStateMutex) -> Result<GeneralSettings, String> {
     let _lifecycle = super::process::LIFECYCLE.lock().await;
     crate::function_mode::require_full()?;
     let previous = get_general_settings()?;
+    // Retired controls are not sent by the new form. Preserve their saved values
+    // for compatibility; DNS preferences are the current append-DNS writer.
+    settings.append_system_dns = previous.append_system_dns;
+    settings.auto_dns_guard_with_bundle = previous.auto_dns_guard_with_bundle;
+    // The public mode command is its only writer. A stale settings form cannot
+    // silently undo a newer mode selection while saving unrelated preferences.
+    if crate::routing_overrides::public_mode::enabled() { settings.run_mode = previous.run_mode.clone(); }
+    crate::capture::validate_business_remote_dns(&crate::routing_overrides::read()?.effective(), &settings.traffic_mode, settings.tun_mode)?;
     #[cfg(windows)]
     if settings.traffic_mode == crate::capture::windivert::plan::MODE && previous.traffic_mode != settings.traffic_mode {
         crate::capture::windivert::assets::validate_resource(&crate::capture::windivert::assets::resource()?)?;
@@ -188,7 +195,7 @@ async fn save_and_restart(settings: GeneralSettings, state: &super::process::Cor
     let settings = persist_general_settings(settings, &state)?;
     if restart {
         let result = async {
-            { let mut core = state.lock().map_err(|_| "读取核心状态失败")?; super::process::stop_owned_child(&mut core)?; }
+            { let mut core = state.lock().map_err(|_| "读取核心状态失败")?; super::process::stop_owned_child_for_restart(&mut core, false)?; }
             super::process::start_core_locked(mode.clone(), state).await?;
             if proxy_enabled { super::sysproxy::set_system_proxy_locked(true, Some(settings.mixed_port)).await?; }
             Ok::<(), String>(())
@@ -197,7 +204,7 @@ async fn save_and_restart(settings: GeneralSettings, state: &super::process::Cor
             persist_general_settings(previous.clone(), &state)?;
             if let Some(bytes) = original { crate::storage::replace(&preference_path, &bytes)?; }
             else { std::fs::remove_file(&preference_path).map_err(|_| "恢复旧偏好失败")?; }
-            { let mut core = state.lock().map_err(|_| "读取核心状态失败")?; super::process::stop_owned_child(&mut core).map_err(|e| format!("旧设置已恢复，但核心清理失败：{e}"))?; }
+            { let mut core = state.lock().map_err(|_| "读取核心状态失败")?; super::process::stop_owned_child_for_restart(&mut core, false).map_err(|e| format!("旧设置已恢复，但核心清理失败：{e}"))?; }
             let recovery = super::process::start_core_locked(mode, state).await;
             if let Err(recovery_error) = recovery { return Err(format!("新设置启动失败：{error}；旧设置已恢复，但核心恢复失败：{recovery_error}")); }
             if proxy_enabled { super::sysproxy::set_system_proxy_locked(true, Some(previous.mixed_port)).await?; }
@@ -301,6 +308,7 @@ fn core_settings_changed(a: &GeneralSettings, b: &GeneralSettings) -> bool {
         || a.routing_priority != b.routing_priority
         || a.ipv6 != b.ipv6 || a.find_process_mode != b.find_process_mode
         || a.append_system_dns != b.append_system_dns
+        || a.run_mode != b.run_mode
         || a.lan_sharing != b.lan_sharing || a.vpn_apps != b.vpn_apps
 }
 
@@ -345,6 +353,7 @@ fn prepare_with_runtime(raw: &str, settings: &GeneralSettings, os: &str, dns_set
         return Err("订阅缺少 proxies 或 proxy-providers".into());
     }
     map.insert("mixed-port".into(), settings.mixed_port.into());
+    if crate::routing_overrides::public_mode::enabled() { map.insert("mode".into(), "rule".into()); }
     // 始终保留内部回环控制接口 (127.0.0.1)，确保应用控制与就绪探针正常运作
     map.insert("external-controller".into(), format!("127.0.0.1:{}", settings.controller_port).into());
     map.insert("allow-lan".into(), settings.allow_lan.into());
@@ -383,17 +392,30 @@ fn prepare_with_runtime(raw: &str, settings: &GeneralSettings, os: &str, dns_set
     }
 
     // DNS 覆写逻辑：若开启了 DNS 覆写，则合成标准化 DNS 块并覆盖订阅原 DNS
-    if let Some(mut dns_settings) = dns_settings {
+    let append_system_dns = dns_settings.as_ref().map_or(settings.append_system_dns, |dns| dns.append_system_dns);
+    if let Some(dns_settings) = dns_settings {
         if dns_settings.enable_override {
-            if settings.append_system_dns {
-                dns_settings.append_system_dns = true;
+            // DNS-page settings own append-system-dns; the legacy general field
+            // is read only when no DNS preferences were supplied.
+            let overrides = super::dns::build_dns_mapping(&dns_settings);
+            let dns = map.entry("dns".into()).or_insert(serde_yaml::Mapping::new().into());
+            let dns = dns.as_mapping_mut().ok_or("dns 必须为对象")?;
+            // Empty optional lists/maps mean clear, not inherit subscription values.
+            for key in ["fallback", "nameserver-policy"] { dns.remove(serde_yaml::Value::from(key)); }
+            for (key, value) in overrides.as_mapping().ok_or("DNS 覆写无效")? {
+                if key.as_str() == Some("fallback-filter") {
+                    let existing = dns.entry(key.clone()).or_insert(serde_yaml::Mapping::new().into());
+                    if !existing.is_mapping() { *existing = serde_yaml::Mapping::new().into(); }
+                    let filter = existing.as_mapping_mut().unwrap();
+                    for field in ["geoip", "geoip-code", "geosite", "ipcidr", "domain"] { filter.remove(serde_yaml::Value::from(field)); }
+                    for (field, setting) in value.as_mapping().ok_or("DNS 过滤覆写无效")? { filter.insert(field.clone(), setting.clone()); }
+                } else { dns.insert(key.clone(), value.clone()); }
             }
-            map.insert("dns".into(), super::dns::build_dns_mapping(&dns_settings));
         } else if let Some(dns_map) = map.get_mut(serde_yaml::Value::from("dns")).and_then(|v| v.as_mapping_mut()) {
-            dns_map.insert("append-system-dns".into(), settings.append_system_dns.into());
+            dns_map.insert("append-system-dns".into(), append_system_dns.into());
         }
     } else if let Some(dns_map) = map.get_mut(serde_yaml::Value::from("dns")).and_then(|v| v.as_mapping_mut()) {
-        dns_map.insert("append-system-dns".into(), settings.append_system_dns.into());
+        dns_map.insert("append-system-dns".into(), append_system_dns.into());
     }
 
     // Windows 订阅常见的 DNS 通配监听随“允许局域网”收敛到回环。
@@ -458,6 +480,9 @@ fn validate_profile_inbounds(map: &serde_yaml::Mapping, allow_lan: bool, os: &st
             let listener = listener.as_mapping().ok_or("订阅 listener 必须是对象")?;
             let field = |name| listener.get(serde_yaml::Value::from(name));
             let kind = field("type").and_then(serde_yaml::Value::as_str).ok_or("订阅 listener 缺少 type")?;
+            if os == "windows" && kind.eq_ignore_ascii_case("tun") {
+                return Err("TUN 由接管模式统一管理，订阅不能另设 TUN listener；请使用顶层 tun 配置".into());
+            }
             if os == "macos" && matches!(kind.to_ascii_lowercase().as_str(), "tun" | "redir" | "redirect" | "tproxy") {
                 return Err("macOS 尚未启用 TUN 或透明接管，订阅不能包含此类 listener".into());
             }
@@ -642,7 +667,7 @@ mod tests {
         let yaml: serde_yaml::Value = serde_yaml::from_str("listeners:\n- name: local\n  type: mixed\n  listen: ::1\n  port: 1080\n").unwrap();
         assert!(validate_profile_inbounds(yaml.as_mapping().unwrap(), false, "macos").is_ok());
         let yaml: serde_yaml::Value = serde_yaml::from_str("listeners:\n- name: windows-tun\n  type: tun\n").unwrap();
-        assert!(validate_profile_inbounds(yaml.as_mapping().unwrap(), false, "windows").is_ok());
+        assert!(validate_profile_inbounds(yaml.as_mapping().unwrap(), false, "windows").is_err());
     }
     #[test]
     fn profile_shortcut_and_dns_inbounds_obey_allow_lan() {
@@ -673,6 +698,28 @@ mod tests {
         dns.listen = "0.0.0.0:1053".into();
         let allow_lan = GeneralSettings { allow_lan: true, ..settings };
         assert!(prepare_with_runtime("proxies: []\n", &allow_lan, "macos", Some(dns)).is_ok());
+    }
+
+    #[test]
+    fn dns_override_preserves_unmodeled_subscription_fields_and_owns_append_setting() {
+        let settings = GeneralSettings { append_system_dns: true, ..Default::default() };
+        let source = "proxies: []\ndns:\n  direct-nameserver: [192.0.2.53]\n  direct-nameserver-follow-policy: true\n  cache-algorithm: arc\n  nameserver: [192.0.2.54]\n  nameserver-policy: {'+.legacy.test': '192.0.2.55'}\n  fake-ip-filter-mode: rule\n  fake-ip-filter: ['MATCH,real-ip']\n  fallback-filter: {domain: [legacy.test], rcode: [SERVFAIL]}\n";
+        for enabled in [false, true] {
+            let dns = super::super::dns::DnsSettings { enable_override: enabled, append_system_dns: false, fallback: vec![], fallback_filter_domain: vec![], ..Default::default() };
+            let raw = prepare_with_runtime(source, &settings, "windows", Some(dns)).unwrap();
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+            assert_eq!(yaml["dns"]["direct-nameserver"][0].as_str(), Some("192.0.2.53"));
+            assert_eq!(yaml["dns"]["direct-nameserver-follow-policy"].as_bool(), Some(true));
+            assert_eq!(yaml["dns"]["cache-algorithm"].as_str(), Some("arc"));
+            assert_eq!(yaml["dns"]["append-system-dns"].as_bool(), Some(false));
+            if enabled {
+                assert!(yaml["dns"]["nameserver-policy"].is_null());
+                assert!(yaml["dns"]["fallback"].as_sequence().unwrap().is_empty());
+                assert!(yaml["dns"]["fallback-filter"]["domain"].is_null());
+                assert_eq!(yaml["dns"]["fallback-filter"]["rcode"][0].as_str(), Some("SERVFAIL"));
+                assert_eq!(yaml["dns"]["fake-ip-filter-mode"].as_str(), Some("blacklist"));
+            }
+        }
     }
     #[test]
     fn windows_dns_composition_scopes_wildcard_listeners_to_loopback() {
@@ -803,12 +850,13 @@ mod tests {
                 }
             }
         }
-        let old = GeneralSettings { mixed_port: numbers[0], controller_port: numbers[1], ..GeneralSettings::default() };
+        let old = GeneralSettings { mixed_port: numbers[0], controller_port: numbers[1], run_mode: "global".into(), append_system_dns: true, auto_dns_guard_with_bundle: false, ..GeneralSettings::default() };
+        std::fs::write(directory.join("config/preferences.json"), serde_json::to_vec(&old).unwrap()).unwrap();
         let state = std::sync::Mutex::new(super::super::process::CoreState {child: None, mixed_port: old.mixed_port, controller_port: old.controller_port, active_core: None, active_core_path: None, core_mode: None, started_at: None});
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             save_and_restart(old.clone(), &state).await.unwrap();
             assert!(state.lock().unwrap().child.is_none(), "停止状态保存不得启动核心");
-            let first = super::super::process::start_core_transaction(None, &state).await.unwrap();
+            let first = tokio::time::timeout(std::time::Duration::from_secs(15), super::super::process::start_core_transaction(None, &state)).await.expect("非规则偏好启动不得自等待").unwrap();
             assert_eq!(state.lock().unwrap().core_mode.as_deref(), Some(mode.as_str()));
             let mut changed = old.clone(); changed.mixed_port = numbers[2]; changed.controller_port = numbers[3];
             save_and_restart(changed.clone(), &state).await.unwrap();
@@ -818,6 +866,12 @@ mod tests {
             let client = super::super::mihomo_api::controller_client().build().unwrap();
             let config: serde_json::Value = client.get(format!("http://127.0.0.1:{}/configs", changed.controller_port)).send().await.unwrap().json().await.unwrap();
             assert_eq!(config["mode"], "rule");
+            let mut stale_form = changed.clone(); stale_form.run_mode = "rule".into();
+            stale_form.append_system_dns = false; stale_form.auto_dns_guard_with_bundle = true;
+            let retained = save_and_restart(stale_form, &state).await.unwrap();
+            assert_eq!(retained.run_mode, "global", "旧设置表单不能覆盖新的公共模式");
+            assert!(retained.append_system_dns && !retained.auto_dns_guard_with_bundle, "移除的控件不能覆盖用户保存值");
+            assert!(super::super::dns::get_dns_settings().unwrap().append_system_dns, "尚未迁移到 DNS 页的追加设置仍须保留");
             let good_bytes = std::fs::read(directory.join("config/preferences.json")).unwrap();
             let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let mut invalid = changed.clone(); invalid.mixed_port = occupied.local_addr().unwrap().port();

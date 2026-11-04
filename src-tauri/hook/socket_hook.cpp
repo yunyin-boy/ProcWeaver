@@ -75,6 +75,9 @@ static bool PerformSocks5Handshake(SOCKET s, const struct sockaddr *orig_addr, i
     if (orig_addr->sa_family == AF_INET) {
         const sockaddr_in* sin = (const sockaddr_in*)orig_addr;
         std::string fake_domain = GetDomainForFakeIp(sin->sin_addr.s_addr);
+        if (g_config.policy.remote_dns_required && IsFakeIp(sin->sin_addr.s_addr) && (fake_domain.empty() || fake_domain.length() > 255)) {
+            return false; // A lost token must never become an IP request or native DNS fallback.
+        }
 
         if (!fake_domain.empty() && fake_domain.length() <= 255) {
             // Fake-IP 模式：发送 SOCKS5 ATYP=0x03 原始域名报文，由远端代理节点解析
@@ -176,6 +179,11 @@ static bool ShouldBypass(const struct sockaddr *name) {
     if (!name) return true;
     if (g_config.bundle_port == 0) return true;
 
+    // Full-edition name tokens must go to their bundle inlet, including sandbox
+    // fallback decisions. Sending the token natively cannot implement an exclusion.
+    if (g_config.policy.remote_dns_required && name->sa_family == AF_INET
+        && IsFakeIp(((const sockaddr_in*)name)->sin_addr.s_addr)) return false;
+
     // 协议策略：是否代理 TCP
     if (!g_config.policy.proxy_tcp) return true;
 
@@ -185,7 +193,8 @@ static bool ShouldBypass(const struct sockaddr *name) {
         uint16_t port = ntohs(sin->sin_port);
 
         // 127.0.0.1 (回环地址)
-        if (ip == 0x7F000001 || (ip >> 24) == 127 || port == g_config.bundle_port || port == g_config.dns_port) {
+        if (ip == 0x7F000001 || (ip >> 24) == 127
+            || (!g_config.policy.remote_dns_required && (port == g_config.bundle_port || port == g_config.dns_port))) {
             return true;
         }
 
@@ -308,10 +317,12 @@ static bool IsQuicOrUdp443(const struct sockaddr *to) {
 }
 
 static bool ShouldBlockUdp(const struct sockaddr *to) {
-    if (!to || !g_config.enabled) return false;
+    if (!to || !IsHookEnabled()) return false;
+    if (g_config.policy.remote_dns_required && to->sa_family == AF_INET
+        && IsFakeIp(((const sockaddr_in*)to)->sin_addr.s_addr)) return true;
 
     // 禁止 UDP 策略（最高优先级 · 防 QUIC / WebRTC 泄露）
-    if (g_config.policy.block_udp) {
+    if (g_config.policy.block_udp || g_config.policy.remote_dns_required) {
         if (to->sa_family == AF_INET) {
             const sockaddr_in* sin = (const sockaddr_in*)to;
             uint32_t ip = ntohl(sin->sin_addr.s_addr);
@@ -332,7 +343,7 @@ int WSAAPI HookConnect(
     int namelen
 ) {
     ReentryGuard guard;
-    if (guard.is_reentrant || !g_config.enabled || g_config.bundle_port == 0) {
+    if (guard.is_reentrant || !IsHookEnabled() || g_config.bundle_port == 0) {
         return TrueConnect(s, name, namelen);
     }
 
@@ -366,7 +377,7 @@ int WSAAPI HookWSAConnect(
     LPQOS lpGQOS
 ) {
     ReentryGuard guard;
-    if (guard.is_reentrant || !g_config.enabled || g_config.bundle_port == 0) {
+    if (guard.is_reentrant || !IsHookEnabled() || g_config.bundle_port == 0) {
         return TrueWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
 

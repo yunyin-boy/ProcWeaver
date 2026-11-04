@@ -37,6 +37,7 @@ pub fn materialize(raw: &str, config: &Overrides, profile_id: &str) -> Result<(S
         .or_insert(Value::Sequence(vec![])).as_sequence_mut().ok_or("proxy-groups 须为数组")?;
     for bundle in &config.bundles {
         for (slot, target) in [("main", &bundle.main_target), ("dns", &bundle.dns_target)] {
+            if slot == "dns" && cfg!(windows) && !crate::edition::PROCESS { continue; }
             let target = target.as_ref().or(bundle.main_target.as_ref());
             let destination = if bundle.enabled {
                 let target = target.filter(|t| available.contains(t)).ok_or_else(|| format!("「{}」出口已失效，请重新绑定", bundle.name))?;
@@ -69,6 +70,81 @@ pub fn map_process(rule: &mut ProcessRule, bundles: &[BundleRoute], profile_id: 
 pub fn domain_condition(pattern: &str) -> String {
     match pattern.strip_prefix("*.") { Some(domain)=>format!("DOMAIN-SUFFIX,{domain}"), None=>format!("DOMAIN,{pattern}") }
 }
+
+// Business mixed inlets carry the original CONNECT/SOCKS host (DNSNormal).
+// In Mihomo 1.19.31 these hosts only enter the sniffer via force-domain;
+// parse-pure-ip and force-dns-mapping alone cannot replace such a host.
+fn tcp_sniffer_overrides(sniffer: &Value) -> bool {
+    let global = sniffer["override-destination"].as_bool().unwrap_or(true);
+    let tcp = |name: &str| name.eq_ignore_ascii_case("HTTP") || name.eq_ignore_ascii_case("TLS");
+    if let Some(protocols) = sniffer["sniff"].as_mapping().filter(|m| !m.is_empty()) {
+        return protocols.iter().any(|(name, config)| name.as_str().is_some_and(tcp)
+            && config["override-destination"].as_bool().unwrap_or(global));
+    }
+    // Legacy protocol list; an absent list loads no sniffers in the bundled core.
+    global && sniffer["sniffing"].as_sequence().is_some_and(|names| names.iter().any(|n| n.as_str().is_some_and(tcp)))
+}
+
+fn forced_domain_overlaps(forced: &str, business: &str) -> bool {
+    let forced = forced.to_ascii_lowercase();
+    // Provider/geosite membership is runtime data. Never assume it is disjoint.
+    if forced.starts_with("geosite:") || forced.starts_with("rule-set:") { return true; }
+    let (base, descendants, minimum_extra) = if let Some(base) = forced.strip_prefix("+.") { (base, true, 0) }
+        else if let Some(base) = forced.strip_prefix('.') { (base, true, 1) }
+        else { (forced.as_str(), false, 0) };
+    let labels: Vec<_> = base.split('.').collect();
+    if labels.iter().any(|s| s.is_empty() || (s.contains(['*', '+']) && *s != "*")) { return true; }
+    let business = business.to_ascii_lowercase();
+    let (business, suffix) = business.strip_prefix("*.").map_or((business.as_str(), false), |base| (base, true));
+    let protected: Vec<_> = business.split('.').collect();
+    if suffix {
+        if !descendants && labels.len() < protected.len() { return false; }
+    } else if protected.len() < labels.len() + minimum_extra || (!descendants && protected.len() != labels.len()) {
+        return false;
+    }
+    labels.iter().rev().zip(protected.iter().rev()).all(|(left, right)| *left == "*" || left == right)
+}
+
+pub fn validate_remote_names(raw: &str, config: &Overrides) -> Result<(), String> {
+    if !cfg!(windows) || crate::edition::PROCESS || !config.bundles_enabled { return Ok(()); }
+    let enabled: Vec<_> = config.bundles.iter().filter(|b| b.enabled).collect();
+    if enabled.is_empty() { return Ok(()); }
+    let yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
+    // Hosts and destination overriding run before proxy dialing in Mihomo.
+    // Reject conflicting combinations rather than rewriting public user settings.
+    let protected = |name: &str| {
+        let name = name.trim_start_matches(['*', '+', '.']).trim_end_matches('.').to_ascii_lowercase();
+        if name == "localhost" || name.parse::<std::net::IpAddr>().is_ok() { return false; }
+        if name.is_empty() { return enabled.iter().any(|b| b.mode == "strict" || !b.domains.is_empty()); }
+        enabled.iter().any(|b| b.mode == "strict" || b.domains.iter().any(|pattern| {
+            let root = pattern.strip_prefix("*.").unwrap_or(pattern);
+            name == root || name.ends_with(&format!(".{root}")) || root.ends_with(&format!(".{name}"))
+        }))
+    };
+    if yaml["hosts"].as_mapping().is_some_and(|m| m.keys().any(|key| key.as_str().is_some_and(protected))) {
+        return Err("订阅 hosts 会在业务出口前改写域名，无法保证远端解析；请处理冲突 hosts，原配置未修改".into());
+    }
+    #[cfg(windows)]
+    if yaml["dns"]["enable"].as_bool() == Some(true) && yaml["dns"]["use-system-hosts"].as_bool() != Some(false) {
+        let path = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32/drivers/etc/hosts");
+        let hosts = std::fs::read_to_string(path).map_err(|_| "无法核对业务域名与系统 hosts 的冲突")?;
+        if hosts.lines().flat_map(|line| line.split('#').next().unwrap_or("").split_whitespace().skip(1)).any(protected) {
+            return Err("系统 hosts 可能改写业务域名；请处理冲突项或手动关闭公共 DNS 的使用系统 Hosts，原设置保留".into());
+        }
+    }
+    let sniffer = &yaml["sniffer"];
+    if sniffer["enable"].as_bool() == Some(true) && tcp_sniffer_overrides(sniffer) {
+        if let Some(forced) = sniffer["force-domain"].as_sequence() {
+            for bundle in &enabled {
+                if forced.iter().filter_map(Value::as_str).any(|pattern| bundle.mode == "strict"
+                    || bundle.domains.iter().any(|domain| forced_domain_overlaps(pattern, domain))) {
+                    return Err(format!("公共嗅探 force-domain 与业务包「{}」域名范围重叠，可能改写业务原始域名；请处理该强制嗅探冲突后重试，公共嗅探和 DNS 设置未修改", bundle.name));
+                }
+            }
+        }
+    }
+    Ok(())
+}
 pub fn compose_bundle_rules(raw: &str, config: &Overrides) -> Result<String, String> {
     if !config.bundles_enabled { return Ok(raw.into()); }
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
@@ -95,12 +171,14 @@ pub fn compose_bundle_rules(raw: &str, config: &Overrides) -> Result<String, Str
     }
     serde_yaml::to_string(&yaml).map_err(|_| "生成业务包分流规则失败".into())
 }
-pub fn add_listeners(yaml: &mut Value, config: &Overrides, prefix: &Value, fallback: &[Value]) -> Result<(), String> {
+pub fn add_listeners(yaml: &mut Value, config: &Overrides, _prefix: &Value, fallback: &[Value]) -> Result<(), String> {
     for bundle in &config.bundles {
         if bundle.port == 0 { return Err("业务包入口尚未分配，请重新应用".into()); }
         let name = listener(&bundle.id);
-        let mut rules = prefix["rules"].as_sequence().cloned().unwrap_or_default();
+        // Common exclusions must not override an explicitly selected bundle.
+        let mut rules = Vec::new();
         if bundle.enabled && config.process_enabled {
+            if bundle.policy.as_ref().map_or(true, |p| p.block_udp) { rules.push("NETWORK,UDP,REJECT".into()); }
             if bundle.mode == "sandbox" {
                 for pattern in &bundle.domains {
                     let condition=domain_condition(pattern);
@@ -112,6 +190,7 @@ pub fn add_listeners(yaml: &mut Value, config: &Overrides, prefix: &Value, fallb
                 else { rules.extend_from_slice(fallback); }
             } else {
                 rules.push(format!("MATCH,{}", group(&bundle.id, "main")).into());
+                rules.push("MATCH,REJECT".into());
             }
         } else { rules.extend_from_slice(fallback); }
         let subrules = yaml["sub-rules"].as_mapping_mut().ok_or("sub-rules 须为对象")?;

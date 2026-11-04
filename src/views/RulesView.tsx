@@ -208,6 +208,7 @@ function checkRuleSetOrGeositeMatch(
 
 export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Promise<void>; change: (mode: CoreMode) => Promise<boolean> } }> = ({ coreMode }) => {
   const mobile = document.documentElement.dataset.platform === "android";
+  const publicMode = document.documentElement.dataset.platform === "windows";
   const exclusions = useExclusions();
   const [rules, setRules] = useState<RuleItem[]>([]);
   const [providers, setProviders] = useState<RuleProviderItem[]>([]);
@@ -525,7 +526,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
     }
 
     // 1. 全局代理模式：所有流量一律强制走全局代理出站，绕过规则列表
-    if (currentMode === "global") {
+    if (currentMode === "global" && !publicMode) {
       return setTestResult({
         matchedIndex: 0,
         rule: { type: "GLOBAL", payload: "全局代理接管", proxy: "GLOBAL" },
@@ -535,7 +536,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
     }
 
     // 2. 完全直连模式：所有流量一律强制直连出站，绕过规则列表与代理节点
-    if (currentMode === "direct") {
+    if (currentMode === "direct" && !publicMode) {
       return setTestResult({
         matchedIndex: 0,
         rule: { type: "DIRECT", payload: "完全直连绕过", proxy: "DIRECT" },
@@ -863,10 +864,10 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
             </div>
             <div>
               <div className="font-bold text-amber-900 dark:text-amber-200 text-sm flex items-center gap-1.5">
-                全局代理模式已激活 (Global Mode)
+                {publicMode ? "公共全局模式已激活" : "全局代理模式已激活 (Global Mode)"}
               </div>
               <p className="text-[11px] text-amber-700/90 dark:text-amber-300/80 mt-0.5">
-                所有网络连接强制经由全局代理出站，绕过规则分流库；下方的分流规则当前处于旁路状态。
+                {publicMode ? "进入本程序的公共流量使用公共出口，已启用业务包仍按显式绑定分流。" : "所有网络连接强制经由全局代理出站，绕过规则分流库；下方的分流规则当前处于旁路状态。"}
               </p>
             </div>
           </div>
@@ -887,10 +888,10 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
             </div>
             <div>
               <div className="font-bold text-emerald-900 dark:text-emerald-200 text-sm flex items-center gap-1.5">
-                完全直连模式已激活 (Direct Mode)
+                {publicMode ? "公共直连模式已激活" : "完全直连模式已激活 (Direct Mode)"}
               </div>
               <p className="text-[11px] text-emerald-700/90 dark:text-emerald-300/80 mt-0.5">
-                所有网络连接直接访问目标网站，绕过代理节点与分流规则，100% 走本地网络，不消耗节点流量。
+                {publicMode ? "进入本程序的公共流量直接联网，已启用业务包仍按显式绑定分流。" : "所有网络连接直接访问目标网站，绕过代理节点与分流规则，100% 走本地网络，不消耗节点流量。"}
               </p>
             </div>
           </div>

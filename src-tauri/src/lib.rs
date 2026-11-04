@@ -227,6 +227,7 @@ pub fn run() {
             commands::mihomo_api::get_mihomo_rules,
             commands::mihomo_api::set_mihomo_mode,
             commands::mihomo_api::get_mihomo_config,
+            commands::mihomo_api::get_public_routing_mode,
             commands::mihomo_api::get_mihomo_rule_providers,
             commands::mihomo_api::update_mihomo_rule_provider,
             commands::mihomo_api::get_active_connections,

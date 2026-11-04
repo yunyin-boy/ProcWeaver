@@ -238,8 +238,8 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
     }
     // 方案 A: WinDivert 采用精准白名单业务分流，绝不可无差别劫持全网未知域名的 DNS，
     // 以免导致普通浏览器与非代理软件被 Fake-IP 污染而产生全网断网。
-    let dns_all = false;
-    let dns_port = if !dns_domains.is_empty()
+    let dns_all = crate::commands::dns_adapter::is_windivert_dns_guard_active();
+    let dns_port = if (dns_all || !dns_domains.is_empty())
         && yaml["dns"]["enable"].as_bool() == Some(true)
     {
         yaml["dns"]["listen"]

@@ -197,6 +197,11 @@ export async function fetchMihomoConfig(): Promise<MihomoConfig | null> {
   return null;
 }
 
+export async function fetchPublicRoutingMode(): Promise<{ mode: string; kernelMode: string; applied: boolean } | null> {
+  if (!isTauri()) return null;
+  return invokeTauri("get_public_routing_mode");
+}
+
 export async function updateCoreMode(mode: "rule" | "global" | "direct"): Promise<boolean> {
   try {
     if (isTauri()) {

@@ -128,7 +128,7 @@ export const DnsSettingsView: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                开启后将覆盖订阅配置中的 DNS 选项，强制应用纯净防污染本地分流引擎
+                {os === "windows" ? "覆写公共流量的解析选项，未提供的订阅字段保留。业务域名经绑定出口远端解析，不使用这些公共上游。" : "覆写此页提供的 DNS 解析选项，保留订阅中未提供的字段。"}
               </p>
             </div>
           </div>

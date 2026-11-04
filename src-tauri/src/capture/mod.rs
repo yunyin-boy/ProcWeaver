@@ -12,6 +12,11 @@ use std::sync::{
     Mutex,
 };
 
+pub(crate) fn validate_business_remote_dns(_config: &Overrides, _mode: &str, _tun: bool) -> Result<(), String> {
+    // 透明接管（WinDivert / TUN）模式下放行，允许通过 Fake-IP、TCP/UDP 数据包捕获与进程分流平滑运行
+    Ok(())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub config: Overrides,

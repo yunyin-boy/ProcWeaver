@@ -127,7 +127,11 @@ impl Default for DnsSettings {
 pub fn get_dns_settings() -> Result<DnsSettings, String> {
     let path = crate::storage::data_dir().join("config/dns-preferences.json");
     if !path.exists() {
-        return Ok(DnsSettings::default());
+        let mut settings = DnsSettings::default();
+        // One-time read compatibility: after the first DNS-page save, its value
+        // is authoritative. The removed general-page toggle cannot override it.
+        settings.append_system_dns = super::settings::get_general_settings()?.append_system_dns;
+        return Ok(settings);
     }
     serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|_| "DNS 偏好设置损坏，已恢复默认".into())
@@ -212,7 +216,7 @@ pub(crate) async fn save_dns_settings_transaction(
     if running {
         let stopped = {
             let mut core = state.lock().map_err(|_| "读取核心状态失败")?;
-            super::process::stop_owned_child(&mut core)
+            super::process::stop_owned_child_for_restart(&mut core, false)
         };
         if let Err(error) = stopped {
             if let Err(rollback_error) = rollback_dns_preferences(path, previous_bytes).await {
@@ -272,6 +276,8 @@ pub fn build_dns_mapping(settings: &DnsSettings) -> serde_yaml::Value {
         .map(|s| serde_yaml::Value::from(s.clone()))
         .collect();
     map.insert("fake-ip-filter".into(), serde_yaml::Value::Sequence(fake_filter_seq));
+    // This form edits domain patterns, not Mihomo's rule expressions.
+    map.insert("fake-ip-filter-mode".into(), "blacklist".into());
 
     let default_ns: Vec<serde_yaml::Value> = settings
         .default_nameserver

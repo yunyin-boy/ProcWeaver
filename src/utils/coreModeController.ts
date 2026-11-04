@@ -1,6 +1,6 @@
 export type CoreMode = "rule" | "global" | "direct";
 export interface CoreModeState { mode: CoreMode | null; busy: boolean; error: string }
-export function createCoreModeController(api: { read: () => Promise<{ mode?: string } | null>; write: (mode: CoreMode) => Promise<boolean> }) {
+export function createCoreModeController(api: { read: () => Promise<{ mode?: string; kernelMode?: string; applied?: boolean } | null>; write: (mode: CoreMode) => Promise<boolean> }) {
   let state: CoreModeState = { mode: null, busy: false, error: "" };
   let revision = 0;
   let reading: Promise<void> | undefined;
@@ -11,7 +11,9 @@ export function createCoreModeController(api: { read: () => Promise<{ mode?: str
     state = next; listeners.forEach(listener => listener());
   };
   const readMode = async () => {
-    const value = (await api.read())?.mode?.toLowerCase();
+    const response = await api.read();
+    if (response?.applied === false) throw Error("公共模式尚未生效，请重启核心以恢复公共策略");
+    const value = response?.mode?.toLowerCase();
     if (value !== "rule" && value !== "global" && value !== "direct") throw Error("无法读取核心运行模式");
     return value;
   };
@@ -21,7 +23,7 @@ export function createCoreModeController(api: { read: () => Promise<{ mode?: str
     const current = ++revision;
     const work = (async () => {
       try { const mode = await readMode(); if (revision === current) publish({ mode, busy: false, error: "" }); }
-      catch { if (revision === current) publish({ mode: null, busy: false, error: "核心未就绪，无法读取模式" }); }
+      catch (cause) { if (revision === current) publish({ mode: null, busy: false, error: String(cause) }); }
     })();
     reading = work; readingRevision = current;
     try { await work; } finally { if (reading === work) reading = undefined; }

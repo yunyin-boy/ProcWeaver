@@ -82,7 +82,8 @@ pub fn rebuild_tray_in_place(app: &tauri::AppHandle) {
                 let mode_zh = match payload.mode.as_str() {
                     "global" => "全局",
                     "direct" => "直连",
-                    _ => "规则",
+                    "rule" => "规则",
+                    _ => "未就绪",
                 };
                 let node_str = payload.active_node.as_deref().unwrap_or("未选择");
                 let tooltip = format!(
@@ -473,7 +474,8 @@ pub fn build_tray_menu(
     let mode_zh = match payload.mode.as_str() {
         "global" => "全局代理",
         "direct" => "直接连接",
-        _ => "规则分流",
+        "rule" => "规则分流",
+        _ => "未就绪",
     };
 
     // 1. 顶部状态标头
@@ -512,7 +514,7 @@ pub fn build_tray_menu(
     let sysproxy_item = MenuItem::with_id(app, "toggle_sysproxy", &sysproxy_text, true, None::<&str>)?;
 
     let process_text = format!(
-        "进程与应用分流: {}",
+        "手动进程规则: {}",
         if payload.process_enabled { "✅ 已开启" } else { "💤 待机中" }
     );
     let process_item = MenuItem::with_id(app, "toggle_process_master", &process_text, true, None::<&str>)?;
@@ -685,7 +687,8 @@ fn tray_tooltip(payload: &TrayMenuPayload) -> String {
         let mode_zh = match payload.mode.as_str() {
             "global" => "全局",
             "direct" => "直连",
-            _ => "规则",
+            "rule" => "规则",
+            _ => "未就绪",
         };
         let node_str = payload.active_node.as_deref().unwrap_or("未选择");
         format!(
@@ -991,8 +994,9 @@ pub async fn get_tray_payload(app: tauri::AppHandle) -> Option<TrayMenuPayload> 
 
     // 6. 若核心正在运行，主动向 Mihomo 探测模式、活跃节点、延迟与国家地区分组
     if payload.running {
-        if let Ok(cfg) = crate::commands::mihomo_api::get_mihomo_config().await {
-            if let Some(m) = cfg.get("mode").and_then(|v| v.as_str()) {
+        if crate::routing_overrides::public_mode::enabled() { payload.mode = "unknown".into(); }
+        if let Ok(cfg) = crate::commands::mihomo_api::get_public_routing_mode().await {
+            if let Some(m) = cfg.get("mode").and_then(|v| v.as_str()).filter(|_| cfg.get("applied").and_then(|v|v.as_bool()) != Some(false)) {
                 payload.mode = m.to_ascii_lowercase();
             }
         }

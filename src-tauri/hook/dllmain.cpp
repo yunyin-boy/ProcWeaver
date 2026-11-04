@@ -22,7 +22,31 @@ static bool ReadEnvBool(const char* name, bool default_val) {
     return default_val;
 }
 
+static HANDLE g_control_event = NULL;
+static HANDLE g_control_host = NULL;
+static bool g_control_required = false;
+static bool g_hooks_installed = false;
+
+bool IsHookEnabled() {
+    if (!g_config.enabled) return false;
+    if (!g_control_required) return true;
+    // An unreadable control channel is not permission to bypass a binding.
+    // Only a confirmed revocation or confirmed host exit switches to native IO.
+    if (g_control_event && WaitForSingleObject(g_control_event, 0) == WAIT_OBJECT_0) return false;
+    if (g_control_host && WaitForSingleObject(g_control_host, 0) == WAIT_OBJECT_0) return false;
+    return true;
+}
+
 void LoadHookConfig() {
+    wchar_t control[256] = {0};
+    if (GetEnvironmentVariableW(L"PROCWEAVER_HOOK_CONTROL", control, 256) > 0) {
+        g_control_required = true;
+        g_control_event = OpenEventW(SYNCHRONIZE, FALSE, control);
+        char host[32] = {0};
+        if (GetEnvironmentVariableA("PROCWEAVER_HOOK_HOST_PID", host, sizeof(host)) > 0) {
+            g_control_host = OpenProcess(SYNCHRONIZE, FALSE, strtoul(host, NULL, 10));
+        }
+    }
     char bundle_buf[32] = { 0 };
     DWORD r1 = GetEnvironmentVariableA("PROCWEAVER_BUNDLE_PORT", bundle_buf, sizeof(bundle_buf));
     if (r1 > 0 && r1 < sizeof(bundle_buf)) {
@@ -49,6 +73,7 @@ void LoadHookConfig() {
     g_config.policy.proxy_udp = ReadEnvBool("PROCWEAVER_PROXY_UDP", false);
     g_config.policy.proxy_subprocesses = ReadEnvBool("PROCWEAVER_PROXY_SUBPROCESSES", true);
     g_config.policy.bypass_lan = ReadEnvBool("PROCWEAVER_BYPASS_LAN", true);
+    g_config.policy.remote_dns_required = ReadEnvBool("PROCWEAVER_REMOTE_DNS_REQUIRED", false);
 
     char dns_mode_buf[32] = { 0 };
     if (GetEnvironmentVariableA("PROCWEAVER_DNS_MODE", dns_mode_buf, sizeof(dns_mode_buf)) > 0) {
@@ -62,6 +87,7 @@ void LoadHookConfig() {
     }
 
     char port_filter_buf[32] = { 0 };
+    if (g_config.policy.remote_dns_required) g_config.policy.dns_mode = DnsMode::FakeIp;
     if (GetEnvironmentVariableA("PROCWEAVER_PORT_FILTER_MODE", port_filter_buf, sizeof(port_filter_buf)) > 0) {
         if (_stricmp(port_filter_buf, "web_only") == 0) {
             g_config.policy.port_filter_mode = PortFilterMode::WebOnly;
@@ -208,6 +234,15 @@ static bool InstallIatHooks() {
     if (HookIatEntry(hMain, "ws2_32.dll", "GetAddrInfoW", (void*)HookGetAddrInfoW, (void**)&TrueGetAddrInfoW)) hooked_any = true;
     if (HookIatEntry(hMain, "ws2_32.dll", "freeaddrinfo", (void*)HookFreeAddrInfo, (void**)&TrueFreeAddrInfo)) hooked_any = true;
     if (HookIatEntry(hMain, "ws2_32.dll", "FreeAddrInfoW", (void*)HookFreeAddrInfoW, (void**)&TrueFreeAddrInfoW)) hooked_any = true;
+    if (HookIatEntry(hMain, "ws2_32.dll", "gethostbyname", (void*)HookGetHostByName, (void**)&TrueGetHostByName)) hooked_any = true;
+    if (HookIatEntry(hMain, "ws2_32.dll", "GetAddrInfoExA", (void*)HookGetAddrInfoExA, (void**)&TrueGetAddrInfoExA)) hooked_any = true;
+    if (HookIatEntry(hMain, "ws2_32.dll", "GetAddrInfoExW", (void*)HookGetAddrInfoExW, (void**)&TrueGetAddrInfoExW)) hooked_any = true;
+    if (HookIatEntry(hMain, "ws2_32.dll", "FreeAddrInfoExA", (void*)HookFreeAddrInfoExA, (void**)&TrueFreeAddrInfoExA)) hooked_any = true;
+    if (HookIatEntry(hMain, "ws2_32.dll", "FreeAddrInfoExW", (void*)HookFreeAddrInfoExW, (void**)&TrueFreeAddrInfoExW)) hooked_any = true;
+    if (HookIatEntry(hMain, "dnsapi.dll", "DnsQuery_A", (void*)HookDnsQueryA, (void**)&TrueDnsQueryA)) hooked_any = true;
+    if (HookIatEntry(hMain, "dnsapi.dll", "DnsQuery_W", (void*)HookDnsQueryW, (void**)&TrueDnsQueryW)) hooked_any = true;
+    if (HookIatEntry(hMain, "dnsapi.dll", "DnsQuery_UTF8", (void*)HookDnsQueryUtf8, (void**)&TrueDnsQueryUtf8)) hooked_any = true;
+    if (HookIatEntry(hMain, "dnsapi.dll", "DnsQueryEx", (void*)HookDnsQueryEx, (void**)&TrueDnsQueryEx)) hooked_any = true;
 
     if (HookIatEntry(hMain, "kernel32.dll", "CreateProcessW", (void*)HookCreateProcessW, (void**)&TrueCreateProcessW)) hooked_any = true;
     if (HookIatEntry(hMain, "kernel32.dll", "CreateProcessA", (void*)HookCreateProcessA, (void**)&TrueCreateProcessA)) hooked_any = true;
@@ -264,7 +299,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI PwGetHookTier() {
     return (DWORD)g_hook_tier;
 }
 
-static void InstallHooks() {
+static bool InstallHooks() {
     DetourRestoreAfterWith();
 
     DetourTransactionBegin();
@@ -275,6 +310,15 @@ static void InstallHooks() {
     DetourAttach(&(PVOID&)TrueGetAddrInfoW, (PVOID)HookGetAddrInfoW);
     DetourAttach(&(PVOID&)TrueFreeAddrInfo, (PVOID)HookFreeAddrInfo);
     DetourAttach(&(PVOID&)TrueFreeAddrInfoW, (PVOID)HookFreeAddrInfoW);
+    DetourAttach(&(PVOID&)TrueGetHostByName, (PVOID)HookGetHostByName);
+    DetourAttach(&(PVOID&)TrueGetAddrInfoExA, (PVOID)HookGetAddrInfoExA);
+    DetourAttach(&(PVOID&)TrueGetAddrInfoExW, (PVOID)HookGetAddrInfoExW);
+    DetourAttach(&(PVOID&)TrueFreeAddrInfoExA, (PVOID)HookFreeAddrInfoExA);
+    DetourAttach(&(PVOID&)TrueFreeAddrInfoExW, (PVOID)HookFreeAddrInfoExW);
+    DetourAttach(&(PVOID&)TrueDnsQueryA, (PVOID)HookDnsQueryA);
+    DetourAttach(&(PVOID&)TrueDnsQueryW, (PVOID)HookDnsQueryW);
+    DetourAttach(&(PVOID&)TrueDnsQueryUtf8, (PVOID)HookDnsQueryUtf8);
+    DetourAttach(&(PVOID&)TrueDnsQueryEx, (PVOID)HookDnsQueryEx);
 
     // 挂钩网络流量重定向与 QUIC 快速降级
     DetourAttach(&(PVOID&)TrueConnect, (PVOID)HookConnect);
@@ -286,7 +330,7 @@ static void InstallHooks() {
     DetourAttach(&(PVOID&)TrueCreateProcessW, (PVOID)HookCreateProcessW);
     DetourAttach(&(PVOID&)TrueCreateProcessA, (PVOID)HookCreateProcessA);
 
-    DetourTransactionCommit();
+    return DetourTransactionCommit() == NO_ERROR;
 }
 
 static void UninstallHooks() {
@@ -297,6 +341,15 @@ static void UninstallHooks() {
     DetourDetach(&(PVOID&)TrueGetAddrInfoW, (PVOID)HookGetAddrInfoW);
     DetourDetach(&(PVOID&)TrueFreeAddrInfo, (PVOID)HookFreeAddrInfo);
     DetourDetach(&(PVOID&)TrueFreeAddrInfoW, (PVOID)HookFreeAddrInfoW);
+    DetourDetach(&(PVOID&)TrueGetHostByName, (PVOID)HookGetHostByName);
+    DetourDetach(&(PVOID&)TrueGetAddrInfoExA, (PVOID)HookGetAddrInfoExA);
+    DetourDetach(&(PVOID&)TrueGetAddrInfoExW, (PVOID)HookGetAddrInfoExW);
+    DetourDetach(&(PVOID&)TrueFreeAddrInfoExA, (PVOID)HookFreeAddrInfoExA);
+    DetourDetach(&(PVOID&)TrueFreeAddrInfoExW, (PVOID)HookFreeAddrInfoExW);
+    DetourDetach(&(PVOID&)TrueDnsQueryA, (PVOID)HookDnsQueryA);
+    DetourDetach(&(PVOID&)TrueDnsQueryW, (PVOID)HookDnsQueryW);
+    DetourDetach(&(PVOID&)TrueDnsQueryUtf8, (PVOID)HookDnsQueryUtf8);
+    DetourDetach(&(PVOID&)TrueDnsQueryEx, (PVOID)HookDnsQueryEx);
 
     DetourDetach(&(PVOID&)TrueConnect, (PVOID)HookConnect);
     DetourDetach(&(PVOID&)TrueWSAConnect, (PVOID)HookWSAConnect);
@@ -347,6 +400,22 @@ extern "C" __declspec(dllexport) BOOL WINAPI PwLaunchProcess(
     return FALSE;
 }
 
+// The environment belongs to this launch, never to the ProcWeaver host.
+extern "C" __declspec(dllexport) BOOL WINAPI PwLaunchProcessWithEnvironment(
+    LPCWSTR application, LPWSTR command, LPCWSTR directory, LPCSTR dll,
+    LPVOID environment, DWORD* pid
+) {
+    STARTUPINFOW si = {}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    BOOL ok = DetourCreateProcessWithDllExW(application, command, NULL, NULL, FALSE,
+        CREATE_UNICODE_ENVIRONMENT, environment, directory, &si, &pi, dll, NULL);
+    if (ok) {
+        if (pid) *pid = pi.dwProcessId;
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    }
+    return ok;
+}
+
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     (void)lpvReserved;
     if (DetourIsHelperProcess()) {
@@ -359,12 +428,25 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         LoadHookConfig();
         if (g_config.enabled) {
-            InstallHooks();
+            g_hooks_installed = InstallHooks();
+            ReportHookTier(g_hooks_installed ? HookTier::FullInline : HookTier::Failed);
+            if (!g_hooks_installed && g_config.policy.remote_dns_required) return FALSE;
+            if (g_hooks_installed && g_control_required && g_control_event && g_control_host) {
+                wchar_t name[256] = {};
+                DWORD length = GetEnvironmentVariableW(L"PROCWEAVER_HOOK_CONTROL", name, 240);
+                if (length > 0 && length < 240) {
+                    wcscat_s(name, L"_ready");
+                    HANDLE ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, name);
+                    if (ready) { SetEvent(ready); CloseHandle(ready); }
+                }
+            }
         }
     } else if (fdwReason == DLL_PROCESS_DETACH) {
-        if (g_config.enabled) {
+        if (g_hooks_installed) {
             UninstallHooks();
         }
+        if (g_control_event) CloseHandle(g_control_event);
+        if (g_control_host) CloseHandle(g_control_host);
     }
     return TRUE;
 }

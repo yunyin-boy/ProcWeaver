@@ -377,6 +377,7 @@ async fn close_public_connections_for_groups(
 
 #[tauri::command]
 pub async fn switch_public_node(node: String) -> Result<SwitchPublicNodeResult, String> {
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
     let _guard = PUBLIC_SWITCH_LOCK.lock().await;
 
     let client = controller_client()
@@ -510,6 +511,11 @@ pub async fn switch_public_node(node: String) -> Result<SwitchPublicNodeResult, 
 
 #[tauri::command]
 pub async fn switch_mihomo_proxy(group: String, proxy: String) -> Result<bool, String> {
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
+    switch_mihomo_proxy_locked(group, proxy).await
+}
+
+pub(crate) async fn switch_mihomo_proxy_locked(group: String, proxy: String) -> Result<bool, String> {
     let client = controller_client()
         .timeout(std::time::Duration::from_secs(3))
         .build()
@@ -606,6 +612,12 @@ pub async fn get_mihomo_rules() -> Result<Value, String> {
 #[tauri::command]
 pub async fn set_mihomo_mode(mode: String) -> Result<bool, String> {
     let _lifecycle = super::process::LIFECYCLE.lock().await;
+    if crate::routing_overrides::public_mode::enabled() { return set_public_mode_locked(&mode).await; }
+    set_kernel_mode_locked(mode).await
+}
+
+/// Internal lifecycle caller already owns LIFECYCLE.
+pub(crate) async fn set_kernel_mode_locked(mode: String) -> Result<bool, String> {
     let client = controller_client()
         .timeout(std::time::Duration::from_secs(3))
         .build()
@@ -639,13 +651,7 @@ pub async fn set_mihomo_mode(mode: String) -> Result<bool, String> {
     // 模式持久化保存至首选项，重启后自动记忆恢复
     let _ = super::settings::update_persisted_run_mode(&standard_mode);
 
-    // 切换模式后，根据设置断开所有旧的活动连接，使流量立刻按新模式路由
-    if super::settings::get_general_settings().map(|s| s.auto_close_connections).unwrap_or(true) {
-        let _ = client
-            .delete(format!("{}/connections", base_url()?))
-            .send()
-            .await;
-    }
+    // Mode changes never indiscriminately delete all connections.
 
     // 若切换为 Global 全局模式，确保 GLOBAL 策略组联动选中当前主出站节点
     if standard_mode == "Global" {
@@ -675,6 +681,80 @@ pub async fn set_mihomo_mode(mode: String) -> Result<bool, String> {
     }
 
     Ok(true)
+}
+
+async fn set_public_mode_locked(mode: &str) -> Result<bool, String> {
+    use crate::routing_overrides::{self, public_mode};
+    let mode = public_mode::normalize(mode)?;
+    if !super::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) { return Err("核心未运行，公共模式尚未应用".into()); }
+    let previous = super::settings::get_general_settings()?.run_mode;
+    let config = routing_overrides::read()?;
+    let (id, source) = routing_overrides::current_source();
+    let raw = std::fs::read_to_string(source).map_err(|_| "读取公共模式源配置失败")?;
+    let prepared = routing_overrides::prepare_public_mode(&raw, &config, &id, mode)?;
+    super::profile::validate_config(&prepared)?;
+    routing_overrides::apply_runtime(&prepared).await?;
+    if let Err(error) = super::settings::update_persisted_run_mode(mode) {
+        let restored = routing_overrides::prepare_public_mode(&raw, &config, &id, &previous)?;
+        routing_overrides::apply_runtime(&restored).await.map_err(|restore| format!("公共模式保存失败：{error}；恢复失败：{restore}"))?;
+        return Err(format!("公共模式保存失败，已恢复：{error}"));
+    }
+    if super::settings::get_general_settings()?.auto_close_connections {
+        close_confirmed_public_connections().await;
+    }
+    Ok(true)
+}
+
+async fn close_confirmed_public_connections() {
+    let Ok(base) = base_url() else { return; };
+    let Ok(client) = controller_client().timeout(std::time::Duration::from_secs(3)).build() else { return; };
+    let Ok(response) = client.get(format!("{base}/connections")).send().await else { return; };
+    let Ok(value) = response.json::<Value>().await else { return; };
+    let mixed = super::settings::get_general_settings().map(|s| s.mixed_port).unwrap_or(0);
+    for conn in value["connections"].as_array().into_iter().flatten() {
+        let metadata = &conn["metadata"];
+        let inbound = metadata["inboundName"].as_str().unwrap_or("").to_ascii_lowercase();
+        let protected = inbound.starts_with("pw-") || conn["chains"].as_array().is_some_and(|chain|
+            chain.iter().any(|v| v.as_str().is_some_and(|s| s.to_ascii_lowercase().starts_with("pw-"))));
+        let known_public = metadata["inboundPort"].as_u64() == Some(mixed as u64)
+            || metadata["type"].as_str().is_some_and(|t| t.eq_ignore_ascii_case("tun"));
+        if !protected && known_public {
+            if let Some(id) = conn["id"].as_str() { let _ = client.delete(format!("{base}/connections/{}", url_encode(id))).send().await; }
+        }
+    }
+}
+
+pub(crate) async fn close_withdrawn_bundle_connections(old: &crate::routing_overrides::model::Overrides) -> Result<(), String> {
+    if !super::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) { return Ok(()); }
+    let base = base_url()?;
+    let client = controller_client().timeout(std::time::Duration::from_secs(3)).build().map_err(|_| "创建连接清理请求失败")?;
+    let value: Value = client.get(format!("{base}/connections")).send().await
+        .map_err(|_| "读取旧业务连接失败")?.error_for_status().map_err(|_| "核心拒绝查询旧业务连接")?
+        .json().await.map_err(|_| "旧业务连接状态无效")?;
+    let names: Vec<_> = old.bundles.iter().flat_map(|b| [crate::routing_overrides::bundles::group(&b.id, "main"), crate::routing_overrides::bundles::group(&b.id, "dns"), crate::routing_overrides::bundles::listener(&b.id)]).collect();
+    for conn in value["connections"].as_array().ok_or("缺少旧业务连接列表")? {
+        let belongs = conn["metadata"]["inboundName"].as_str().is_some_and(|n| names.iter().any(|s| s == n))
+            || conn["chains"].as_array().is_some_and(|chain| chain.iter().any(|v| v.as_str().is_some_and(|n| names.iter().any(|s| s == n))));
+        if belongs { if let Some(id) = conn["id"].as_str() {
+            let response = client.delete(format!("{base}/connections/{}", url_encode(id))).send().await.map_err(|_| "关闭旧业务连接失败")?;
+            if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND { return Err("核心拒绝关闭旧业务连接".into()); }
+        } }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_public_routing_mode() -> Result<Value, String> {
+    if !crate::routing_overrides::public_mode::enabled() { return get_mihomo_config().await; }
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
+    let actual = get_mihomo_config().await?;
+    let settings = super::settings::get_general_settings()?;
+    let saved = crate::routing_overrides::public_mode::normalize(&settings.run_mode)?;
+    let raw = std::fs::read_to_string(crate::storage::data_dir().join("core_data/config.yaml")).map_err(|_| "读取公共模式状态失败")?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&raw).map_err(|_| "公共模式状态无效")?;
+    let applied = actual["mode"].as_str().is_some_and(|m| m.eq_ignore_ascii_case("rule"))
+        && yaml[crate::routing_overrides::public_mode::KEY].as_str() == Some(saved);
+    Ok(serde_json::json!({"mode": saved, "kernelMode": actual["mode"], "applied": applied}))
 }
 
 #[tauri::command]

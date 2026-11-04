@@ -4,6 +4,7 @@ import type { BundleLocalInstance, BundlePolicy } from "../../types/businessBund
 import { defaultBundlePolicy, normalizeBundlePolicy } from "../../utils/bundlePolicy";
 import { Shield, RotateCcw, Check, X } from "lucide-react";
 import { BundlePolicyForm } from "./BundlePolicyForm";
+import { usePlatform } from "../../context/PlatformContext";
 
 interface Props {
   isOpen: boolean;
@@ -18,6 +19,7 @@ export const BundlePolicyModal: React.FC<Props> = ({
   onSave,
   onCancel,
 }) => {
+  const platform = usePlatform();
   const [policy, setPolicy] = useState<BundlePolicy>(defaultBundlePolicy());
 
   useEffect(() => {
@@ -78,6 +80,7 @@ export const BundlePolicyModal: React.FC<Props> = ({
             policy={policy}
             onChange={setPolicy}
             isHttpUpstream={isHttpUpstream}
+            remoteDns={platform.os === "windows" && instance.backend !== "external"}
           />
         </div>
 

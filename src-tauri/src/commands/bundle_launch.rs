@@ -113,6 +113,11 @@ pub fn disallows_proxy_arguments(_exe: &Path, policy: Option<&crate::routing_ove
 
 fn application_status(running:&[Instance],port:u16,independent:bool,exe:Option<&Path>,policy:Option<&crate::routing_overrides::model::BundlePolicy>)->(&'static str,String) {
     let active_mode = detect_active_capture_mode();
+    if !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
+        && crate::external_proxy::routes().iter().all(|route| route.port != port)
+        && matches!(active_mode, ActiveCaptureMode::WinDivert | ActiveCaptureMode::Tun) {
+        return ("unverified", "当前透明模式无法保证业务域名远端解析，请切换用户态强接管".into());
+    }
     match active_mode {
         ActiveCaptureMode::WinDivert => {
             return ("capture", format!("WinDivert 模式，发现 {} 个主实例；新连接按业务包规则透明接管，无需代理参数", running.len()));
@@ -242,7 +247,7 @@ pub async fn get_bundle_entry_states(instance_ids:Vec<String>)->Result<Vec<Entry
                         _ => if proxy_matches(&running[0].args, bundle.port) {
                             (Some("NativeBypass".into()), Some("已使用原生代理参数直连运行，Hook 安全旁路".into()))
                         } else {
-                            (Some("FullInline".into()), Some("内联 Hook 已就绪".into()))
+                            (None, Some("尚未取得 Hook 加载证据；实际接管以连接记录为准".into()))
                         }
                     }
                 };
@@ -340,7 +345,12 @@ pub fn route(id: &str) -> Result<BundleRoute,String> {
     let independent=crate::external_proxy::route(id);
     if let Ok(Some(bundle))=&independent { return Ok(bundle.clone()); }
     crate::function_mode::require_full()?;
-    if let Some(bundle)=routing_overrides::read()?.effective().bundles.into_iter().find(|b| b.id==id) { return Ok(bundle); }
+    let saved = routing_overrides::read()?;
+    if let Some(mut bundle)=saved.bundles.into_iter().find(|b| b.id==id) {
+        bundle.enabled &= saved.bundles_enabled;
+        if !bundle.enabled { bundle.port = 0; }
+        return Ok(bundle);
+    }
     independent?;
     Err("业务包尚未保存或已移除，请先在业务包页面应用规则".into())
 }
@@ -422,9 +432,38 @@ pub fn is_chromium_or_electron(exe: &Path) -> bool {
     ) || exe.parent().is_some_and(|p| p.join("resources").join("app.asar").exists() || p.join("chrome_elf.dll").exists())
 }
 
+async fn spawn_current_application(expected: BundleRoute, exe: PathBuf, directory: String, args: Vec<String>) -> Result<&'static str, String> {
+    tokio::task::spawn_blocking(move || {
+        // Keep the lock inside the blocking task: cancelling a window request
+        // cannot let a late launch race past a committed master-off operation.
+        let _lifecycle = process::LIFECYCLE.blocking_lock();
+        if crate::shutdown::in_progress() { return Err("正在退出，未启动应用".into()); }
+        let current = route(&expected.id)?;
+        if current.enabled && (current.port != expected.port || current.main_exe != expected.main_exe || current.policy != expected.policy) {
+            return Err("业务包设置已改变，请重新检测后启动".into());
+        }
+        if current.enabled && crate::function_mode::core_features_enabled() && crate::external_proxy::generation(&current.id).is_none()
+            && !process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) { return Err("核心已停止，未启动受控应用".into()); }
+        spawn_application(&exe, &directory, args, if current.enabled { current.port } else { 0 }, current.policy.as_ref())
+    }).await.map_err(|_| "应用启动任务失败")?
+}
+
 fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:Option<&crate::routing_overrides::model::BundlePolicy>)->Result<&'static str,String> {
+    if port == 0 {
+        let mut command = std::process::Command::new(exe);
+        command.args(&args);
+        if !directory.is_empty() { command.current_dir(directory); }
+        else if let Some(parent) = exe.parent() { command.current_dir(parent); }
+        command.spawn().map_err(|e| format!("按应用自身设置启动失败：{e}"))?;
+        return Ok("业务包已停用，已按应用原有参数启动；网络由应用自身及系统设置决定");
+    }
     let active_mode = detect_active_capture_mode();
     let proxy_disallowed = disallows_proxy_arguments(exe, policy);
+    if !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
+        && crate::external_proxy::routes().iter().all(|route| route.port != port)
+        && matches!(active_mode, ActiveCaptureMode::WinDivert | ActiveCaptureMode::Tun) {
+        return Err("当前透明模式无法保证业务原始域名远端解析，未启动应用；请切换用户态强接管后重试".into());
+    }
 
     // 1. 优先判定 WinDivert 与 TUN 透明模式（完整版与独立版均覆盖）
     if active_mode == ActiveCaptureMode::WinDivert || active_mode == ActiveCaptureMode::Tun {
@@ -470,19 +509,13 @@ fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:O
             // B 路线：双保险混合模式（针对 Chromium / Electron 架构）
             // 1. 原生代理参数保障主干网络通道 100% 工业级稳定秒开，绝不白屏、绝不假死
             let hybrid_args = proxy_args(args, port);
-            let proxy = format!("http://127.0.0.1:{port}");
-            std::env::set_var("NODE_USE_ENV_PROXY", "1");
-            std::env::set_var("HTTP_PROXY", &proxy);
-            std::env::set_var("HTTPS_PROXY", &proxy);
-            std::env::set_var("ALL_PROXY", &proxy);
-            std::env::set_var("NO_PROXY", "localhost,127.0.0.1,::1");
             // 2. 同时挂载 Hook，负责抓漏子进程、底层阻断 IPv6 泄露与 UDP 泄露
-            crate::capture::user_mode::launch_with_hook(exe, &hybrid_args, working_dir, port, dns_port, policy)?;
+            crate::capture::user_mode::launch_with_hook(exe, &hybrid_args, working_dir, port, dns_port, policy, true)?;
             return Ok("已在用户态强接管模式下启动应用（双保险混合模式：原生参数保障极速开屏，Hook 透明锁定子进程与防泄漏）");
         } else {
             // C 路线：纯透明 Hook 接管（针对 Gemini 等拒绝代理参数的应用，或不支持代理参数的普通程序）
             // 绝不传递 --proxy-server，由轻量 Hook 在底层透明重定向至业务包出口
-            crate::capture::user_mode::launch_with_hook(exe, &args, working_dir, port, dns_port, policy)?;
+            crate::capture::user_mode::launch_with_hook(exe, &args, working_dir, port, dns_port, policy, false)?;
             return Ok(if proxy_disallowed {
                 "已在用户态强接管模式下启动应用（纯透明 Hook 接管：针对该应用自动免除代理参数，由轻量 Hook 透明接管分流）"
             } else {
@@ -564,6 +597,7 @@ async fn ready(app:&tauri::AppHandle,id:&str,allow_start:bool)->Result<BundleRou
     if crate::external_proxy::generation(id).is_some() { return crate::external_proxy::ensure_ready(id); }
     let _lock=process::LIFECYCLE.lock().await;
     let bundle=route(id)?;
+    if !bundle.enabled { return Ok(bundle); }
     let config=routing_overrides::read()?;
     if bundle.enabled && !config.effective().process_enabled {return Err("业务包分流尚未启用，请先应用业务包规则".into());}
     if allow_start {process::start_core_locked(None,&app.state()).await?;}
@@ -585,6 +619,15 @@ pub async fn launch_bundle_app(app:tauri::AppHandle, request:LaunchRequest, conf
     if prepare_only && (confirmation.is_some() || request.shortcut_id.is_some()) {return Err("自动检测只允许准备主程序的重启确认".into());}
     let bundle=ready(&app,&request.instance_id,!prepare_only && confirmation.is_none()).await?;
     if prepare_only && !bundle.enabled {return Err("业务包已停用，未尝试热替换".into());}
+    if !bundle.enabled {
+        if confirmation.is_some() { return Err("业务包已停用，旧重启确认已取消，未关闭应用".into()); }
+        let selected=super::bundle_shortcuts::launch_source(&request)?;
+        let exe=selected.as_ref().map(|l|PathBuf::from(&l.target)).map(Ok).unwrap_or_else(||resolve_executable(&bundle))?;
+        let args=if let Some(link)=&selected {native::split_arguments(&format!("app.exe {}",link.arguments))?.into_iter().skip(1).collect()}else{vec![]};
+        let directory=selected.as_ref().map(|l|l.directory.clone()).unwrap_or_default();
+        let message=spawn_current_application(bundle.clone(),exe,directory,args).await?;
+        return Ok(LaunchOutcome {state:"launched".into(),message:message.into(),confirmation:None,entry:String::new(),process_count:1});
+    }
     let entry=format!("127.0.0.1:{}",bundle.port);
     let mut plan=if let Some(token)=confirmation {
         let plan=CONFIRMATIONS.lock().unwrap_or_else(|p|p.into_inner()).remove(&token).ok_or("重启确认已失效，请重新检测")?;
@@ -628,7 +671,7 @@ pub async fn launch_bundle_app(app:tauri::AppHandle, request:LaunchRequest, conf
                 return Ok(LaunchOutcome{state:"restart_required".into(),message:"应用已在运行，无法确认其启动时的代理环境。请保存工作后正常关闭并重启；重启后仍需通过连接记录核验实际出口".into(),confirmation:Some(token),entry,process_count:count});
             }
             if prepare_only {return Ok(LaunchOutcome{state:"not_running".into(),message:"应用已退出".into(),confirmation:None,entry,process_count:0});}
-            spawn_application(&exe,&directory,args,bundle.port,bundle.policy.as_ref())?;
+            spawn_current_application(bundle.clone(),exe,directory,args).await?;
             return Ok(LaunchOutcome{state:"launched".into(),message:"已启动应用并传入代理环境；原生 GUI 通过系统代理接入，应用是否遵循代理及实际出口仍需核验".into(),confirmation:None,entry,process_count:1});
         }
         let probe_exe=exe.clone(); let probe_args=args.clone(); let explicit_profile=selected.is_some();
@@ -660,7 +703,7 @@ pub async fn launch_bundle_app(app:tauri::AppHandle, request:LaunchRequest, conf
             }
         }
         if !running.is_empty() && running.iter().all(|p|proxy_matches(&p.args,bundle.port)) {
-            if selected.is_some() {spawn_application(&exe,&directory,args,bundle.port,bundle.policy.as_ref())?;}
+            if selected.is_some() {spawn_current_application(bundle.clone(),exe,directory,args).await?;}
             return Ok(LaunchOutcome{state:"reused".into(),message:"已有实例的启动参数已接入此业务包入口，继续沿用现有资料；实际连接出口仍以连接记录为准".into(),confirmation:None,entry,process_count:running.len()});
         }
         let args=if running.len()==1 {with_shortcut_args(&running[0].args,&args)}else{args};
@@ -678,7 +721,7 @@ pub async fn launch_bundle_app(app:tauri::AppHandle, request:LaunchRequest, conf
     if current.port!=plan.port || current.main_exe!=plan.main_exe || current.enabled!=plan.enabled || plan.external_revision!=crate::external_proxy::generation(&current.id) {return Err("业务包配置已改变，请重新启动".into());}
     let exe=plan.exe.clone(); let args=plan.args.clone();
     if !tokio::task::spawn_blocking(move||instances(&exe,Some(&args))).await.map_err(|_|"启动前核验失败")??.is_empty() {return Err("应用又启动了新实例，请重新检测，未重复启动".into());}
-    let message=tokio::task::spawn_blocking(move||spawn_application(&plan.exe,&plan.directory,std::mem::take(&mut plan.args),plan.port,plan.policy.as_ref())).await.map_err(|_|"应用启动任务失败")??;
+    let message=spawn_current_application(bundle,plan.exe,plan.directory,std::mem::take(&mut plan.args)).await?;
     Ok(LaunchOutcome{state:"launched".into(),message:message.into(),confirmation:None,entry,process_count:1})
 }
 
@@ -752,6 +795,45 @@ pub async fn reset_bundle_stale_connections(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn queued_launch_after_master_off_starts_without_capture() {
+        if crate::edition::PROCESS { return; }
+        const FLAG: &str = "PROCWEAVER_NATIVE_LAUNCH_TEST";
+        const REPORT: &str = "PROCWEAVER_NATIVE_LAUNCH_REPORT";
+        const NAME: &str = "commands::bundle_launch::tests::queued_launch_after_master_off_starts_without_capture";
+        match std::env::var(FLAG).as_deref() {
+            Ok("probe") => {
+                let native = ["PROCWEAVER_BUNDLE_PORT", "PROCWEAVER_DNS_PORT", "PROCWEAVER_HOOK_CONTROL"].iter().all(|key| std::env::var_os(key).is_none())
+                    && !std::env::args().any(|arg| arg.starts_with("--proxy-server"));
+                std::fs::write(std::env::var_os(REPORT).unwrap(), if native { "native" } else { "captured" }).unwrap();
+                return;
+            }
+            Ok("setup") => {},
+            _ => {
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                child.args(["--exact", NAME]).env(FLAG, "setup");
+                for key in ["PROCWEAVER_BUNDLE_PORT", "PROCWEAVER_DNS_PORT", "PROCWEAVER_HOOK_CONTROL"] { child.env_remove(key); }
+                assert!(child.status().unwrap().success()); return;
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("pw-native-launch-{}", std::process::id()));
+        crate::storage::initialize_test(dir.clone(), std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().into());
+        let exe = std::env::current_exe().unwrap();
+        let expected: BundleRoute = serde_json::from_value(serde_json::json!({"id":"fixture","name":"fixture","mainExe":exe,"enabled":true,"mainTarget":{"profileId":"default","kind":"node","name":"fixture"},"dnsTarget":null,"port":34000,"mode":"strict","fallback":"rules","domains":[]})).unwrap();
+        let config = routing_overrides::model::Overrides { bundles_enabled:false, bundles:vec![expected.clone()], ..Default::default() };
+        std::fs::write(dir.join("config/routing-overrides.json"), serde_json::to_vec(&config).unwrap()).unwrap();
+        let report = dir.join("launch.txt"); std::env::set_var(FLAG, "probe"); std::env::set_var(REPORT, &report);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let message = runtime.block_on(spawn_current_application(expected, exe, String::new(), vec!["--exact".into(), NAME.into()])).unwrap();
+        assert!(message.contains("应用自身"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::fs::read_to_string(&report).ok().filter(|text| !text.is_empty()).is_none() && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(20)); }
+        assert_eq!(std::fs::read_to_string(&report).unwrap(), "native");
+        assert!(!process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(routing_overrides::read().unwrap().bundles[0].enabled, "停用不得覆盖保存的单包开关");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[cfg(windows)]
     #[test] fn package_preflight_failure_never_closes_existing_instances() {
         let mut plan=Confirmation{request:LaunchRequest{instance_id:"package-fixture".into(),shortcut_id:None,direct:false},

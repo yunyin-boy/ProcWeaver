@@ -66,6 +66,9 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
                 }
                 // 系统开关在 prepare 中解析；仅此包进程的未命中请求可直连，不影响其他进程。
                 if bundle.fallback == "direct" { prefix.push(format!("{process},DIRECT").into()); }
+                else if !owned && yaml["sub-rules"][super::public_mode::RULES].is_sequence() {
+                    prefix.push(format!("SUB-RULE,({process}),{}", super::public_mode::RULES).into());
+                }
                 continue;
             }
             if rule.rule_mode.as_deref() == Some("inherit") && dest != "DIRECT" && dest != "REJECT" {
@@ -179,6 +182,15 @@ pub fn safety(raw: &str) -> Result<String, String> {
     let rules = yaml.as_mapping_mut().ok_or("配置须为对象")?.entry(Value::from("rules")).or_insert(Value::Sequence(vec![])).as_sequence_mut().ok_or("rules 须为数组")?;
     rules.splice(0..0, prefix);
     serde_yaml::to_string(&yaml).map_err(|_| "合成安全例外失败".into())
+}
+
+pub fn core_bypass(raw: &str) -> Result<String, String> {
+    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "核心防回环规则无效")?;
+    let rules = yaml["rules"].as_sequence_mut().ok_or("缺少运行规则")?;
+    let guards = ["mihomo.exe", "mihomo-v3.exe", "mihomo-compatible.exe"].into_iter()
+        .map(|name| Value::from(format!("PROCESS-NAME,{name},DIRECT")));
+    rules.splice(0..0, guards);
+    serde_yaml::to_string(&yaml).map_err(|_| "生成核心防回环规则失败".into())
 }
 
 /// 强制注入 BT/PT 下载客户端与 Tracker 直连规则，

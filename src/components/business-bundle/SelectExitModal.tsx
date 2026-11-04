@@ -5,6 +5,7 @@ import { Network, X, Search, Check, Shield, Zap, ShieldCheck } from "lucide-reac
 import { testDelay, getPreferredSpeedTestUrl } from "../../api/mihomo";
 import { getPersistedHealthCache, probeNodeHealthBatch, savePersistedHealthCache } from "../../api/nodeHealth";
 import type { IpHealthInfo } from "../../types";
+import { usePlatform } from "../../context/PlatformContext";
 
 interface Props {
   isOpen: boolean;
@@ -23,9 +24,10 @@ export const SelectExitModal: React.FC<Props> = ({
   onConfirm,
   onCancel,
 }) => {
+  const remoteDns = usePlatform().os === "windows";
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [selectedMain, setSelectedMain] = useState<string | null>(null);
-  const [followMainDns, setFollowMainDns] = useState<boolean>(true);
+  const [followMainDns, setFollowMainDns] = useState(true);
   const [selectedDns, setSelectedDns] = useState<string | null>(null);
 
   // 延迟测速状态 (套用节点管理)
@@ -39,15 +41,10 @@ export const SelectExitModal: React.FC<Props> = ({
   useEffect(() => {
     if (instance && isOpen) {
       const currentMain = instance.slotBindings.main || null;
-      const currentDns = instance.slotBindings.dns || null;
       setSelectedMain(currentMain);
-      if (!currentDns || currentDns === "FOLLOW_MAIN") {
-        setFollowMainDns(true);
-        setSelectedDns(null);
-      } else {
-        setFollowMainDns(false);
-        setSelectedDns(currentDns);
-      }
+      const dns = instance.slotBindings.dns;
+      setFollowMainDns(!dns || dns === "FOLLOW_MAIN");
+      setSelectedDns(dns && dns !== "FOLLOW_MAIN" ? dns : null);
       setSearchQuery("");
 
       // 弹窗打开时加载本地持久化健康分缓存
@@ -123,15 +120,13 @@ export const SelectExitModal: React.FC<Props> = ({
   const def = instance.definition;
 
   const handleSave = () => {
-    const finalDns = followMainDns ? "FOLLOW_MAIN" : selectedDns;
-    onConfirm(instance.instanceId, selectedMain, finalDns);
+    onConfirm(instance.instanceId, selectedMain, remoteDns ? undefined : followMainDns ? "FOLLOW_MAIN" : selectedDns);
     onCancel();
   };
 
   const handleDoubleSelect = (proxyName: string) => {
     setSelectedMain(proxyName);
-    const finalDns = followMainDns ? "FOLLOW_MAIN" : selectedDns;
-    onConfirm(instance.instanceId, proxyName, finalDns);
+    onConfirm(instance.instanceId, proxyName, remoteDns ? undefined : followMainDns ? "FOLLOW_MAIN" : selectedDns);
     onCancel();
   };
 
@@ -332,48 +327,24 @@ export const SelectExitModal: React.FC<Props> = ({
           )}
         </div>
 
-        {/* DNS 出口联动配置区 */}
+        {/* 业务 DNS 与连接共享主出口 */}
         <div className="p-3.5 bg-slate-50/90 dark:bg-slate-950/70 border-t border-slate-200/80 dark:border-slate-800 text-xs space-y-2">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <Shield className="w-3.5 h-3.5 text-indigo-500" />
               <span className="font-bold text-slate-800 dark:text-slate-200 text-[11px]">
-                域名 DNS 解析出口插槽:
+                {remoteDns ? "业务域名通过所选主出口交远端解析" : "域名 DNS 解析出口插槽"}
               </span>
             </div>
-            <label className="flex items-center space-x-1.5 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300 select-none">
-              <input
-                type="checkbox"
-                checked={followMainDns}
-                onChange={(e) => {
-                  setFollowMainDns(e.target.checked);
-                  if (e.target.checked) {
-                    setSelectedDns(null);
-                  }
-                }}
-                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-              />
-              <span>跟随主业务出口（推荐）</span>
-            </label>
           </div>
 
-          {!followMainDns && (
-            <div className="pt-1.5 flex items-center space-x-2 animate-in fade-in">
-              <span className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">独立 DNS 节点:</span>
-              <select
-                value={selectedDns || ""}
-                onChange={(e) => setSelectedDns(e.target.value || null)}
-                className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-800 dark:text-slate-200 font-bold focus:outline-none focus:border-indigo-500"
-              >
-                <option value="">未指定独立 DNS 节点 (跟随核心默认)</option>
-                {availableProxies.map((p) => (
-                  <option key={p} value={p}>
-                    {proxyLabels[p] || p}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          {remoteDns ? <p className="text-[11px] text-slate-500 dark:text-slate-400">不使用公共 DNS 上游；旧独立 DNS 插槽保留为历史配置，不参与运行。</p> : <>
+            <label className="flex gap-2 items-center"><input type="checkbox" checked={followMainDns} onChange={e => setFollowMainDns(e.target.checked)} />跟随主业务出口</label>
+            {!followMainDns && <select value={selectedDns ?? ""} onChange={e => setSelectedDns(e.target.value || null)} className="w-full p-2 rounded-lg bg-white dark:bg-slate-900">
+              <option value="">跟随核心默认</option>
+              {availableProxies.map(proxy => <option key={proxy} value={proxy}>{proxyLabels[proxy] || proxy}</option>)}
+            </select>}
+          </>}
         </div>
 
         {/* 底部按钮栏 */}

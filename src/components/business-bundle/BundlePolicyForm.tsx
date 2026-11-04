@@ -6,12 +6,14 @@ interface Props {
   policy: BundlePolicy;
   onChange: (next: BundlePolicy) => void;
   isHttpUpstream?: boolean;
+  remoteDns?: boolean;
 }
 
 export const BundlePolicyForm: React.FC<Props> = ({
   policy,
   onChange,
   isHttpUpstream,
+  remoteDns = false,
 }) => {
   const [activeTab, setActiveTab] = useState<"protocol" | "network" | "filter">("protocol");
 
@@ -116,12 +118,13 @@ export const BundlePolicyForm: React.FC<Props> = ({
                 </span>
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                快速返回重置，强迫浏览器 0ms 秒切 TCP HTTP/2，消除 1~2 秒首屏等待；同时杜绝 WebRTC 穿透泄露
+                {remoteDns ? "业务远端解析当前支持 TCP；UDP 保持阻断，避免出口在本地解析目标域名。历史 UDP 选择保留。" : "阻断外网 UDP，使支持回退的应用改用 TCP。"}
               </div>
             </div>
             <input
               type="checkbox"
-              checked={policy.blockUdp}
+              checked={remoteDns || policy.blockUdp}
+              disabled={remoteDns}
               onChange={(e) => onChange({ ...policy, blockUdp: e.target.checked })}
               className="mt-0.5 h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 dark:bg-slate-700 dark:border-slate-600 cursor-pointer"
             />
@@ -150,8 +153,8 @@ export const BundlePolicyForm: React.FC<Props> = ({
             </div>
             <input
               type="checkbox"
-              disabled={policy.blockUdp}
-              checked={!policy.blockUdp && policy.proxyUdp}
+              disabled={remoteDns || policy.blockUdp}
+              checked={!remoteDns && !policy.blockUdp && policy.proxyUdp}
               onChange={(e) => onChange({ ...policy, proxyUdp: e.target.checked })}
               className="mt-0.5 h-4 w-4 rounded text-indigo-600 focus:ring-indigo-500 dark:bg-slate-700 dark:border-slate-600 disabled:opacity-40 cursor-pointer"
             />
@@ -261,7 +264,9 @@ export const BundlePolicyForm: React.FC<Props> = ({
             <label className="text-xs font-bold text-slate-900 dark:text-white block">
               DNS 域名解析模式
             </label>
-            <div className="grid grid-cols-1 gap-2">
+            {remoteDns ? <p className="text-xs text-slate-600 dark:text-slate-300">
+              业务域名通过绑定的主出口交远端解析，不使用公共 DNS 覆写。业务暂停后撤销该保护；旧解析模式保留为历史配置。
+            </p> : <div className="grid grid-cols-1 gap-2">
               {/* safe_pure */}
               <label
                 className={`flex items-start p-2.5 rounded-xl border transition-all cursor-pointer ${
@@ -348,7 +353,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
                   </div>
                 </div>
               </label>
-            </div>
+            </div>}
           </div>
 
           {/* 绕过局域网与本地回环 */}

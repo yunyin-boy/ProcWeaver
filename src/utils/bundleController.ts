@@ -110,7 +110,7 @@ export function getBundleStatus(instance: BundleLocalInstance, state: BundleStat
   if (!state.view) return result("pending", "尚未核实核心状态");
   if (state.view.config.bundlesEnabled === false) {
     if (state.view.running && state.view.appliedRevision !== state.view.config.revision) return result("pending", "已保存暂停设置，等待核心确认");
-    return result("paused", "总开关已暂停；保留本包选择，新连接沿用原有规则");
+    return result("paused", "业务规则与新接管已撤销；应用遵循自身设置，已有 Hook 或代理启动参数请正常重启应用后清除");
   }
   try {
     if (state.view.unavailableRules?.some(id => rules.some(r => r.id === id) || id === `bundle:${instance.instanceId}` || id.startsWith(`bundle-dns-${instance.instanceId}-`))) {

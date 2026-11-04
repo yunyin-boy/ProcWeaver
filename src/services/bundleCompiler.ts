@@ -20,7 +20,7 @@ export function resolveBundleTargets(instances: BundleLocalInstance[], targets: 
   return instances.map(instance => {
     const next = { ...instance, slotTargets: { ...instance.slotTargets } };
     if (!instance.enabled || !instance.slotBindings.main) return next;
-    for (const slot of ["main", "dns"] as BundleSlotId[]) {
+    for (const slot of (bundlePlatform() === "windows" ? ["main"] : ["main", "dns"]) as BundleSlotId[]) {
       const name = instance.slotBindings[slot];
       if (!name || name === "FOLLOW_MAIN") continue;
       const stored = instance.slotTargets?.[slot];
@@ -84,6 +84,9 @@ export function compileBundlesToProcessRules(instances: BundleLocalInstance[], p
 }
 
 export function compileBundlesToDnsRules(instances: BundleLocalInstance[]): DnsRule[] {
+  // Windows full-edition business DNS is name forwarding through the main
+  // outlet. A domain-only nameserver-policy would also affect public traffic.
+  if (bundlePlatform() === "windows") return [];
   const rules: DnsRule[] = [];
   const owners = new Map<string, BundleLocalInstance[]>();
   for (const instance of instances) {
@@ -137,7 +140,9 @@ export function compileBundleRoutes(instances: BundleLocalInstance[], previous: 
     fallback: instance.definition.fallback ?? "rules",
     port: previous.find(b => b.id === instance.instanceId)?.port || 0,
     mainTarget: instance.enabled && instance.slotBindings.main ? targetFor(instance, "main") : null,
-    dnsTarget: instance.enabled && instance.slotBindings.main ? targetFor(instance, "dns") : null,
+    dnsTarget: bundlePlatform() === "windows"
+      ? instance.slotTargets?.dns ?? previous.find(b => b.id === instance.instanceId)?.dnsTarget ?? null
+      : instance.enabled && instance.slotBindings.main ? targetFor(instance, "dns") : null,
     policy: instance.policy ?? instance.definition.policy,
   }));
 }
@@ -202,8 +207,10 @@ export async function syncBundlesToCore(instances: BundleLocalInstance[], api: P
     const dns = compileBundlesToDnsRules(resolved);
     const existing = view.config;
     const bundles = compileBundleRoutes(resolved, existing.bundles);
-    const manualProcesses = existing.processRules.filter(r => !r.id.startsWith("bundle-"));
-    const manualDns = existing.dnsRules.filter(r => !r.id.startsWith("bundle-dns-"));
+    const knownOwners = new Set([...(existing.bundles ?? []).map(b => b.id), ...resolved.map(b => b.instanceId)]);
+    const owned = (id: string, prefix: string) => [...knownOwners].some(owner => id.replace(/^derived:/, "").startsWith(`${prefix}${owner}-`));
+    const manualProcesses = existing.processRules.filter(r => !owned(r.id, "bundle-"));
+    const manualDns = existing.dnsRules.filter(r => !owned(r.id, "bundle-dns-"));
     for (const rule of processes) {
       if (manualProcesses.some(r => r.enabled && r.matchKind === rule.matchKind && r.matchValue.toLowerCase() === rule.matchValue.toLowerCase())) {
         const owner = resolved.find(instance => rule.id.startsWith(`bundle-${instance.instanceId}-`));

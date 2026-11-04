@@ -163,7 +163,7 @@ fn native_dns_startup_reload_and_conflict_are_verified() {
     let dns_addr = dns.0.local_addr().unwrap();
     let next_addr = next_dns.0.local_addr().unwrap();
     let make_raw = |addr| {
-        format!("mode: rule\nlog-level: silent\nproxies: []\nrules: ['MATCH,DIRECT']\ndns:\n  enable: true\n  listen: '{addr}'\n  enhanced-mode: redir-host\n  nameserver: ['192.0.2.1']\n")
+        format!("mode: rule\nlog-level: silent\nproxies: []\nrules: ['MATCH,DIRECT']\ndns:\n  enable: true\n  use-system-hosts: false\n  listen: '{addr}'\n  enhanced-mode: redir-host\n  nameserver: ['192.0.2.1']\n")
     };
     let source = directory.join("config/default.yaml");
     // Common subscription form: wildcard DNS must work with LAN sharing disabled.
@@ -225,14 +225,30 @@ fn native_dns_startup_reload_and_conflict_are_verified() {
         assert_eq!(std::fs::read_to_string(&source).unwrap(), source_raw, "运行合成不得修改原始订阅");
         confirm(&original, pid).await.unwrap(); // 故意配置不可达上游，协议就绪不应访问它。
         let previous_preferences = std::fs::read(directory.join("config/dns-preferences.json")).unwrap();
+        // Observe the actual one-way Hook lease while exercising DNS restart and
+        // rollback. No injected application or adapter write is needed here.
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenEventW, WaitForSingleObject}};
+        let lease = crate::capture::user_mode::control::create(34996).unwrap();
+        let event_name: Vec<u16> = std::ffi::OsStr::new(&lease).encode_wide().chain(Some(0)).collect();
+        let observed = unsafe { OpenEventW(0x00100000, 0, event_name.as_ptr()) };
+        assert!(!observed.is_null());
+        struct Observed(windows_sys::Win32::Foundation::HANDLE);
+        impl Drop for Observed { fn drop(&mut self) { unsafe { CloseHandle(self.0); } } }
+        let observed = Observed(observed);
         let rejected = super::super::dns::DnsSettings { listener_mode: Some(super::super::dns::DnsListenerMode::Fixed), listen: next_addr.to_string(), ..Default::default() };
         let error = super::super::dns::save_dns_settings_transaction(rejected, &state).await.unwrap_err();
         assert!(error.contains("旧 DNS 设置和核心已恢复"), "{error}");
+        assert_eq!(unsafe { WaitForSingleObject(observed.0, 0) }, 258, "DNS 重启失败和回滚不能撤销业务 Hook");
         assert_eq!(std::fs::read(directory.join("config/dns-preferences.json")).unwrap(), previous_preferences);
         let recovered = process::read_core_status(&state).unwrap();
         assert!(recovered.running && recovered.last_start_error.is_none());
         pid = recovered.pid.unwrap();
         confirm(&original, pid).await.unwrap();
+        let unchanged = super::super::dns::get_dns_settings().unwrap();
+        super::super::dns::save_dns_settings_transaction(unchanged, &state).await.unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(observed.0, 0) }, 258, "DNS 保存成功也必须保留业务 Hook");
+        pid = process::read_core_status(&state).unwrap().pid.unwrap();
         let mut candidate: serde_yaml::Value = serde_yaml::from_str(&original).unwrap();
         candidate["dns"]["listen"] = next_addr.to_string().into();
         let candidate = serde_yaml::to_string(&candidate).unwrap();

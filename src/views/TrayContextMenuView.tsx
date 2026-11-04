@@ -186,7 +186,7 @@ export const TrayContextMenuView: React.FC = () => {
       ? "全局代理"
       : payload.mode === "direct"
       ? "直接连接"
-      : "规则分流";
+      : payload.mode === "rule" ? "规则分流" : "未就绪";
 
   return (
     <div className="w-[500px] h-[380px] bg-transparent overflow-visible relative flex items-end select-none text-xs font-sans p-2">
@@ -508,7 +508,7 @@ export const TrayContextMenuView: React.FC = () => {
             >
               <div className="flex items-center space-x-2">
                 <Zap className="w-3.5 h-3.5 text-indigo-400" />
-                <span className="text-slate-200">进程与应用分流</span>
+                <span className="text-slate-200">手动进程规则</span>
               </div>
               <span
                 className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${

@@ -24,6 +24,7 @@ interface Props {
   entry?: BundleEntryState;
   proxyLabels?: Record<string, string>;
   externalLabel?: string;
+  trafficMode?: string;
   unavailable?: boolean;
   compact?: boolean;
   onLaunch: () => void;
@@ -47,6 +48,7 @@ export const BundleRow: React.FC<Props> = ({
   entry,
   proxyLabels = {},
   externalLabel,
+  trafficMode,
   unavailable = false,
   compact = false,
   onLaunch,
@@ -72,6 +74,8 @@ export const BundleRow: React.FC<Props> = ({
   const def = instance.definition;
   const policy = instance.policy ?? instance.definition.policy;
   const independent = instance.backend === "external";
+  const isTransparentMode = platform.os === "windows" && !independent && (trafficMode === "windivert_v1" || trafficMode === "tun");
+  const remoteDns = platform.os === "windows" && !independent && !isTransparentMode;
   const isProcessEdition = typeof document !== "undefined" && document.documentElement.dataset.edition === "process";
   const isDisallowProxyArgs = Boolean(policy?.disallowProxyArgs);
   const isTransparentActive = entry?.state === "capture" || entry?.hookTier === "FullInline" || entry?.hookTier === "IatCompat";
@@ -79,7 +83,7 @@ export const BundleRow: React.FC<Props> = ({
   const boundNode = independent ? externalLabel || "未选择代理" : instance.slotBindings.main;
   const isRequested = instance.enabled && Boolean(boundNode);
   const isEnabled = isRequested && status.phase === "applied";
-  const isObservedActive = isEnabled && (entry?.connectionState === "observed" || entry?.state === "connected");
+  const isObservedActive = isEnabled && entry?.connectionState === "observed";
   const canLaunch = !unavailable && (independent ? isEnabled : !instance.enabled || isEnabled || status.phase === "saved" || status.phase === "paused");
 
   // 右键菜单与更多操作状态
@@ -222,14 +226,19 @@ export const BundleRow: React.FC<Props> = ({
                   <span className="w-1 h-1 rounded-full bg-rose-500" />
                   接管异常
                 </span>
-              ) : (
+              ) : entry?.hookTier === "FullInline" ? (
                 <span
-                  title={entry?.hookTierReason || "内联 Hook 全功能就绪，网络拦截与防侧漏抓漏保护已全开"}
+                  title={entry.hookTierReason || "已取得深度内联 Hook 加载证据；应用接入及实际出口以新连接核验为准"}
                   className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 shrink-0 flex items-center gap-1"
                 >
                   <span className="w-1 h-1 rounded-full bg-emerald-500" />
                   深度接管
                 </span>
+              ) : (
+                <span
+                  title={entry?.hookTierReason || "尚未取得 Hook 加载证据；应用层代理与 Hook 接管需分别核验"}
+                  className="text-[9px] px-1.5 py-0.2 rounded font-mono text-slate-500 dark:text-slate-400 border border-slate-300 dark:border-slate-700 shrink-0"
+                >Hook 未核实</span>
               )}
               {/* 进阶防护策略微徽章 */}
               <button
@@ -241,7 +250,21 @@ export const BundleRow: React.FC<Props> = ({
                 className="inline-flex items-center gap-1 cursor-pointer group shrink-0 flex-wrap"
                 title="点击配置高级网络防护策略"
               >
-                {policy?.dnsMode === "fake_ip" ? (
+                {isTransparentMode ? (
+                  <span
+                    className="text-[9px] px-1 py-0.2 rounded font-mono bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
+                    title="当前处于透明驱动接管模式（WinDivert/TUN），数据包由驱动截获并按 Fake-IP 路由；如需进程级纯净内存远端解析，可选用用户态接管"
+                  >
+                    透明接管 · Fake-IP
+                  </span>
+                ) : remoteDns ? (
+                  <span
+                    className="text-[9px] px-1 py-0.2 rounded font-mono bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30"
+                    title="进程级接管与远端 DNS 解析生效中"
+                  >
+                    出口远端解析
+                  </span>
+                ) : policy?.dnsMode === "fake_ip" ? (
                   <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30 group-hover:border-sky-500">
                     Fake-IP
                   </span>
@@ -259,7 +282,7 @@ export const BundleRow: React.FC<Props> = ({
                     防IPv6
                   </span>
                 )}
-                {policy?.blockUdp !== false ? (
+                {remoteDns || isTransparentMode || policy?.blockUdp !== false ? (
                   <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">
                     防QUIC
                   </span>
@@ -328,7 +351,7 @@ export const BundleRow: React.FC<Props> = ({
                   ? "已保存待启动"
                   : !boundNode
                   ? "待指定节点"
-                  : "已停用 (系统默认)"}
+                  : "已停用 (应用自身设置)"}
               </span>
               <span className="text-slate-300 dark:text-slate-700">·</span>
               <span className="text-[10px] font-mono text-slate-400 shrink-0">
@@ -376,7 +399,7 @@ export const BundleRow: React.FC<Props> = ({
           type="button"
           onClick={() => onOpenSelectExit(instance)}
           className={`h-7 px-3 rounded-lg text-xs font-mono font-bold border transition flex items-center space-x-1.5 cursor-pointer max-w-[170px] truncate ${
-            boundNode
+            isEnabled
               ? "bg-emerald-50/80 hover:bg-emerald-100/80 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 border-emerald-500/40 text-emerald-700 dark:text-emerald-300 shadow-2xs"
               : "bg-slate-50 hover:bg-amber-50 dark:bg-slate-800/80 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-amber-400 text-slate-500 dark:text-slate-400"
           }`}

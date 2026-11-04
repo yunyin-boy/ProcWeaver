@@ -4,6 +4,7 @@ import { getGeneralSettings, GeneralSettings } from "../api/settings";
 import { fetchProxies } from "../api/mihomo";
 import { syncTrayMenu, TrayRegionGroup } from "../utils/traySync";
 import { buildCategorizedTrayGroups, RawNodeForTray } from "../utils/trayGroups";
+import { usePlatform } from "../context/PlatformContext";
 
 let globalTrayGroupsCache: TrayRegionGroup[] = [];
 
@@ -23,6 +24,7 @@ export function useTrayManager({
   mode,
   activeNodeName,
 }: TrayManagerProps) {
+  const windows = usePlatform().os === "windows";
   const [settings, setSettings] = useState<GeneralSettings | null>(null);
   const [groups, setGroups] = useState<TrayRegionGroup[]>(globalTrayGroupsCache);
   const [activeNodeDelay, setActiveNodeDelay] = useState<number | null>(null);
@@ -140,7 +142,7 @@ export function useTrayManager({
   useEffect(() => {
     syncTrayMenu({
       running: coreStatus.running,
-      mode: mode || "rule",
+      mode: mode ?? (windows ? "unknown" : "rule"),
       sysProxyEnabled: coreStatus.systemProxyEnabled,
       sysProxyState: coreStatus.systemProxy?.state ?? "unknown",
       tunEnabled: settings?.tunMode ?? false,
@@ -161,6 +163,7 @@ export function useTrayManager({
     coreStatus.systemProxyEnabled,
     coreStatus.systemProxy?.state,
     mode,
+    windows,
     activeNodeName,
     activeNodeDelay,
     settings?.tunMode,

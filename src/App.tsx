@@ -544,7 +544,7 @@ function FullApp() {
         {/* 底部分流模式切换 */}
         <div className="p-3 rounded-xl bg-slate-100/90 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 text-xs">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-slate-500 dark:text-slate-400">运行模式</span>
+            <span className="text-slate-500 dark:text-slate-400" title={platform.os === "windows" ? "只影响进入本程序的公共流量；已启用业务包按显式绑定分流" : undefined}>{platform.os === "windows" ? "公共流量模式" : "运行模式"}</span>
             <span title={coreMode.error || undefined} className="text-indigo-600 dark:text-indigo-400 font-semibold text-[11px]">
               {mode === "rule" ? "规则分流" : mode === "global" ? "全局代理" : mode === "direct" ? "直接连接" : "未就绪"}
             </span>

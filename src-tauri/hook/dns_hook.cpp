@@ -5,6 +5,15 @@ PFN_getaddrinfo TrueGetAddrInfo = getaddrinfo;
 PFN_GetAddrInfoW TrueGetAddrInfoW = GetAddrInfoW;
 PFN_freeaddrinfo TrueFreeAddrInfo = freeaddrinfo;
 PFN_FreeAddrInfoW TrueFreeAddrInfoW = FreeAddrInfoW;
+decltype(&gethostbyname) TrueGetHostByName = gethostbyname;
+decltype(&GetAddrInfoExA) TrueGetAddrInfoExA = GetAddrInfoExA;
+decltype(&GetAddrInfoExW) TrueGetAddrInfoExW = GetAddrInfoExW;
+decltype(&FreeAddrInfoExA) TrueFreeAddrInfoExA = FreeAddrInfoExA;
+decltype(&FreeAddrInfoExW) TrueFreeAddrInfoExW = FreeAddrInfoExW;
+decltype(&DnsQuery_A) TrueDnsQueryA = DnsQuery_A;
+decltype(&DnsQuery_W) TrueDnsQueryW = DnsQuery_W;
+decltype(&DnsQuery_UTF8) TrueDnsQueryUtf8 = DnsQuery_UTF8;
+decltype(&DnsQueryEx) TrueDnsQueryEx = DnsQueryEx;
 
 static std::unordered_set<void*> g_custom_ai_set;
 static std::mutex g_custom_ai_mutex;
@@ -38,10 +47,12 @@ uint32_t AllocateFakeIpForDomain(const std::string& domain) {
         return htonl(it->second);
     }
 
-    uint32_t host_ip = g_next_fake_ip++;
-    if (g_next_fake_ip >= 0xC613FFFE) { // 198.19.255.254 回卷
-        g_next_fake_ip = 0xC6120002;
+    // Never reuse an address while an application may still cache the old name.
+    if (g_next_fake_ip >= 0xC613FFFE) {
+        if (g_config.policy.remote_dns_required) return 0;
+        g_next_fake_ip = 0xC6120002; // Preserve the independent product's existing pool policy.
     }
+    uint32_t host_ip = g_next_fake_ip++;
 
     g_fake_ip_to_domain[host_ip] = domain;
     g_domain_to_fake_ip[domain] = host_ip;
@@ -67,6 +78,124 @@ static bool IsLocalOrIp(const char* name) {
     if (strchr(name, ':') != nullptr) return true;
 
     return false;
+}
+
+// Direct DNS APIs can delegate to the shared Windows DNS service. They cannot
+// represent remote CONNECT resolution, so protected queries must fail explicitly.
+DNS_STATUS WINAPI HookDnsQueryA(PCSTR name, WORD type, DWORD options, PVOID extra, PDNS_RECORDA* result, PVOID* reserved) {
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || IsLocalOrIp(name)) return TrueDnsQueryA(name,type,options,extra,result,reserved);
+    if (result) *result = nullptr;
+    return ERROR_NOT_SUPPORTED;
+}
+DNS_STATUS WINAPI HookDnsQueryUtf8(PCSTR name, WORD type, DWORD options, PVOID extra, PDNS_RECORDA* result, PVOID* reserved) {
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || IsLocalOrIp(name)) return TrueDnsQueryUtf8(name,type,options,extra,result,reserved);
+    if (result) *result = nullptr;
+    return ERROR_NOT_SUPPORTED;
+}
+static bool ProtectedWideName(PCWSTR name) {
+    if (!name) return false;
+    char narrow[256] = {};
+    return !WideCharToMultiByte(CP_UTF8, 0, name, -1, narrow, sizeof(narrow), nullptr, nullptr) || !IsLocalOrIp(narrow);
+}
+DNS_STATUS WINAPI HookDnsQueryW(PCWSTR name, WORD type, DWORD options, PVOID extra, PDNS_RECORD* result, PVOID* reserved) {
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || !ProtectedWideName(name)) return TrueDnsQueryW(name,type,options,extra,result,reserved);
+    if (result) *result = nullptr;
+    return ERROR_NOT_SUPPORTED;
+}
+DNS_STATUS WINAPI HookDnsQueryEx(PDNS_QUERY_REQUEST request, PDNS_QUERY_RESULT result, PDNS_QUERY_CANCEL cancel) {
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || !request || !ProtectedWideName(request->QueryName)) return TrueDnsQueryEx(request,result,cancel);
+    if (result) { result->QueryStatus = ERROR_NOT_SUPPORTED; result->pQueryRecords = nullptr; }
+    return ERROR_NOT_SUPPORTED;
+}
+
+hostent* WSAAPI HookGetHostByName(const char* name) {
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || IsLocalOrIp(name)) return TrueGetHostByName(name);
+    if (strlen(name) > 253) { WSASetLastError(WSAHOST_NOT_FOUND); return nullptr; }
+    thread_local std::string hostname;
+    thread_local uint32_t address;
+    thread_local char* addresses[2];
+    thread_local char* aliases[1] = { nullptr };
+    thread_local hostent result;
+    address = AllocateFakeIpForDomain(name);
+    if (!address) { WSASetLastError(WSA_NOT_ENOUGH_MEMORY); return nullptr; }
+    hostname = name;
+    addresses[0] = reinterpret_cast<char*>(&address); addresses[1] = nullptr;
+    result.h_name = hostname.data(); result.h_aliases = aliases;
+    result.h_addrtype = AF_INET; result.h_length = 4; result.h_addr_list = addresses;
+    return &result;
+}
+
+static std::unordered_set<void*> g_custom_ex_set;
+static std::mutex g_custom_ex_mutex;
+
+template<class Ex> static void FreeExtended(Ex* node) {
+    while (node) { Ex* next = node->ai_next; free(node->ai_addr); free(node); node = next; }
+}
+
+template<class Ex, class Base> static int ExtendAddress(Base* source, Ex** result) {
+    Ex* head = nullptr; Ex** tail = &head;
+    for (auto* current = source; current; current = current->ai_next) {
+        Ex* node = static_cast<Ex*>(calloc(1, sizeof(Ex)));
+        if (!node) { FreeExtended(head); return EAI_MEMORY; }
+        node->ai_addr = static_cast<sockaddr*>(malloc(current->ai_addrlen));
+        if (!node->ai_addr) { free(node); FreeExtended(head); return EAI_MEMORY; }
+        memcpy(node->ai_addr, current->ai_addr, current->ai_addrlen);
+        node->ai_family = current->ai_family; node->ai_socktype = current->ai_socktype;
+        node->ai_protocol = current->ai_protocol; node->ai_addrlen = current->ai_addrlen;
+        *tail = node; tail = &node->ai_next;
+    }
+    { std::lock_guard<std::mutex> lock(g_custom_ex_mutex); g_custom_ex_set.insert(head); }
+    *result = head; return 0;
+}
+
+int WSAAPI HookGetAddrInfoExA(PCSTR name, PCSTR service, DWORD space, LPGUID provider,
+    const ADDRINFOEXA* hints, PADDRINFOEXA* result, timeval* timeout, LPOVERLAPPED overlap,
+    LPLOOKUPSERVICE_COMPLETION_ROUTINE completion, LPHANDLE handle) {
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || IsLocalOrIp(name))
+        return TrueGetAddrInfoExA(name, service, space, provider, hints, result, timeout, overlap, completion, handle);
+    if (!result) return WSAEFAULT;
+    *result = nullptr;
+    // Asynchronous providers have separate completion/cancellation contracts.
+    // Refuse unsupported queries explicitly instead of releasing them to DNS.
+    if (overlap || completion || provider || (space != NS_ALL && space != NS_DNS)) return WSAEOPNOTSUPP;
+    if (handle) *handle = nullptr;
+    ADDRINFOA basic = {};
+    if (hints) { basic.ai_flags = hints->ai_flags; basic.ai_family = hints->ai_family; basic.ai_socktype = hints->ai_socktype; basic.ai_protocol = hints->ai_protocol; }
+    PADDRINFOA answer = nullptr;
+    int error = HookGetAddrInfo(name, service, &basic, &answer);
+    if (!error) error = ExtendAddress(answer, result);
+    HookFreeAddrInfo(answer); return error;
+}
+
+int WSAAPI HookGetAddrInfoExW(PCWSTR name, PCWSTR service, DWORD space, LPGUID provider,
+    const ADDRINFOEXW* hints, PADDRINFOEXW* result, timeval* timeout, LPOVERLAPPED overlap,
+    LPLOOKUPSERVICE_COMPLETION_ROUTINE completion, LPHANDLE handle) {
+    char narrow[256] = {};
+    if (!IsHookEnabled() || !g_config.policy.remote_dns_required || !name)
+        return TrueGetAddrInfoExW(name, service, space, provider, hints, result, timeout, overlap, completion, handle);
+    if (!WideCharToMultiByte(CP_UTF8, 0, name, -1, narrow, sizeof(narrow), nullptr, nullptr)) return EAI_NONAME;
+    if (IsLocalOrIp(narrow)) return TrueGetAddrInfoExW(name, service, space, provider, hints, result, timeout, overlap, completion, handle);
+    if (!result) return WSAEFAULT;
+    *result = nullptr;
+    if (overlap || completion || provider || (space != NS_ALL && space != NS_DNS)) return WSAEOPNOTSUPP;
+    if (handle) *handle = nullptr;
+    ADDRINFOW basic = {};
+    if (hints) { basic.ai_flags = hints->ai_flags; basic.ai_family = hints->ai_family; basic.ai_socktype = hints->ai_socktype; basic.ai_protocol = hints->ai_protocol; }
+    PADDRINFOW answer = nullptr;
+    int error = HookGetAddrInfoW(name, service, &basic, &answer);
+    if (!error) error = ExtendAddress(answer, result);
+    HookFreeAddrInfoW(answer); return error;
+}
+
+void WSAAPI HookFreeAddrInfoExA(PADDRINFOEXA result) {
+    bool owned;
+    { std::lock_guard<std::mutex> lock(g_custom_ex_mutex); owned = g_custom_ex_set.erase(result) != 0; }
+    if (owned) FreeExtended(result); else TrueFreeAddrInfoExA(result);
+}
+void WSAAPI HookFreeAddrInfoExW(PADDRINFOEXW result) {
+    bool owned;
+    { std::lock_guard<std::mutex> lock(g_custom_ex_mutex); owned = g_custom_ex_set.erase(result) != 0; }
+    if (owned) FreeExtended(result); else TrueFreeAddrInfoExW(result);
 }
 
 // 辅助跳过 DNS 报文中的压缩名称
@@ -233,7 +362,7 @@ int WSAAPI HookGetAddrInfo(
     const ADDRINFOA *pHints,
     PADDRINFOA *ppResult
 ) {
-    if (!g_config.enabled || !ppResult) {
+    if (!IsHookEnabled() || !ppResult) {
         return TrueGetAddrInfo(pNodeName, pServiceName, pHints, ppResult);
     }
 
@@ -245,6 +374,8 @@ int WSAAPI HookGetAddrInfo(
     if (IsLocalOrIp(pNodeName)) {
         return TrueGetAddrInfo(pNodeName, pServiceName, pHints, ppResult);
     }
+    if (g_config.policy.remote_dns_required && strlen(pNodeName) > 253) return EAI_NONAME;
+    if (g_config.policy.remote_dns_required && pHints && (pHints->ai_flags & AI_NUMERICHOST)) return EAI_NONAME;
 
     // 系统原生解析模式：直接放行调用系统原生解析，TCP 仍受 Hook 代理
     if (g_config.policy.dns_mode == DnsMode::SystemNative) {
@@ -255,6 +386,7 @@ int WSAAPI HookGetAddrInfo(
     if (g_config.policy.dns_mode == DnsMode::FakeIp) {
         // Fake-IP 极速模式：0ms 分配 198.18.x.x 假 IP，后续 SOCKS5 发送原始域名
         uint32_t fake_ip = AllocateFakeIpForDomain(pNodeName);
+        if (!fake_ip) return EAI_MEMORY;
         ips.push_back(fake_ip);
     } else {
         // 安全纯净解析模式：向 127.0.0.1:dns_port 发送真实安全 DNS 查询
@@ -297,6 +429,7 @@ int WSAAPI HookGetAddrInfo(
     }
 
     if (!head) {
+        if (g_config.policy.remote_dns_required) return EAI_MEMORY;
         return TrueGetAddrInfo(pNodeName, pServiceName, pHints, ppResult);
     }
 
@@ -315,7 +448,7 @@ int WSAAPI HookGetAddrInfoW(
     const ADDRINFOW *pHints,
     PADDRINFOW *ppResult
 ) {
-    if (!g_config.enabled || !ppResult) {
+    if (!IsHookEnabled() || !ppResult) {
         return TrueGetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
     }
 
@@ -326,12 +459,14 @@ int WSAAPI HookGetAddrInfoW(
 
     char node_a[256] = { 0 };
     if (pNodeName) {
-        WideCharToMultiByte(CP_UTF8, 0, pNodeName, -1, node_a, sizeof(node_a) - 1, nullptr, nullptr);
+        if (!WideCharToMultiByte(CP_UTF8, 0, pNodeName, -1, node_a, sizeof(node_a) - 1, nullptr, nullptr)
+            && g_config.policy.remote_dns_required) return EAI_NONAME;
     }
 
     if (IsLocalOrIp(node_a)) {
         return TrueGetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
     }
+    if (g_config.policy.remote_dns_required && pHints && (pHints->ai_flags & AI_NUMERICHOST)) return EAI_NONAME;
 
     // 系统原生解析模式：直接放行调用系统原生解析，TCP 仍受 Hook 代理
     if (g_config.policy.dns_mode == DnsMode::SystemNative) {
@@ -342,6 +477,7 @@ int WSAAPI HookGetAddrInfoW(
     if (g_config.policy.dns_mode == DnsMode::FakeIp) {
         // Fake-IP 极速模式：0ms 分配 198.18.x.x 假 IP，后续 SOCKS5 发送原始域名
         uint32_t fake_ip = AllocateFakeIpForDomain(node_a);
+        if (!fake_ip) return EAI_MEMORY;
         ips.push_back(fake_ip);
     } else {
         // 安全纯净解析模式：向 127.0.0.1:dns_port 发送真实安全 DNS 查询
@@ -389,6 +525,7 @@ int WSAAPI HookGetAddrInfoW(
     }
 
     if (!head) {
+        if (g_config.policy.remote_dns_required) return EAI_MEMORY;
         return TrueGetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
     }
 
