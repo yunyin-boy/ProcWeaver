@@ -94,7 +94,10 @@ struct HookConfig {
     uint16_t bundle_port; // 从 PROCWEAVER_BUNDLE_PORT 读取
     uint16_t dns_port;    // 从 PROCWEAVER_DNS_PORT 读取，默认 45053
     bool enabled;
+    bool reject_all;      // 针对明确配置了 REJECT 阻断动作的进程
     HookPolicy policy;
+    std::unordered_set<uint16_t> system_proxy_ports;
+    std::string override_rules; // 从 PROCWEAVER_OVERRIDE_RULES 读取
 };
 
 extern HookConfig g_config;
@@ -104,4 +107,5 @@ extern HookTier g_hook_tier;
 void LoadHookConfig();
 bool IsHookEnabled();
 void ReportHookTier(HookTier tier);
+void ReportChildHookFailed(DWORD pid, const char* name);
 std::string GetCurrentDllDir();

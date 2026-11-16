@@ -59,6 +59,8 @@ pub struct CoreStatus {
     pub last_start_error: Option<String>,
     pub running: bool,
     pub pid: Option<u32>,
+    #[serde(rename = "memoryUsageBytes", default)]
+    pub memory_usage_bytes: Option<u64>,
     #[serde(rename = "systemProxyEnabled")]
     pub system_proxy_enabled: bool,
     #[serde(rename = "systemProxy")]
@@ -71,6 +73,61 @@ pub struct CoreStatus {
     pub active_core: Option<String>,
     #[serde(rename = "startedAt")]
     pub started_at: Option<u64>,
+}
+
+#[cfg(windows)]
+pub fn query_process_memory_bytes(pid: u32) -> Option<u64> {
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESS_MEMORY_COUNTERS {
+        cb: u32,
+        PageFaultCount: u32,
+        PeakWorkingSetSize: usize,
+        WorkingSetSize: usize,
+        QuotaPeakPagedPoolUsage: usize,
+        QuotaPagedPoolUsage: usize,
+        QuotaPeakNonPagedPoolUsage: usize,
+        QuotaNonPagedPoolUsage: usize,
+        PagefileUsage: usize,
+        PeakPagefileUsage: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn K32GetProcessMemoryInfo(
+            process: isize,
+            ppmc: *mut PROCESS_MEMORY_COUNTERS,
+            cb: u32,
+        ) -> i32;
+        fn OpenProcess(
+            dwDesiredAccess: u32,
+            bInheritHandle: i32,
+            dwProcessId: u32,
+        ) -> isize;
+        fn CloseHandle(hObject: isize) -> i32;
+    }
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return None;
+        }
+        let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let success = K32GetProcessMemoryInfo(handle, &mut counters, counters.cb);
+        CloseHandle(handle);
+        if success != 0 {
+            Some(counters.WorkingSetSize as u64)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn query_process_memory_bytes(_pid: u32) -> Option<u64> {
+    None
 }
 
 pub struct CoreState {
@@ -182,8 +239,10 @@ pub(crate) fn read_core_status(state: &CoreStateMutex) -> Result<CoreStatus, Str
         None => None,
     };
     let proxy = sysproxy::system_proxy_snapshot();
+    let memory_usage_bytes = pid.and_then(query_process_memory_bytes);
     Ok(CoreStatus {
         running: pid.is_some(), pid,
+        memory_usage_bytes,
         last_start_error: LAST_START_ERROR.lock().unwrap_or_else(|p| p.into_inner()).clone(),
         system_proxy_enabled: proxy.enabled(), system_proxy: proxy,
         mixed_port: state.mixed_port, controller_port: state.controller_port,
@@ -238,10 +297,13 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
         if let Some(ref mut child) = state_guard.child {
             if child.try_wait().map(|s| s.is_none()).unwrap_or(false) {
                 let sys_proxy = sysproxy::system_proxy_snapshot();
+                let pid_u32 = child.id();
+                let memory_usage_bytes = query_process_memory_bytes(pid_u32);
                 return Ok(CoreStatus {
                     last_start_error: None,
                     running: true,
-                    pid: Some(child.id()),
+                    pid: Some(pid_u32),
+                    memory_usage_bytes,
                     system_proxy_enabled: sys_proxy.enabled(),
                     system_proxy: sys_proxy,
                     mixed_port: state_guard.mixed_port,
@@ -300,7 +362,13 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
             let barriers = STARTUP_BARRIER.lock().unwrap().take();
             if let Some((read, resume)) = barriers { read.wait().await; resume.wait().await; }
         }
-        let prepared = rule_startup_config(&crate::commands::settings::prepare_config(&raw)?)?;
+        let prepared = match crate::routing_overrides::read() {
+            Ok(overrides) => {
+                let profile_id = crate::routing_overrides::current_source().0;
+                crate::routing_overrides::prepare(&raw, &overrides, &profile_id)?
+            }
+            Err(_) => rule_startup_config(&crate::commands::settings::prepare_config(&raw)?)?,
+        };
         #[cfg(windows)]
         let prepared = super::dns_listener::resolve_for_apply(&prepared, 0).await?;
         #[cfg(windows)]
@@ -379,11 +447,13 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
     if let Ok(raw) = std::fs::read_to_string(&core_config) { super::dns_listener::remember_success(&raw); }
 
     let sys_proxy = sysproxy::system_proxy_snapshot();
+    let memory_usage_bytes = query_process_memory_bytes(pid);
 
     Ok(CoreStatus {
         running: true,
         last_start_error: None,
         pid: Some(pid),
+        memory_usage_bytes,
         system_proxy_enabled: sys_proxy.enabled(),
         system_proxy: sys_proxy,
         mixed_port: state_guard.mixed_port,
@@ -427,6 +497,7 @@ pub async fn stop_core(state: tauri::State<'_, CoreStateMutex>) -> Result<CoreSt
         running: false,
         last_start_error: LAST_START_ERROR.lock().unwrap_or_else(|p| p.into_inner()).clone(),
         pid: None,
+        memory_usage_bytes: None,
         system_proxy_enabled: proxy.enabled(),
         system_proxy: proxy,
         mixed_port,
@@ -514,6 +585,10 @@ pub async fn restart_core_transaction(app: &tauri::AppHandle) -> Result<CoreStat
     // 5. 全局广播与托盘刷新
     let _ = app.emit("netbox-route-changed", ());
     crate::app_lifecycle::rebuild_tray_in_place(app);
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::app_lifecycle::get_tray_payload(app_handle).await;
+    });
 
     Ok(status)
 }

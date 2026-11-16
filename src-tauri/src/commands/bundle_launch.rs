@@ -113,11 +113,6 @@ pub fn disallows_proxy_arguments(_exe: &Path, policy: Option<&crate::routing_ove
 
 fn application_status(running:&[Instance],port:u16,independent:bool,exe:Option<&Path>,policy:Option<&crate::routing_overrides::model::BundlePolicy>)->(&'static str,String) {
     let active_mode = detect_active_capture_mode();
-    if !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
-        && crate::external_proxy::routes().iter().all(|route| route.port != port)
-        && matches!(active_mode, ActiveCaptureMode::WinDivert | ActiveCaptureMode::Tun) {
-        return ("unverified", "当前透明模式无法保证业务域名远端解析，请切换用户态强接管".into());
-    }
     match active_mode {
         ActiveCaptureMode::WinDivert => {
             return ("capture", format!("WinDivert 模式，发现 {} 个主实例；新连接按业务包规则透明接管，无需代理参数", running.len()));
@@ -219,11 +214,32 @@ pub async fn get_bundle_entry_states(instance_ids:Vec<String>)->Result<Vec<Entry
             let Ok(exe)=exe else {
                 return ("unverified",exe.unwrap_err(),String::new(),None,None);
             };
+            #[cfg(windows)]
+            let fallback_instances: Vec<Instance> = observation.entries.iter()
+                .filter(|p| !p.identity.is_empty() && p.executable_path.as_deref().is_some_and(|path| crate::platform::same_path(path, &exe.to_string_lossy())))
+                .map(|p| Instance { pid: p.pid, identity: p.identity.clone(), args: vec![] })
+                .collect();
+            #[cfg(not(windows))]
+            let fallback_instances: Vec<Instance> = Vec::new();
+
             let running=checked.entry(exe.clone()).or_insert_with(|| match &rows {
                 Ok(rows)=>instances_from_commands(&exe,None,rows.iter().filter(|row|crate::platform::same_path(&row.name,&exe.file_name().unwrap_or_default().to_string_lossy())).map(|row|(row.pid,row.command.as_str()))),
                 Err(error)=>Err(error.clone()),
             });
-            match running { Ok(running) => {
+            let (target_instances, degraded_err) = match running {
+                Ok(running) => (Some(running.as_slice()), None),
+                Err(error) => {
+                    let bypass_proxy_args = disallows_proxy_arguments(&exe, bundle.policy.as_ref()) || detect_active_capture_mode() != ActiveCaptureMode::None;
+                    if !fallback_instances.is_empty() && bypass_proxy_args {
+                        (Some(fallback_instances.as_slice()), None)
+                    } else if !fallback_instances.is_empty() {
+                        (None, Some(format!("已检测到 {} 个主实例；系统 WMI 资源繁忙暂未核验启动参数，分流以连接记录为准", fallback_instances.len())))
+                    } else {
+                        (None, Some(error.clone()))
+                    }
+                }
+            };
+            if let Some(running) = target_instances {
                 let (state,message)=application_status(running,bundle.port,crate::external_proxy::generation(&bundle.id).is_some(),Some(&exe),bundle.policy.as_ref());
                 #[cfg(target_os = "macos")]
                 let (state,message)=if !running.is_empty() && !crate::platform::macos::apps::supports_proxy_arguments(&exe) {
@@ -252,7 +268,11 @@ pub async fn get_bundle_entry_states(instance_ids:Vec<String>)->Result<Vec<Entry
                     }
                 };
                 (state,message,instance_key(running,bundle.port),tier,reason)
-            }, Err(error) => ("unverified",error.clone(),String::new(),None,None) }
+            } else {
+                let err_msg = degraded_err.unwrap_or_else(|| "无法获取应用实例状态".into());
+                let key = if !fallback_instances.is_empty() { instance_key(&fallback_instances, bundle.port) } else { String::new() };
+                ("unverified", err_msg, key, None, None)
+            }
         })();
         #[cfg(windows)] let monitor_state=Some(observation.state);
         #[cfg(not(windows))] let monitor_state=None;
@@ -346,13 +366,42 @@ pub fn route(id: &str) -> Result<BundleRoute,String> {
     if let Ok(Some(bundle))=&independent { return Ok(bundle.clone()); }
     crate::function_mode::require_full()?;
     let saved = routing_overrides::read()?;
-    if let Some(mut bundle)=saved.bundles.into_iter().find(|b| b.id==id) {
+    if let Some(mut bundle)=saved.bundles.iter().find(|b| b.id==id).cloned() {
         bundle.enabled &= saved.bundles_enabled;
         if !bundle.enabled { bundle.port = 0; }
         return Ok(bundle);
     }
+    if let Some(rule) = saved.process_rules.iter().find(|r| r.id == id).cloned() {
+        let is_enabled = rule.enabled && saved.process_enabled;
+        let policy = Some(crate::routing_overrides::model::BundlePolicy {
+            proxy_subprocesses: rule.include_descendants,
+            ..Default::default()
+        });
+        let port = if !is_enabled {
+            0
+        } else if let Some(target) = &rule.target {
+            saved.bundles.iter().find(|b| b.main_target.as_ref() == Some(target)).map(|b| b.port).unwrap_or_else(|| {
+                crate::commands::settings::get_general_settings().map(|s| s.mixed_port).unwrap_or(7890)
+            })
+        } else {
+            crate::commands::settings::get_general_settings().map(|s| s.mixed_port).unwrap_or(7890)
+        };
+        return Ok(BundleRoute {
+            id: rule.id,
+            name: rule.label,
+            main_exe: rule.match_value,
+            enabled: is_enabled,
+            main_target: rule.target,
+            dns_target: None,
+            port,
+            mode: rule.rule_mode.unwrap_or_else(|| "strict".into()),
+            domains: vec![],
+            fallback: "rules".into(),
+            policy,
+        });
+    }
     independent?;
-    Err("业务包尚未保存或已移除，请先在业务包页面应用规则".into())
+    Err("业务包或进程规则尚未保存或已移除，请先在分流页面应用规则".into())
 }
 pub fn resolve_executable(bundle: &BundleRoute) -> Result<PathBuf,String> {
     let supplied=PathBuf::from(&bundle.main_exe);
@@ -459,11 +508,6 @@ fn spawn_application(exe:&Path,directory:&str,args:Vec<String>,port:u16,policy:O
     }
     let active_mode = detect_active_capture_mode();
     let proxy_disallowed = disallows_proxy_arguments(exe, policy);
-    if !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
-        && crate::external_proxy::routes().iter().all(|route| route.port != port)
-        && matches!(active_mode, ActiveCaptureMode::WinDivert | ActiveCaptureMode::Tun) {
-        return Err("当前透明模式无法保证业务原始域名远端解析，未启动应用；请切换用户态强接管后重试".into());
-    }
 
     // 1. 优先判定 WinDivert 与 TUN 透明模式（完整版与独立版均覆盖）
     if active_mode == ActiveCaptureMode::WinDivert || active_mode == ActiveCaptureMode::Tun {

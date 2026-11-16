@@ -13,38 +13,272 @@ html.dark {
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "PingFang SC", "Microsoft YaHei UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   user-select: none;
   -webkit-user-select: none;
-  overflow-x: hidden;
-  background-color: #f8fafc;
+  overflow: hidden;
+  background-color: #f1f5f9;
   color: #0f172a;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 html.dark body {
-  background-color: #020617;
+  background-color: #040507;
   color: #f8fafc;
 }
 
-/* 自定义滚动条 */
+/* 1. 画布底色与网格 */
+html.dark .workbench-canvas {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+html:not(.dark) .workbench-canvas {
+  background-image: radial-gradient(rgba(100, 116, 139, 0.2) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* 2. 窗口容器无界平面与微阴影 */
+#tauri-app-window {
+  transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1), height 0.35s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s ease;
+  backdrop-filter: blur(36px);
+  -webkit-backdrop-filter: blur(36px);
+}
+html.dark #tauri-app-window {
+  background: rgba(10, 12, 16, 0.94);
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+html:not(.dark) #tauri-app-window {
+  background: #ffffff;
+  box-shadow: 0 25px 70px -15px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.05);
+}
+
+/* 3. 环境弥散光晕 */
+.ambient-glow {
+  position: absolute;
+  top: -140px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 75%;
+  height: 340px;
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(65px);
+}
+html.dark .ambient-glow {
+  background: radial-gradient(ellipse at center, rgba(56, 189, 248, 0.12) 0%, rgba(99, 102, 241, 0.08) 45%, rgba(0, 0, 0, 0) 75%);
+}
+html:not(.dark) .ambient-glow {
+  background: radial-gradient(ellipse at center, rgba(14, 165, 233, 0.07) 0%, rgba(99, 102, 241, 0.04) 40%, rgba(255, 255, 255, 0) 75%);
+}
+
+/* 4. 单向发丝分割线 (Hairline Divider) */
+.hairline-divider {
+  border-color: rgba(15, 23, 42, 0.07);
+}
+html.dark .hairline-divider {
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+/* 0.5px 极细底边导轨 */
+.row-divider-05 {
+  border-bottom: 0.5px solid rgba(15, 23, 42, 0.08);
+}
+html.dark .row-divider-05 {
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 5. 幽灵悬浮交互 (Ghost Hover) */
+.ghost-hover {
+  transition: all 0.15s ease;
+}
+.ghost-hover:hover {
+  background-color: #f1f5f9;
+}
+html.dark .ghost-hover:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* 6. 快捷键键帽 (Key Cap) */
+.key-cap {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.1);
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+html.dark .key-cap {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* 7. 胶囊微动开关 (Capsule Toggle) */
+.capsule-toggle {
+  width: 32px;
+  height: 18px;
+  border-radius: 9999px;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  background-color: #cbd5e1;
+  transition: background-color 0.2s ease;
+  position: relative;
+  flex-shrink: 0;
+}
+html.dark .capsule-toggle {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+.capsule-toggle.active {
+  background-color: #0284c7 !important;
+}
+html.dark .capsule-toggle.active {
+  background-color: #38bdf8 !important;
+}
+.capsule-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background-color: #ffffff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: translateX(0);
+}
+.capsule-toggle.active .capsule-thumb {
+  transform: translateX(14px);
+}
+
+/* 8. 汉字印章水印 (-5° 极客设计) */
+.stamp-watermark {
+  font-family: 'Segoe UI Variable Display', 'PingFang SC', 'Microsoft YaHei UI', -apple-system, sans-serif;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  transform: translateY(-50%) rotate(-5deg);
+  user-select: none;
+  pointer-events: none;
+  line-height: 1;
+  white-space: nowrap;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+html.dark .stamp-watermark {
+  color: rgba(255, 255, 255, 0.075);
+  text-shadow: 0 0 16px rgba(56, 189, 248, 0.06);
+}
+html:not(.dark) .stamp-watermark {
+  color: rgba(15, 23, 42, 0.065);
+  text-shadow: 0 0 16px rgba(0, 0, 0, 0.02);
+}
+
+/* 9. 节点高亮边框 */
+.active-exit-node {
+  box-shadow: 0 0 0 1.5px #10b981, 0 4px 14px -2px rgba(16, 185, 129, 0.3);
+}
+html.dark .active-exit-node {
+  box-shadow: 0 0 0 1.5px #34d399, 0 4px 16px -2px rgba(52, 211, 153, 0.35);
+}
+
+/* 10. Windows 11 原生标题栏控制按键 */
+.win-caption-btn {
+  width: 36px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: #64748b;
+}
+.win-caption-btn:hover {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+html.dark .win-caption-btn {
+  color: rgba(255, 255, 255, 0.7);
+}
+html.dark .win-caption-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+.win-caption-btn.win-close:hover {
+  background-color: #c42b1c !important;
+  color: #ffffff !important;
+}
+
+/* 11. 紧凑模式侧边栏 (56px 像素级绝对居中) */
+#left-sidebar.compact,
+.sidebar-compact {
+  width: 56px !important;
+  padding: 12px 6px !important;
+  align-items: center !important;
+}
+#left-sidebar.compact .nav-category-title,
+.sidebar-compact .nav-category-title,
+#left-sidebar.compact #nav-category-title,
+.sidebar-compact #nav-category-title,
+#left-sidebar.compact #nav-category-sub,
+.sidebar-compact #nav-category-sub,
+#left-sidebar.compact #sidebar-footer,
+.sidebar-compact #sidebar-footer,
+#left-sidebar.compact .nav-label,
+.sidebar-compact .nav-label,
+#left-sidebar.compact .nav-badge,
+.sidebar-compact .nav-badge {
+  display: none !important;
+}
+#left-sidebar.compact .nav-item,
+.sidebar-compact .nav-item {
+  width: 40px !important;
+  height: 40px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+  align-items: center !important;
+  margin: 0 auto 6px auto !important;
+  border-radius: 12px !important;
+  display: flex !important;
+}
+#left-sidebar.compact .nav-item > div,
+.sidebar-compact .nav-item > div {
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: 100% !important;
+  gap: 0 !important;
+}
+#left-sidebar.compact .nav-item i,
+#left-sidebar.compact .nav-item svg,
+.sidebar-compact .nav-item i,
+.sidebar-compact .nav-item svg {
+  margin: 0 !important;
+  width: 18px !important;
+  height: 18px !important;
+  flex-shrink: 0 !important;
+  display: block !important;
+}
+
+/* 12. 滚动条精简规范 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: rgba(148, 163, 184, 0.3);
   border-radius: 9999px;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
 html.dark ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: rgba(255, 255, 255, 0.15);
 }
-html.dark ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
-}
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+

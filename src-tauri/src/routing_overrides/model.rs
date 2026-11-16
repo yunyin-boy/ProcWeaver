@@ -259,8 +259,11 @@ pub fn normalize(mut config: Overrides) -> Result<Overrides, String> {
 }
 fn validate_target(t: &Target) -> Result<(), String> {
     let profile_id = if t.profile_id.trim().is_empty() { "default" } else { t.profile_id.as_str() };
+    if t.name == "DIRECT" {
+        return Ok(());
+    }
     if !safe_atom(&t.name) || !safe_atom(profile_id) || !matches!(t.kind.as_str(), "node" | "group")
-        || matches!(t.name.as_str(), "DIRECT" | "REJECT" | "GLOBAL" | "RULES") { return Err("节点绑定无效或名称包含保留字符".into()); }
+        || matches!(t.name.as_str(), "REJECT" | "GLOBAL" | "RULES") { return Err("节点绑定无效或名称包含保留字符".into()); }
     Ok(())
 }
 

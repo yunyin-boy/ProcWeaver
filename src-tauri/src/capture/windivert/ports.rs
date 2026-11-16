@@ -49,21 +49,33 @@ fn resolve(raw: &str, previous: Option<&(Plan, Identity)>) -> Result<String, Str
     let mut indices = Vec::new();
     for entry in &plan.entries {
         let name = format!("pw-wd-{}", entry.id()?);
+        let name_v6 = format!("{name}-v6");
         let matches: Vec<_> = listeners.iter().enumerate().filter(|(_, v)| v["name"].as_str() == Some(&name)).collect();
         if matches.len() != 1 { return Err("WinDivert 入口名称缺失或重复".into()); }
         let (index, listener) = matches[0];
-        if listener["type"].as_str() != Some("socks") || listener["listen"].as_str() != Some("127.0.0.1")
+        if (listener["type"].as_str() != Some("mixed") && listener["type"].as_str() != Some("socks"))
+            || listener["listen"].as_str() != Some("127.0.0.1")
             || listener["port"].as_u64() != Some(entry.port as u64) || listener["udp"].as_bool() != Some(true)
             || listener["rule"].as_str() != Some(&name) || !generated.insert(index) {
             return Err("WinDivert 入口与规则上下文不一致".into());
         }
-        indices.push(index);
+        let mut entry_indices = vec![index];
+        if let Some((v6_index, v6_listener)) = listeners.iter().enumerate().find(|(_, v)| v["name"].as_str() == Some(&name_v6)) {
+            if (v6_listener["type"].as_str() != Some("mixed") && v6_listener["type"].as_str() != Some("socks"))
+                || v6_listener["listen"].as_str() != Some("::1")
+                || v6_listener["port"].as_u64() != Some(entry.port as u64)
+                || !generated.insert(v6_index) {
+                return Err("WinDivert IPv6 入口与规则上下文不一致".into());
+            }
+            entry_indices.push(v6_index);
+        }
+        indices.push(entry_indices);
     }
     let previous = previous.filter(|(_, core)| Identity::inspect(core.pid).as_ref() == Some(core));
     let mut used = BTreeSet::new();
     let mut reservations = Vec::new();
     let mut remapped = std::collections::BTreeMap::new();
-    for (entry, index) in plan.entries.iter_mut().zip(indices) {
+    for (entry, entry_indices) in plan.entries.iter_mut().zip(indices) {
         let reusable = previous.and_then(|(old, core)| old.entries.iter().find(|old| same_identity(entry, old))
             .filter(|old| owned(old.port, core.pid, 6) && owned(old.port, core.pid, 17)).map(|old| old.port));
         let offset = entry.port - 61000;
@@ -75,7 +87,9 @@ fn resolve(raw: &str, previous: Option<&(Plan, Identity)>) -> Result<String, Str
         used.insert(port);
         let original_port = entry.port;
         entry.port = port;
-        yaml["listeners"][index]["port"] = port.into();
+        for idx in entry_indices {
+            yaml["listeners"][idx]["port"] = port.into();
+        }
         remapped.insert((entry.owner.clone(), original_port), port);
     }
     for target in &mut plan.targets {

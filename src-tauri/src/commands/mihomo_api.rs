@@ -215,7 +215,7 @@ mod tests {
     }
 }
 
-fn base_url() -> Result<String, String> {
+pub(crate) fn base_url() -> Result<String, String> {
     let settings = super::settings::get_general_settings()?;
     if !settings.enable_controller_port {
         return Err("API 外部控制端口已关闭，如需管理节点或测速请在设置中开启".into());
@@ -686,7 +686,10 @@ pub(crate) async fn set_kernel_mode_locked(mode: String) -> Result<bool, String>
 async fn set_public_mode_locked(mode: &str) -> Result<bool, String> {
     use crate::routing_overrides::{self, public_mode};
     let mode = public_mode::normalize(mode)?;
-    if !super::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) { return Err("核心未运行，公共模式尚未应用".into()); }
+    if !super::process::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+        super::settings::update_persisted_run_mode(mode)?;
+        return Ok(true);
+    }
     let previous = super::settings::get_general_settings()?.run_mode;
     let config = routing_overrides::read()?;
     let (id, source) = routing_overrides::current_source();
@@ -745,15 +748,21 @@ pub(crate) async fn close_withdrawn_bundle_connections(old: &crate::routing_over
 
 #[tauri::command]
 pub async fn get_public_routing_mode() -> Result<Value, String> {
-    if !crate::routing_overrides::public_mode::enabled() { return get_mihomo_config().await; }
-    let _lifecycle = super::process::LIFECYCLE.lock().await;
-    let actual = get_mihomo_config().await?;
     let settings = super::settings::get_general_settings()?;
-    let saved = crate::routing_overrides::public_mode::normalize(&settings.run_mode)?;
-    let raw = std::fs::read_to_string(crate::storage::data_dir().join("core_data/config.yaml")).map_err(|_| "读取公共模式状态失败")?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&raw).map_err(|_| "公共模式状态无效")?;
-    let applied = actual["mode"].as_str().is_some_and(|m| m.eq_ignore_ascii_case("rule"))
-        && yaml[crate::routing_overrides::public_mode::KEY].as_str() == Some(saved);
+    let saved = crate::routing_overrides::public_mode::normalize(&settings.run_mode).unwrap_or("rule");
+    if !crate::routing_overrides::public_mode::enabled() {
+        if let Ok(cfg) = get_mihomo_config().await { return Ok(cfg); }
+        return Ok(serde_json::json!({"mode": saved, "kernelMode": saved, "applied": false}));
+    }
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
+    let actual = get_mihomo_config().await.unwrap_or_else(|_| serde_json::json!({"mode": "Rule"}));
+    let mut applied = false;
+    if let Ok(raw) = std::fs::read_to_string(crate::storage::data_dir().join("core_data/config.yaml")) {
+        if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&raw) {
+            applied = actual["mode"].as_str().is_some_and(|m| m.eq_ignore_ascii_case("rule"))
+                && yaml[crate::routing_overrides::public_mode::KEY].as_str() == Some(saved);
+        }
+    }
     Ok(serde_json::json!({"mode": saved, "kernelMode": actual["mode"], "applied": applied}))
 }
 

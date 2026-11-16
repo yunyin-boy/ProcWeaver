@@ -24,6 +24,58 @@ use tokio::{
     sync::{mpsc, Semaphore},
 };
 
+#[cfg(windows)]
+pub fn configure_socket_keepalive(raw_sock: std::os::windows::io::RawSocket) {
+    use windows_sys::Win32::Networking::WinSock::*;
+    #[link(name = "ws2_32")]
+    extern "system" {
+        fn WSAIoctl(
+            s: usize,
+            dwiocontrolcode: u32,
+            lpvinbuffer: *const core::ffi::c_void,
+            cbinbuffer: u32,
+            lpvoutbuffer: *mut core::ffi::c_void,
+            cboutbuffer: u32,
+            lpcbbytesreturned: *mut u32,
+            lpoverlapped: *mut core::ffi::c_void,
+            lpcompletionroutine: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+    unsafe {
+        let optval: i32 = 1;
+        setsockopt(
+            raw_sock as usize,
+            SOL_SOCKET,
+            SO_KEEPALIVE,
+            &optval as *const _ as *const u8,
+            std::mem::size_of_val(&optval) as i32,
+        );
+        #[repr(C)]
+        struct TcpKeepAliveSetting {
+            onoff: u32,
+            keepalivetime: u32,
+            keepaliveinterval: u32,
+        }
+        let mut setting = TcpKeepAliveSetting {
+            onoff: 1,
+            keepalivetime: 15_000,
+            keepaliveinterval: 3_000,
+        };
+        let mut bytes_returned = 0u32;
+        WSAIoctl(
+            raw_sock as usize,
+            SIO_KEEPALIVE_VALS,
+            &mut setting as *mut _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&setting) as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+    }
+}
+
 fn is_fake_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -60,16 +112,14 @@ struct Tables {
     tokens: HashMap<u16, Arc<Route>>,
     udp: HashMap<Flow, (u64, super::ownership::Owner, mpsc::Sender<Vec<u8>>)>,
     bypass: HashMap<Flow, Instant>,
+    nat: crate::capture::local_proxy::Nat,
     next: u16,
     generation: u64,
 }
 fn withdraw_routes(table: &mut Tables, old: &Plan, next: &Plan) {
-    for route in table.flows.values() {
-        if !next.entries.iter().any(|entry| entry.port == route.port) {
-            route.finished.store(true, Ordering::Release);
-            route.cancel.notify_one();
-        }
-    }
+    // 平滑过渡：规则更新时，允许已建立且正在传输的现有 TCP 连接继续平稳通信，
+    // 绝不过早暴力拆除或通知 cancel，保证现有长连接和流式通信不被配置更新打断；
+    // 新发起的连接（新 SYN）将自动采用新计划中的端口映射。
     table.udp.retain(|flow, (_, owner, _)| {
         let identity = &owner.identity;
         let before = old.port_for(&identity.path, identity.pid, identity.created_at);
@@ -155,12 +205,17 @@ impl Engine {
         if sockets.version().map_err(|_| "驱动版本读取失败")? != (2, 2) {
             return Err("WinDivert 共享驱动版本不兼容".into());
         }
+        let mut managed_ports: std::collections::BTreeSet<u16> = plan.managed_endpoints.iter().map(|a| a.port()).collect();
+        if let Some(p) = plan.mixed_port { managed_ports.insert(p); }
+        if managed_ports.is_empty() { managed_ports.insert(7890); }
+        let port_filter = managed_ports.iter().map(|p| format!("tcp.DstPort == {p}")).collect::<Vec<_>>().join(" or ");
         let default_filter = if !external && plan.targets.is_empty() && plan.instances.is_empty() && !plan.has_dns() {
-            "false"
+            "false".to_string()
         } else {
-            "outbound and !loopback and (tcp or udp)"
+            format!("(outbound and !loopback and (tcp or udp)) or (loopback and tcp and (({port_filter}) or (tcp.SrcPort >= 61000 and tcp.SrcPort <= 64999)))")
         };
         let filter_text = filter
+            .map(|f| f.to_string())
             .unwrap_or(default_filter)
             .replace("{relay4}", &ports.0.to_string())
             .replace("{relay6}", &ports.1.to_string());
@@ -183,7 +238,7 @@ impl Engine {
             excluded,
             worker: pool.handle().clone(),
             test_loopback: cfg!(test) && filter.is_some(),
-            capacity: Arc::new(Semaphore::new(384)),
+            capacity: Arc::new(Semaphore::new(4096)),
             tcp: AtomicU64::new(0),
             udp: AtomicU64::new(0),
             dns: AtomicU64::new(0),
@@ -228,7 +283,9 @@ impl Engine {
         }
         let mut guard = self.shared.plan.write().unwrap();
         let mut next = guard.clone(); next.instances = instances; next.validate()?;
-        if guard.targets.is_empty() && !guard.has_dns() && guard.instances.is_empty() != next.instances.is_empty() {
+        if (guard.targets.is_empty() && !guard.has_dns() && guard.instances.is_empty() != next.instances.is_empty())
+            || guard.has_dns() != next.has_dns()
+        {
             return Err("接管范围改变，需要完整确认".into());
         }
         *guard = next;
@@ -240,7 +297,7 @@ impl Engine {
     pub fn stats(&self) -> Stats {
         let s = &self.shared;
         Stats {
-            active: !s.stop.load(Ordering::Acquire),
+            active: !s.stop.load(Ordering::Acquire) && !s.paused.load(Ordering::Acquire),
             tcp: s.tcp.load(Ordering::Relaxed),
             udp: s.udp.load(Ordering::Relaxed),
             dns: s.dns.load(Ordering::Relaxed),
@@ -355,6 +412,7 @@ fn network(s: Arc<Shared>) {
             t.tokens.retain(|k, _| active.contains(k));
             t.bypass
                 .retain(|_, at| at.elapsed() < Duration::from_secs(2));
+            t.nat.cleanup();
             if s.external && diagnostic_summary.elapsed()>=Duration::from_secs(30) {
                 crate::external_proxy::diagnostics::emit("capture.snapshot","info",serde_json::json!({"tcpFlows":t.flows.len(),"udpFlows":t.udp.len(),"bypassedFlows":t.bypass.len(),"permitsAvailable":s.capacity.available_permits(),
                     "tcp":s.tcp.load(Ordering::Relaxed),"udp":s.udp.load(Ordering::Relaxed),"dns":s.dns.load(Ordering::Relaxed),"unknown":s.unknown.load(Ordering::Relaxed),"failures":s.failures.load(Ordering::Relaxed)}));
@@ -363,6 +421,18 @@ fn network(s: Arc<Shared>) {
             cleanup = Instant::now();
         }
         if flow.protocol == 6 {
+            // 0. 本地回环系统代理双向 NAT 映射检查（非纯 SYN 的已建连/后续报文直接快速转换）
+            let is_fin_or_rst = packet.is_fin_or_rst(data);
+            let is_ack = packet.is_ack(data);
+            if !packet.syn {
+                let nat_translated = s.table.lock().unwrap().nat.translate(flow, is_fin_or_rst, is_ack);
+                if let Some(target_flow) = nat_translated {
+                    packet.rewrite(data, target_flow.source, target_flow.destination);
+                    send(&s, data, &mut address, true);
+                    continue;
+                }
+            }
+
             let reverse = if flow.source.port() == s.v4 || flow.source.port() == s.v6 {
                 s.table
                     .lock()
@@ -403,11 +473,13 @@ fn network(s: Arc<Shared>) {
                 continue;
             }
         }
-        // Local proxy connections keep their existing HTTP/SOCKS protocol and
-        // entry. Relays/core cannot be recursively redirected into themselves.
-        if (flow.destination.ip().is_loopback()
-            || capture_bypass_destination(flow.destination.ip())
-            || address.flags & (1 << 18) != 0)
+        let is_loopback = flow.destination.ip().is_loopback() || address.flags & (1 << 18) != 0;
+        let is_to_sysproxy = flow.protocol == 6 && packet.syn && s.plan.read().unwrap().managed_endpoints.contains(&flow.destination);
+
+        // 普通回环连接（非发往 ProcWeaver 托管之系统代理的 SYN 者）直接原样放行，
+        // 彻底杜绝本地开发服务器、IPC 管道和调试端口被误劫持
+        if ((is_loopback && !is_to_sysproxy)
+            || capture_bypass_destination(flow.destination.ip()))
             && !s.test_loopback
             || s.stop.load(Ordering::Acquire)
         {
@@ -417,7 +489,13 @@ fn network(s: Arc<Shared>) {
         if flow.protocol == 17 {
             let cached = s.table.lock().unwrap().udp.get(&flow).cloned();
             if let Some((_, owner, tx)) = cached {
-                if s.owners.lock().unwrap().current(&owner) {
+                let valid = if owner.endpoint == 0 {
+                    super::owner::lookup(flow) == Some(owner.identity.pid)
+                        && Identity::inspect(owner.identity.pid).as_ref() == Some(&owner.identity)
+                } else {
+                    s.owners.lock().unwrap().current(&owner)
+                };
+                if valid {
                     if tx.try_send(data[packet.payload..].to_vec()).is_err() {
                         s.failures.fetch_add(1, Ordering::Relaxed);
                     } else {
@@ -439,10 +517,12 @@ fn network(s: Arc<Shared>) {
             address.timestamp,
             Identity::inspect,
         );
-        // SOCKET is asynchronous. Hold a bounded first packet briefly; neither
-        // scan all processes nor claim guaranteed coverage after this deadline.
+        // SOCKET 事件与系统连接表双轨异步判定：
+        // 对于刚拉起的子进程或突发短命连接，在有界时间内进行微秒级退让和查表，
+        // 彻底解决短命子进程第一条连接尚未写入 WFP 事件导致的“追不回首包”问题。
         if owner.is_none() && (packet.syn || flow.protocol == 17) {
-            for _ in 0..2 {
+            // 阶段 1: 短暂退让与重试（3 次 yield）
+            for _ in 0..3 {
                 std::thread::yield_now();
                 owner = s.owners.lock().unwrap().resolve(
                     flow.source,
@@ -455,24 +535,36 @@ fn network(s: Arc<Shared>) {
                     break;
                 }
             }
+            // 阶段 2: 若仍未就绪，进行有界微休眠重试（500us -> 1500us -> 3000us），兼顾低延迟与子进程首包捕获率
             if owner.is_none() && packet.syn {
-                std::thread::sleep(Duration::from_micros(200));
-                owner = s.owners.lock().unwrap().resolve(
-                    flow.source,
-                    flow.destination,
-                    flow.protocol,
-                    address.timestamp,
-                    Identity::inspect,
-                );
-            }
-            // 双轨备援：若 WFP 异步事件延迟或未到达，直接通过 Windows 系统连接表即时反查 PID
-            if owner.is_none() {
-                let pid = if flow.protocol == 6 {
-                    super::tcp_owner(flow.source, flow.destination)
-                } else {
-                    super::udp_owner(flow.source)
-                };
-                if let Some(pid) = pid {
+                for wait_us in [500, 1500, 3000] {
+                    std::thread::sleep(Duration::from_micros(wait_us));
+                    owner = s.owners.lock().unwrap().resolve(
+                        flow.source,
+                        flow.destination,
+                        flow.protocol,
+                        address.timestamp,
+                        Identity::inspect,
+                    );
+                    if owner.is_some() {
+                        break;
+                    }
+                    // 每次微休眠后即时尝试 Windows 系统连接表反查
+                    let pid = super::tcp_owner(flow.source, flow.destination);
+                    if let Some(pid) = pid {
+                        if let Some(identity) = Identity::inspect(pid) {
+                            owner = Some(super::ownership::Owner {
+                                endpoint: 0,
+                                observed_at: address.timestamp,
+                                identity,
+                            });
+                            break;
+                        }
+                    }
+                }
+            } else if owner.is_none() {
+                // UDP 兜底即时反查
+                if let Some(pid) = super::udp_owner(flow.source) {
                     if let Some(identity) = Identity::inspect(pid) {
                         owner = Some(super::ownership::Owner {
                             endpoint: 0,
@@ -560,12 +652,19 @@ fn network(s: Arc<Shared>) {
             if owner.is_none() {
                 s.unknown.fetch_add(1, Ordering::Relaxed);
             }
-            if flow.protocol != 17 || flow.destination.port() != 53 {
+            // 核心修复：绝不把未确认归属的 SYN 首包写入 bypass！
+            // 只有当明确识别出归属实例、且该实例确定不需要代理时，才写入 bypass 缓存；
+            // 对于未确认归属的 SYN，放行当前包但不记入 bypass，允许后续重传 SYN 再次尝试核验，杜绝连接永久脱缰！
+            if (flow.protocol != 17 || flow.destination.port() != 53) && !packet.syn && owner.is_some() {
                 let mut table = s.table.lock().unwrap();
                 if table.bypass.len() < 4096 {
                     table.bypass.insert(flow, Instant::now());
                 }
                 drop(table);
+            }
+            if is_to_sysproxy {
+                // 关键防御：无论之前是否存在旧映射，新连接未匹配规则，强制抹除该客户端源端口在 NAT 表中的旧残留
+                s.table.lock().unwrap().nat.forget(flow);
             }
             send(&s, data, &mut address, false);
             continue;
@@ -576,8 +675,39 @@ fn network(s: Arc<Shared>) {
             continue;
         }
         if flow.protocol == 6 {
+            // 路径 B：连接 ProcWeaver 系统代理的受控流量，执行本地双向 NAT 重定向至该规则专属 Mixed 入口
+            if is_to_sysproxy {
+                let mut t = s.table.lock().unwrap();
+                let opt_id = owner.as_ref().map(|o| o.identity.clone());
+                // 区分同一五元组在 3 秒内的 SYN 重传：重传直接复用现有握手状态，避免反复推倒重建
+                let is_retransmit = t.nat.is_syn_retransmission(flow, port);
+                if !is_retransmit {
+                    t.nat.forget(flow);
+                    if !t.nat.insert(flow, port, opt_id) {
+                        // 映射建立失败：绝不原样放行至公共代理，阻断该连接以守护严格指定出口契约
+                        s.failures.fetch_add(1, Ordering::Relaxed);
+                        drop(t);
+                        continue;
+                    }
+                }
+                let target_ip: IpAddr = if flow.source.is_ipv4() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    std::net::Ipv6Addr::LOCALHOST.into()
+                };
+                let translated = Flow {
+                    destination: SocketAddr::new(target_ip, port),
+                    ..flow
+                };
+                drop(t);
+                packet.rewrite(data, translated.source, translated.destination);
+                send(&s, data, &mut address, true);
+                s.tcp.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+
             let mut t = s.table.lock().unwrap();
-            if t.flows.len() >= 1024 {
+            if t.flows.len() >= 8192 {
                 s.failures.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -616,7 +746,7 @@ fn network(s: Arc<Shared>) {
                 }
             };
             let mut t = s.table.lock().unwrap();
-            if t.udp.len() >= 128 {
+            if t.udp.len() >= 1024 {
                 s.failures.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -663,6 +793,12 @@ fn network(s: Arc<Shared>) {
 }
 async fn accept(s: Arc<Shared>, listener: TcpListener) {
     while let Ok((mut stream, peer)) = listener.accept().await {
+        let _ = stream.set_nodelay(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            configure_socket_keepalive(stream.as_raw_socket());
+        }
         let route = s
             .table
             .lock()
@@ -718,6 +854,12 @@ async fn socks(
 ) -> std::io::Result<(TcpStream, SocketAddr)> {
     tokio::time::timeout(Duration::from_secs(8), async {
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+        let _ = stream.set_nodelay(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            configure_socket_keepalive(stream.as_raw_socket());
+        }
         stream.write_all(&[5, 1, 0]).await?;
         let mut greeting = [0; 2];
         stream.read_exact(&mut greeting).await?;
@@ -772,7 +914,15 @@ async fn udp(
         let result=loop {tokio::select! {
             result=&mut worker=>{completed=true;break result.map_err(std::io::Error::other)?.map_err(std::io::Error::other);},
             payload=replies.recv()=>{let Some(payload)=payload else{break Ok(());};
-                if !s.owners.lock().unwrap().current(&owner)||!s.table.lock().unwrap().udp.get(&p.flow).is_some_and(|(g,_,_)|*g==generation){break Ok(());}
+                let is_valid = if owner.endpoint == 0 {
+                    super::owner::lookup(p.flow) == Some(owner.identity.pid)
+                        && s.owners.lock().unwrap().current(&owner)
+                } else {
+                    s.owners.lock().unwrap().current(&owner)
+                };
+                if !is_valid || !s.table.lock().unwrap().udp.get(&p.flow).is_some_and(|(g,_,_)| *g == generation) {
+                    break Ok(());
+                }
                 if p.flow.destination.port()==53{s.dns.fetch_add(1,Ordering::Relaxed);}
                 if let Some(mut response)=p.udp_reply(&template,&payload){if address.flags&(1<<18)==0{address.inbound();}send(&s,&mut response,&mut address,true);}
             }
@@ -803,7 +953,15 @@ async fn udp(
                 socket.send(&super::udp::encode(p.flow.destination,&payload)?).await?;
             },
             length=socket.recv(&mut buffer)=>{let payload=super::udp::decode(&buffer[..length?],p.flow.destination)?;
-                if !s.owners.lock().unwrap().current(&owner)||!s.table.lock().unwrap().udp.get(&p.flow).is_some_and(|(g,_,_)|*g==generation){return Ok(());}
+                let is_valid = if owner.endpoint == 0 {
+                    super::owner::lookup(p.flow) == Some(owner.identity.pid)
+                        && s.owners.lock().unwrap().current(&owner)
+                } else {
+                    s.owners.lock().unwrap().current(&owner)
+                };
+                if !is_valid || !s.table.lock().unwrap().udp.get(&p.flow).is_some_and(|(g,_,_)| *g == generation) {
+                    return Ok(());
+                }
                 if let Some(mut response)=p.udp_reply(&template,payload){if address.flags&(1<<18)==0{address.inbound();}send(&s,&mut response,&mut address,true);}
             },
             _=control.read(&mut control_byte)=>return Err(std::io::Error::other("SOCKS UDP 控制连接已断开")),

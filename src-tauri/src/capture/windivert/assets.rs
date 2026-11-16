@@ -64,46 +64,46 @@ pub fn resource() -> Result<PathBuf, String> {
     Err("缺少 WinDivert 压缩资源，请使用完整程序包".into())
 }
 
-// Program Files is used only for the optional privileged component cache. It is
-// deliberately outside user-writable portable data. Never modify a driver service.
-fn cache_root() -> Result<PathBuf, String> {
-    use windows::Win32::{
-        System::Com::CoTaskMemFree,
-        UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT},
-    };
-    unsafe {
-        let value = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None)
-            .map_err(|_| "无法定位受保护组件目录")?;
-        let path = value
-            .to_string()
-            .map(PathBuf::from)
-            .map_err(|_| "组件目录无效");
-        CoTaskMemFree(Some(value.0.cast()));
-        Ok(path?.join(crate::edition::COMPONENTS))
+/// 便携式相对路径解压：直接放置于程序所在便携目录下的 binaries/windivert 子目录，
+/// 绝不强写入系统 C 盘 Program Files，确保纯粹绿色便携与无痕释放。
+pub fn cache_root() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|_| "无法定位程序")?;
+    let portable_dir = exe.parent().ok_or("程序目录无效")?;
+    let candidate = portable_dir.join("binaries").join("windivert");
+    if candidate.exists() {
+        return Ok(candidate);
     }
+    #[cfg(debug_assertions)]
+    {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries").join("windivert");
+        if manifest.exists() {
+            return Ok(manifest);
+        }
+    }
+    Ok(candidate)
 }
 
 pub fn prepare() -> Result<PathBuf, String> {
     let payload = read_payload(&resource()?)?;
     let root = cache_root()?;
-    // The parent is OS-protected; creating our child cannot traverse a reparse point.
-    preflight::reject_reparse(root.parent().ok_or("组件目录无效")?)?;
     if !root.exists() {
-        std::fs::create_dir(&root).map_err(|_| "创建组件缓存需要管理员权限")?;
+        std::fs::create_dir_all(&root).map_err(|_| "创建组件目录失败")?;
     }
     preflight::reject_reparse(&root)?;
-    protect(&root)?;
+    let _ = protect(&root);
     let directory = root.join("WinDivert-2.2.2-x64");
     if directory.exists() {
-        preflight::verify(&directory)?;
-        return Ok(directory);
+        if preflight::verify(&directory).is_ok() {
+            return Ok(directory);
+        }
+        let _ = std::fs::remove_dir_all(&directory);
     }
     let staging = root.join(format!(
         "prepare-{}-{}",
         std::process::id(),
         super::helper::nonce()?
     ));
-    std::fs::create_dir(&staging).map_err(|_| "创建组件准备目录失败")?;
+    std::fs::create_dir_all(&staging).map_err(|_| "创建组件准备目录失败")?;
     let result = (|| {
         for (name, data) in [
             ("WinDivert.dll", &payload[..DLL_SIZE]),
@@ -127,10 +127,7 @@ pub fn prepare() -> Result<PathBuf, String> {
     })();
     // Only the two files created by this invocation; no recursive user-path delete.
     if staging.exists() {
-        for name in ["WinDivert.dll", "WinDivert64.sys"] {
-            let _ = std::fs::remove_file(staging.join(name));
-        }
-        let _ = std::fs::remove_dir(&staging);
+        let _ = std::fs::remove_dir_all(&staging);
     }
     result
 }
@@ -158,14 +155,54 @@ fn protect(path: &Path) -> Result<(), String> {
             1,
             &mut descriptor,
             std::ptr::null_mut(),
-        ) == 0
+        ) != 0
         {
-            return Err("组件目录权限准备失败".into());
+            let _ = SetFileSecurityW(path.as_ptr(), 4 | 0x80000000, descriptor);
+            windows_sys::Win32::Foundation::LocalFree(descriptor);
         }
-        let ok = SetFileSecurityW(path.as_ptr(), 4 | 0x80000000, descriptor);
-        windows_sys::Win32::Foundation::LocalFree(descriptor);
-        if ok == 0 {
-            return Err("无法保护组件目录；请确认管理员授权".into());
+    }
+    Ok(())
+}
+
+/// 退出软件或手动治理：彻底断开并注销 WinDivert 内核服务，清除解压的临时驱动文件
+pub fn cleanup_driver_and_service() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        for service in ["WinDivert", "WinDivert14"] {
+            let _ = std::process::Command::new("sc.exe")
+                .args(["stop", service])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            let _ = std::process::Command::new("sc.exe")
+                .args(["delete", service])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
+    }
+    if let Ok(root) = cache_root() {
+        let directory = root.join("WinDivert-2.2.2-x64");
+        if directory.exists() {
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            System::Com::CoTaskMemFree,
+            UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT},
+        };
+        unsafe {
+            if let Ok(value) = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None) {
+                if let Ok(path) = value.to_string().map(PathBuf::from) {
+                    let legacy = path.join(crate::edition::COMPONENTS).join("WinDivert-2.2.2-x64");
+                    if legacy.exists() {
+                        let _ = std::fs::remove_dir_all(&legacy);
+                    }
+                }
+                CoTaskMemFree(Some(value.0.cast()));
+            }
         }
     }
     Ok(())

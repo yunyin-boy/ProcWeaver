@@ -27,6 +27,7 @@ interface Props {
   trafficMode?: string;
   unavailable?: boolean;
   compact?: boolean;
+  masterEnabled?: boolean;
   onLaunch: () => void;
   onShortcuts: () => void;
   onToggleSwitch: (instanceId: string, nextState: boolean) => void;
@@ -51,6 +52,7 @@ export const BundleRow: React.FC<Props> = ({
   trafficMode,
   unavailable = false,
   compact = false,
+  masterEnabled = true,
   onLaunch,
   onShortcuts,
   onToggleSwitch,
@@ -147,14 +149,12 @@ export const BundleRow: React.FC<Props> = ({
     <div
       onContextMenu={handleContextMenu}
       onDoubleClick={() => onOpenDetail(instance)}
-      className={`group relative flex ${compact ? "flex-wrap gap-3" : ""} items-center justify-between px-4 py-3 rounded-2xl bg-white dark:bg-slate-900/90 border transition-all select-none cursor-pointer ${
+      className={`group relative flex ${compact ? "flex-wrap gap-3" : ""} items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-white/[0.04] last:border-b-0 hover:bg-slate-100/60 dark:hover:bg-white/[0.04] transition-all select-none cursor-pointer ${
         isObservedActive
-          ? "border-emerald-400/90 dark:border-emerald-500/70 ring-1 ring-emerald-500/30 shadow-md shadow-emerald-500/10"
+          ? "bg-emerald-500/[0.02] dark:bg-emerald-500/[0.04] border-l-2 border-l-emerald-500 dark:border-l-emerald-400"
           : isEnabled
-          ? "border-indigo-300/80 dark:border-indigo-600/50 hover:border-indigo-400 dark:hover:border-indigo-500 hover:shadow-md"
-          : isRequested
-          ? "border-amber-300 dark:border-amber-700/60"
-          : "border-slate-200/80 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-sm"
+          ? "border-l-2 border-l-emerald-500/50 dark:border-l-emerald-500/40"
+          : "border-l-2 border-l-transparent"
       }`}
       title="双击查看运行详情，右键呼出管理菜单"
     >
@@ -174,10 +174,12 @@ export const BundleRow: React.FC<Props> = ({
             isEnabled
               ? "bg-emerald-500 shadow-sm"
               : instance.enabled
-              ? "bg-amber-500"
-              : "bg-slate-300 dark:bg-slate-700"
+              ? !masterEnabled
+                ? "bg-zinc-500 dark:bg-zinc-600/80 shadow-2xs"
+                : "bg-amber-500"
+              : "bg-slate-300 dark:bg-zinc-700"
           }`}
-          title={instance.enabled ? "点击停用该套件" : boundNode ? "点击开启该套件" : "点击选择出口并开启"}
+          title={!masterEnabled ? "核心业务包总开关已暂停 (单包配置已就绪，开启总开关即生效)" : instance.enabled ? "点击停用该套件" : boundNode ? "点击开启该套件" : "点击选择出口并开启"}
         >
           <span
             aria-hidden="true"
@@ -189,23 +191,24 @@ export const BundleRow: React.FC<Props> = ({
 
         {/* 2. 应用名与状态指示 */}
         <div className="flex items-center space-x-3 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 flex items-center justify-center text-xl shrink-0 shadow-inner">
+          <div className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-white/[0.04] flex items-center justify-center text-xl shrink-0 shadow-2xs">
             {def.icon || "📦"}
           </div>
 
           <div className="min-w-0">
             <div className="flex items-center space-x-2">
-              <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+              <span className="text-xs font-bold text-slate-900 dark:text-zinc-100 truncate">
                 {def.packageName}
               </span>
-              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700 shrink-0">
+              <span className="text-[10px] font-mono text-slate-400 dark:text-zinc-500 shrink-0">
                 {def.packageVersion}
               </span>
-              {/* 接管深度全天候状态徽章 (方式 A) */}
+
+              {/* 接管深度全天候状态徽章 (单色发丝微胶囊，无粗框) */}
               {entry?.hookTier === "IatCompat" ? (
                 <span
                   title={entry?.hookTierReason || "检测到目标开启 ACG/代码段保护，已安全降级为 IAT 导入表接管"}
-                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40 shrink-0 flex items-center gap-1 animate-pulse"
+                  className="text-[9px] px-1.5 py-0.5 rounded-md font-mono font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0 flex items-center gap-1"
                 >
                   <span className="w-1 h-1 rounded-full bg-amber-500" />
                   IAT兼容
@@ -213,15 +216,15 @@ export const BundleRow: React.FC<Props> = ({
               ) : entry?.hookTier === "NativeBypass" ? (
                 <span
                   title={entry?.hookTierReason || "命中 Chromium 渲染沙盒或安全进程，Hook 安全旁路，原生代理参数直通"}
-                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/40 shrink-0 flex items-center gap-1"
+                  className="text-[9px] px-1.5 py-0.5 rounded-md font-mono font-medium bg-slate-100 dark:bg-white/[0.05] text-slate-600 dark:text-zinc-400 shrink-0 flex items-center gap-1"
                 >
-                  <span className="w-1 h-1 rounded-full bg-sky-500" />
+                  <span className="w-1 h-1 rounded-full bg-sky-400" />
                   参数直通
                 </span>
               ) : entry?.hookTier === "Failed" ? (
                 <span
                   title={entry?.hookTierReason || "注入或挂钩异常，请查看详情诊断"}
-                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/40 shrink-0 flex items-center gap-1"
+                  className="text-[9px] px-1.5 py-0.5 rounded-md font-mono font-medium bg-rose-500/10 text-rose-600 dark:text-rose-400 shrink-0 flex items-center gap-1"
                 >
                   <span className="w-1 h-1 rounded-full bg-rose-500" />
                   接管异常
@@ -229,7 +232,7 @@ export const BundleRow: React.FC<Props> = ({
               ) : entry?.hookTier === "FullInline" ? (
                 <span
                   title={entry.hookTierReason || "已取得深度内联 Hook 加载证据；应用接入及实际出口以新连接核验为准"}
-                  className="text-[9px] px-1.5 py-0.2 rounded font-mono font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 shrink-0 flex items-center gap-1"
+                  className="text-[9px] px-1.5 py-0.5 rounded-md font-mono font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0 flex items-center gap-1"
                 >
                   <span className="w-1 h-1 rounded-full bg-emerald-500" />
                   深度接管
@@ -237,82 +240,39 @@ export const BundleRow: React.FC<Props> = ({
               ) : (
                 <span
                   title={entry?.hookTierReason || "尚未取得 Hook 加载证据；应用层代理与 Hook 接管需分别核验"}
-                  className="text-[9px] px-1.5 py-0.2 rounded font-mono text-slate-500 dark:text-slate-400 border border-slate-300 dark:border-slate-700 shrink-0"
-                >Hook 未核实</span>
+                  className="text-[9px] px-1.5 py-0.5 rounded-md font-mono text-slate-400 dark:text-zinc-500 shrink-0"
+                >
+                  Hook 未核实
+                </span>
               )}
-              {/* 进阶防护策略微徽章 */}
+
+              {/* 进阶防护策略微徽章 (90% 单色微胶囊，去外框) */}
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   onOpenPolicy?.(instance);
                 }}
-                className="inline-flex items-center gap-1 cursor-pointer group shrink-0 flex-wrap"
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100/70 hover:bg-slate-200/80 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-slate-600 dark:text-zinc-400 text-[9px] font-mono transition cursor-pointer shrink-0"
                 title="点击配置高级网络防护策略"
               >
-                {isTransparentMode ? (
-                  <span
-                    className="text-[9px] px-1 py-0.2 rounded font-mono bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
-                    title="当前处于透明驱动接管模式（WinDivert/TUN），数据包由驱动截获并按 Fake-IP 路由；如需进程级纯净内存远端解析，可选用用户态接管"
-                  >
-                    透明接管 · Fake-IP
-                  </span>
-                ) : remoteDns ? (
-                  <span
-                    className="text-[9px] px-1 py-0.2 rounded font-mono bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30"
-                    title="进程级接管与远端 DNS 解析生效中"
-                  >
-                    出口远端解析
-                  </span>
-                ) : policy?.dnsMode === "fake_ip" ? (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30 group-hover:border-sky-500">
-                    Fake-IP
-                  </span>
-                ) : policy?.dnsMode === "system_native" ? (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-slate-500/15 text-slate-700 dark:text-slate-300 border border-slate-500/30 group-hover:border-slate-500">
-                    原生DNS
-                  </span>
-                ) : (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 group-hover:border-indigo-500">
-                    纯净DNS
-                  </span>
-                )}
-                {policy?.blockIpv6 !== false && (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/30">
-                    防IPv6
-                  </span>
-                )}
-                {remoteDns || isTransparentMode || policy?.blockUdp !== false ? (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/30">
-                    防QUIC
-                  </span>
-                ) : policy?.proxyUdp ? (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-teal-500/15 text-teal-700 dark:text-teal-300 border border-teal-500/30">
-                    UDP代理
-                  </span>
-                ) : null}
-                {policy?.bypassLan !== false && (
-                  <span className="text-[9px] px-1 py-0.2 rounded font-mono bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                    绕局域网
-                  </span>
-                )}
-                {policy?.disallowProxyArgs && (
-                  <span
-                    className="text-[9px] px-1 py-0.2 rounded font-mono bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30"
-                    title="禁用启动代理参数：排斥命令行 --proxy-server"
-                  >
-                    免参数
-                  </span>
-                )}
+                <Shield className="w-2.5 h-2.5 text-zinc-400" />
+                <span>{isTransparentMode ? "Fake-IP" : remoteDns ? "远端解析" : policy?.dnsMode === "fake_ip" ? "Fake-IP" : "纯净DNS"}</span>
+                {policy?.blockIpv6 !== false && <span className="opacity-75">· 防IPv6</span>}
+                {(remoteDns || isTransparentMode || policy?.blockUdp !== false) && <span className="opacity-75">· 防QUIC</span>}
+                {policy?.bypassLan !== false && <span className="opacity-75">· 绕局域网</span>}
+                {policy?.disallowProxyArgs && <span className="text-amber-500">· 免参数</span>}
               </button>
+
               {instance.isModified && (
-                <span className="text-[9px] px-1 py-0.2 rounded font-medium bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md font-mono bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
                   自定义
                 </span>
               )}
+
               {isObservedActive && (
-                <span className="text-[9px] px-1.5 py-0.2 rounded font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 shrink-0 flex items-center gap-1">
-                  <span className="w-1 h-1 rounded-full bg-emerald-500 animate-ping" />
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 shrink-0 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   活跃分流中
                 </span>
               )}
@@ -376,15 +336,15 @@ export const BundleRow: React.FC<Props> = ({
 
         {compact && <button type="button" onClick={() => onOpenDetail(instance)} className="shrink-0 text-xs text-indigo-600 dark:text-indigo-400 focus-visible:ring-2 focus-visible:ring-indigo-500">详情</button>}
 
-        {/* 3. 分流模式 */}
+        {/* 3. 分流模式 (无框微胶囊) */}
         <div className="shrink-0 hidden sm:block">
           <span
-            className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+            className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
               isRequested
                 ? def.mode === "sandbox"
-                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
-                  : "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/30"
-                : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700"
+                  ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                  : "bg-purple-500/10 text-purple-700 dark:text-purple-300"
+                : "bg-slate-100 dark:bg-white/[0.05] text-slate-500 dark:text-zinc-400"
             }`}
           >
             {def.mode === "sandbox" ? "🌱 沙盒" : "🔒 强锁"}
@@ -394,14 +354,14 @@ export const BundleRow: React.FC<Props> = ({
 
       {/* 右侧区域：节点药丸 + 启动按钮 + 更多操作 */}
       <div className="flex items-center space-x-2.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-        {/* 4. 节点按钮 (弹窗形式呼出出口选择) */}
+        {/* 4. 节点按钮 (弹窗形式呼出出口选择，发丝微槽) */}
         <button
           type="button"
           onClick={() => onOpenSelectExit(instance)}
-          className={`h-7 px-3 rounded-lg text-xs font-mono font-bold border transition flex items-center space-x-1.5 cursor-pointer max-w-[170px] truncate ${
+          className={`h-7 px-3 rounded-lg text-xs font-mono font-medium transition flex items-center space-x-1.5 cursor-pointer max-w-[170px] truncate shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] ${
             isEnabled
-              ? "bg-emerald-50/80 hover:bg-emerald-100/80 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/60 border-emerald-500/40 text-emerald-700 dark:text-emerald-300 shadow-2xs"
-              : "bg-slate-50 hover:bg-amber-50 dark:bg-slate-800/80 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-amber-400 text-slate-500 dark:text-slate-400"
+              ? "bg-emerald-500/10 hover:bg-emerald-500/15 dark:bg-emerald-500/15 dark:hover:bg-emerald-500/25 text-emerald-700 dark:text-emerald-300 shadow-2xs"
+              : "bg-slate-100/80 hover:bg-slate-200/80 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-slate-600 dark:text-zinc-400"
           }`}
           title={independent || unavailable ? "选择此业务包的外部代理" : "点击更换该业务包的出站节点"}
         >
@@ -410,16 +370,16 @@ export const BundleRow: React.FC<Props> = ({
           <span className="text-[10px] text-slate-400 shrink-0">▾</span>
         </button>
 
-        {/* 5. 启动按钮 */}
+        {/* 5. 启动按钮 (Linear 物理反光高光白底主按钮) */}
         {platform.appProxy && (
           <button
             type="button"
             disabled={!canLaunch}
             onClick={onLaunch}
-            className="h-7 px-3 rounded-lg text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition flex items-center space-x-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            className="h-7 px-3 rounded-lg text-xs font-semibold bg-zinc-100 hover:bg-white text-zinc-950 shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] transition flex items-center space-x-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
             title={showProcessEditionDirectWarning ? "该业务包已禁用代理参数，在纯应用层模式下启动将直接直连；建议在接入方式中切换至用户态 Hook" : "通过 ProcWeaver 拉起应用并自动注入代理环境"}
           >
-            <Play className="w-3 h-3 fill-current" />
+            <Play className="w-3 h-3 fill-current text-zinc-950" />
             <span>启动</span>
           </button>
         )}
@@ -428,19 +388,19 @@ export const BundleRow: React.FC<Props> = ({
         <button
           type="button"
           onClick={handleMoreButtonClick}
-          className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+          className="h-7 w-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition cursor-pointer"
           title="更多管理操作"
         >
           <MoreHorizontal className="w-4 h-4" />
         </button>
       </div>
 
-      {/* 悬浮右键上下文菜单 */}
+      {/* 悬浮右键上下文菜单 (黑曜石磨砂材质) */}
       {contextMenuPos && (
         <div
           ref={menuRef}
           style={{ top: contextMenuPos.y, left: contextMenuPos.x, maxHeight: "calc(100vh - 20px)", overflowY: "auto" }}
-          className="fixed z-50 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl py-1.5 text-xs text-slate-700 dark:text-slate-300 animate-in fade-in zoom-in-95 duration-100 font-medium"
+          className="fixed z-50 w-52 bg-white/95 dark:bg-[#0d1015]/95 backdrop-blur-2xl border border-slate-200 dark:border-white/10 rounded-2xl shadow-[-20px_20px_50px_rgba(0,0,0,0.85)] py-1.5 text-xs text-slate-700 dark:text-zinc-300 animate-in fade-in zoom-in-95 duration-100 font-medium"
         >
           <button
             type="button"
@@ -448,7 +408,7 @@ export const BundleRow: React.FC<Props> = ({
               setContextMenuPos(null);
               onOpenDetail(instance);
             }}
-            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer font-bold text-slate-900 dark:text-white"
+            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer font-bold text-slate-900 dark:text-white"
           >
             <Activity className="w-3.5 h-3.5 text-emerald-500" />
             <span>查看运行详情与核验</span>
@@ -460,9 +420,9 @@ export const BundleRow: React.FC<Props> = ({
               setContextMenuPos(null);
               onOpenSelectExit(instance);
             }}
-            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer"
           >
-            <Network className="w-3.5 h-3.5 text-indigo-500" />
+            <Network className="w-3.5 h-3.5 text-sky-400" />
             <span>选择/更换出口节点</span>
           </button>
 
@@ -473,18 +433,18 @@ export const BundleRow: React.FC<Props> = ({
                 setContextMenuPos(null);
                 onShortcuts();
               }}
-              className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer"
             >
-              <ExternalLink className="w-3.5 h-3.5 text-purple-500" />
+              <ExternalLink className="w-3.5 h-3.5 text-purple-400" />
               <span>管理桌面快捷方式</span>
             </button>
           )}
 
-          <div className="h-px bg-slate-200 dark:bg-slate-800 my-1" />
+          <div className="h-px bg-slate-200 dark:bg-white/[0.08] my-1" />
 
           {/* 优先级调整 */}
           <div className="flex items-center justify-between px-3 py-1">
-            <span className="text-[11px] text-slate-400">优先级排序</span>
+            <span className="text-[11px] text-slate-400 dark:text-zinc-500">优先级排序</span>
             <div className="flex items-center space-x-1">
               <button
                 type="button"
@@ -493,7 +453,7 @@ export const BundleRow: React.FC<Props> = ({
                   setContextMenuPos(null);
                   onMoveUp?.();
                 }}
-                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-white/[0.08] disabled:opacity-30 cursor-pointer"
                 title="上移"
               >
                 <ArrowUp className="w-3 h-3" />
@@ -505,7 +465,7 @@ export const BundleRow: React.FC<Props> = ({
                   setContextMenuPos(null);
                   onMoveDown?.();
                 }}
-                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
+                className="p-1 rounded hover:bg-slate-100 dark:hover:bg-white/[0.08] disabled:opacity-30 cursor-pointer"
                 title="下移"
               >
                 <ArrowDown className="w-3 h-3" />
@@ -519,7 +479,7 @@ export const BundleRow: React.FC<Props> = ({
               setContextMenuPos(null);
               onOpenPolicy?.(instance);
             }}
-            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer text-indigo-600 dark:text-indigo-400"
+            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer text-indigo-600 dark:text-indigo-400"
           >
             <Shield className="w-3.5 h-3.5" />
             <span>接管与防护策略</span>
@@ -531,9 +491,9 @@ export const BundleRow: React.FC<Props> = ({
               setContextMenuPos(null);
               onEdit(instance);
             }}
-            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer"
           >
-            <Pencil className="w-3.5 h-3.5 text-slate-500" />
+            <Pencil className="w-3.5 h-3.5 text-slate-500 dark:text-zinc-400" />
             <span>编辑规则定义</span>
           </button>
 
@@ -543,13 +503,13 @@ export const BundleRow: React.FC<Props> = ({
               setContextMenuPos(null);
               onExport(instance);
             }}
-            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer text-indigo-600 dark:text-indigo-400"
+            className="w-full px-3 py-1.5 text-left flex items-center space-x-2 hover:bg-slate-100 dark:hover:bg-white/[0.06] cursor-pointer text-sky-600 dark:text-sky-400"
           >
             <Upload className="w-3.5 h-3.5" />
             <span>导出纯净脱敏包</span>
           </button>
 
-          <div className="h-px bg-slate-200 dark:bg-slate-800 my-1" />
+          <div className="h-px bg-slate-200 dark:bg-white/[0.08] my-1" />
 
           <button
             type="button"

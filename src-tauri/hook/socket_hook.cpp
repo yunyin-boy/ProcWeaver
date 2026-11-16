@@ -193,8 +193,13 @@ static bool ShouldBypass(const struct sockaddr *name) {
         uint16_t port = ntohs(sin->sin_port);
 
         // 127.0.0.1 (回环地址)
-        if (ip == 0x7F000001 || (ip >> 24) == 127
-            || (!g_config.policy.remote_dns_required && (port == g_config.bundle_port || port == g_config.dns_port))) {
+        if (ip == 0x7F000001 || (ip >> 24) == 127) {
+            // 若连接的是 ProcWeaver 系统代理端口，绝不可旁路绕过，须改投到该规则专属 Mixed 入口
+            bool is_sysproxy_port = (g_config.system_proxy_ports.find(port) != g_config.system_proxy_ports.end())
+                && port != g_config.bundle_port;
+            if (is_sysproxy_port) {
+                return false;
+            }
             return true;
         }
 
@@ -238,12 +243,18 @@ static bool ShouldBypass(const struct sockaddr *name) {
         return false;
     } else if (name->sa_family == AF_INET6) {
         const sockaddr_in6* sin6 = (const sockaddr_in6*)name;
+        uint16_t port = ntohs(sin6->sin6_port);
         const uint8_t* b = (const uint8_t*)&sin6->sin6_addr;
         bool is_loopback = true;
         for (int i = 0; i < 15; i++) {
             if (b[i] != 0) { is_loopback = false; break; }
         }
         if (is_loopback && b[15] == 1) {
+            bool is_sysproxy_port = (g_config.system_proxy_ports.find(port) != g_config.system_proxy_ports.end())
+                && port != g_config.bundle_port;
+            if (is_sysproxy_port) {
+                return false; // IPv6 回环代理请求同样不旁路，改投至专属出口！
+            }
             return true;
         }
         return false;
@@ -252,18 +263,29 @@ static bool ShouldBypass(const struct sockaddr *name) {
 }
 
 static int RedirectToBundle(SOCKET s, const struct sockaddr *name, int namelen) {
-    sockaddr_in bundle_addr;
-    memset(&bundle_addr, 0, sizeof(bundle_addr));
-    bundle_addr.sin_family = AF_INET;
-    bundle_addr.sin_port = htons(g_config.bundle_port);
-    bundle_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
+    sockaddr_storage bundle_storage;
+    memset(&bundle_storage, 0, sizeof(bundle_storage));
+    int addr_len = sizeof(sockaddr_in);
+    if (name && name->sa_family == AF_INET6) {
+        sockaddr_in6* sin6 = (sockaddr_in6*)&bundle_storage;
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(g_config.bundle_port);
+        sin6->sin6_addr.s6_addr[15] = 1; // [::1]:bundle_port
+        addr_len = sizeof(sockaddr_in6);
+    } else {
+        sockaddr_in* sin4 = (sockaddr_in*)&bundle_storage;
+        sin4->sin_family = AF_INET;
+        sin4->sin_port = htons(g_config.bundle_port);
+        sin4->sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1:bundle_port
+        addr_len = sizeof(sockaddr_in);
+    }
 
-    // 1. 发起与本机 127.0.0.1:bundle_port 的底层连接
-    int ret = TrueConnect(s, (sockaddr*)&bundle_addr, sizeof(bundle_addr));
+    // 1. 发起与本机专属端口的底层连接
+    int ret = TrueConnect(s, (sockaddr*)&bundle_storage, addr_len);
     if (ret != 0) {
         int err = WSAGetLastError();
         if (err == WSAEWOULDBLOCK || err == WSAEINPROGRESS) {
-            // 对非阻塞套接字 (Chromium / Node.js)，使用 select 等待其与 127.0.0.1:bundle_port 完成三次握手
+            // 对非阻塞套接字 (Chromium / Node.js)，使用 select 等待其与专属端口完成三次握手
             fd_set wfds, efds;
             FD_ZERO(&wfds); FD_ZERO(&efds);
             FD_SET(s, &wfds); FD_SET(s, &efds);
@@ -285,7 +307,29 @@ static int RedirectToBundle(SOCKET s, const struct sockaddr *name, int namelen) 
         }
     }
 
-    // 2. 执行透明 SOCKS5 握手 (基于 select 超时驱动，无论阻塞还是非阻塞套接字均能原子完成)
+    // 2. 检查是否为发往公共系统代理的连接（IPv4 或 IPv6 回环）：若是，连接专属 Mixed 入口后直接返回，
+    // 保留客户端后续原生的 HTTP CONNECT / SOCKS 请求，绝不再套一层 SOCKS 握手！
+    if (name) {
+        if (name->sa_family == AF_INET) {
+            const sockaddr_in* sin = (const sockaddr_in*)name;
+            uint32_t ip = ntohl(sin->sin_addr.s_addr);
+            if ((ip == 0x7F000001 || (ip >> 24) == 127) && ntohs(sin->sin_port) != g_config.bundle_port) {
+                return 0;
+            }
+        } else if (name->sa_family == AF_INET6) {
+            const sockaddr_in6* sin6 = (const sockaddr_in6*)name;
+            const uint8_t* b = (const uint8_t*)&sin6->sin6_addr;
+            bool is_loopback = true;
+            for (int i = 0; i < 15; i++) {
+                if (b[i] != 0) { is_loopback = false; break; }
+            }
+            if (is_loopback && b[15] == 1 && ntohs(sin6->sin6_port) != g_config.bundle_port) {
+                return 0;
+            }
+        }
+    }
+
+    // 3. 透明外网连接：执行 SOCKS5 握手 (基于 select 超时驱动，无论阻塞还是非阻塞套接字均能原子完成)
     bool ok = PerformSocks5Handshake(s, name, namelen);
     if (!ok) {
         WSASetLastError(WSAECONNREFUSED);
@@ -343,7 +387,16 @@ int WSAAPI HookConnect(
     int namelen
 ) {
     ReentryGuard guard;
-    if (guard.is_reentrant || !IsHookEnabled() || g_config.bundle_port == 0) {
+    if (guard.is_reentrant || !IsHookEnabled()) {
+        return TrueConnect(s, name, namelen);
+    }
+
+    if (g_config.reject_all) {
+        WSASetLastError(WSAECONNREFUSED);
+        return SOCKET_ERROR;
+    }
+
+    if (g_config.bundle_port == 0) {
         return TrueConnect(s, name, namelen);
     }
 
@@ -377,7 +430,16 @@ int WSAAPI HookWSAConnect(
     LPQOS lpGQOS
 ) {
     ReentryGuard guard;
-    if (guard.is_reentrant || !IsHookEnabled() || g_config.bundle_port == 0) {
+    if (guard.is_reentrant || !IsHookEnabled()) {
+        return TrueWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
+    }
+
+    if (g_config.reject_all) {
+        WSASetLastError(WSAECONNREFUSED);
+        return SOCKET_ERROR;
+    }
+
+    if (g_config.bundle_port == 0) {
         return TrueWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
 
@@ -410,6 +472,10 @@ int WSAAPI HookSendTo(
 ) {
     ReentryGuard guard;
     if (guard.is_reentrant) return TrueSendTo(s, buf, len, flags, to, tolen);
+    if (g_config.reject_all) {
+        WSASetLastError(WSAECONNRESET);
+        return SOCKET_ERROR;
+    }
     if (ShouldBlockUdp(to)) {
         // 快速拒绝 UDP 探测或非代理 UDP，使客户端/浏览器 0 延迟秒切 TCP HTTP/2
         WSASetLastError(WSAECONNRESET);

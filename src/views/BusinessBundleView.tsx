@@ -403,7 +403,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans p-4 md:p-6 select-none transition-colors duration-200">
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-[#08090a] text-slate-900 dark:text-zinc-100 font-sans p-4 md:p-6 select-none transition-colors duration-200">
       <div className="max-w-6xl w-full mx-auto space-y-4">
         {(bundleState.error || bundleState.readError || bundleState.pending) && (
           <div role={bundleState.pending ? "status" : "alert"} className="p-3 rounded-xl border border-amber-400/50 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 text-xs flex flex-wrap items-center gap-2">
@@ -428,8 +428,8 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
           </div>
         )}
 
-        {/* 顶部全局状态与控制栏 (单行高度仅 ~42px) */}
-        {!processOnly && <header className="px-3.5 py-2 rounded-2xl bg-white dark:bg-slate-900/90 border border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2.5 text-xs shrink-0 shadow-2xs relative z-10 backdrop-blur-md transition-colors">
+        {/* 顶部全局状态与控制栏 (去框一体化平铺工具带, 极致纯净) */}
+        {!processOnly && <header className="px-1 py-1 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0 relative z-10 transition-colors">
           {/* 左侧：全局分流总开关 + 底层接管模式下拉 + 核心状态 */}
           <div className="flex items-center space-x-3">
             {/* 业务包分流总开关 */}
@@ -440,7 +440,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               aria-checked={bundleState.view?.config.bundlesEnabled !== false}
               disabled={!bundleState.view || bundleState.pending || Boolean(bundleState.readError)}
               onClick={() => void bundleController.setMasterEnabled(bundleState.view?.config.bundlesEnabled === false)}
-              className="flex items-center space-x-2.5 px-1.5 py-1 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer select-none text-xs font-bold text-slate-800 dark:text-slate-200 disabled:opacity-50 transition"
+              className="flex items-center space-x-2 px-2 py-1 rounded-xl hover:bg-slate-200/60 dark:hover:bg-white/[0.06] cursor-pointer select-none text-xs font-bold text-slate-800 dark:text-zinc-200 disabled:opacity-50 transition"
               title={bundleState.view?.config.bundlesEnabled === false ? "点击开启业务包分流" : "点击暂停业务包分流"}
             >
               {/* 1. 胶囊开关 */}
@@ -448,7 +448,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                 aria-hidden="true"
                 className={`relative inline-flex items-center w-9 h-5 rounded-full shrink-0 transition-colors duration-200 ${
                   bundleState.view?.config.bundlesEnabled === false
-                    ? "bg-slate-300 dark:bg-slate-600"
+                    ? "bg-slate-300 dark:bg-zinc-700"
                     : "bg-emerald-500 shadow-sm"
                 }`}
               >
@@ -467,18 +467,26 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   bundleState.masterPending
                     ? "bg-amber-500 animate-pulse"
                     : bundleState.view?.config.bundlesEnabled === false
-                    ? "bg-slate-400"
+                    ? "bg-zinc-500"
                     : "bg-emerald-500 ring-2 ring-emerald-500/20"
                 }`}
               />
 
-              {/* 3. 状态说明文字 */}
+              {/* 3. 状态说明文字与优雅待命微胶囊 */}
               <span className="text-[11px] sm:text-xs">
                 核心业务包 · {bundleState.masterPending ? "切换中" : bundleState.view?.config.bundlesEnabled === false ? "已暂停" : "已开启"}
               </span>
+              {bundleState.view?.config.bundlesEnabled === false && (
+                <span
+                  className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 inline-flex items-center gap-1 cursor-help"
+                  title="业务包分流当前处于暂停状态。单包设置已保留，应用遵循本地直连；已有 Hook、代理启动参数或 Fake-IP 缓存的应用需正常退出并重启"
+                >
+                  <span>⏸️ 直连放行</span>
+                </span>
+              )}
             </button>
 
-            <span className="h-3.5 w-px bg-slate-200 dark:bg-slate-700 hidden sm:inline-block" />
+            <span className="h-3.5 w-px bg-slate-200 dark:bg-white/[0.08] hidden sm:inline-block" />
 
             {/* 全局底层接管模式下拉选择器 (WinDivert / TUN / 智能双模式 / 纯应用层 / 用户态强接管) */}
             {platform.os === "windows" && (
@@ -488,12 +496,12 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               />
             )}
 
-            {/* 模式说明信息按钮 (点击查看模式架构说明与 WinDivert 优缺点) */}
+            {/* 模式说明信息按钮 */}
             {platform.os === "windows" && (
               <button
                 type="button"
                 onClick={() => setIsModeGuideOpen(true)}
-                className="h-7 w-7 rounded-lg bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 flex items-center justify-center transition shadow-2xs cursor-pointer shrink-0"
+                className="h-7 w-7 rounded-lg bg-slate-100 hover:bg-slate-200/80 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-slate-500 hover:text-slate-900 dark:text-zinc-400 dark:hover:text-white flex items-center justify-center transition shadow-2xs cursor-pointer shrink-0"
                 title="查看各底层接管模式说明及 WinDivert 优缺点"
                 aria-label="模式说明"
               >
@@ -502,27 +510,25 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
             )}
 
             {/* 核心正常状态小绿点 */}
-            <div className="hidden sm:flex items-center space-x-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-              <span className={`w-2 h-2 rounded-full ${bundleState.view?.running && !bundleState.readError ? "bg-emerald-500" : "bg-slate-400"}`} />
+            <div className="hidden sm:flex items-center space-x-1.5 text-[11px] text-slate-500 dark:text-zinc-400">
+              <span className={`w-2 h-2 rounded-full ${bundleState.view?.running && !bundleState.readError ? "bg-emerald-500" : "bg-zinc-500"}`} />
               <span>{bundleState.readError ? "核心异常" : bundleState.view?.running ? "核心正常" : "核心未运行"}</span>
             </div>
           </div>
 
-          {/* 右侧：DNS 护航开关 + 冲突体检 + 进程跟踪说明悬停气泡 */}
+          {/* 右侧：DNS 护航开关 + 冲突体检 + 进程跟踪说明悬停气泡 (去厚框幽灵微胶囊) */}
           <div className="flex items-center space-x-2">
             {/* DNS 护航 */}
             <button
               type="button"
               onClick={handleToggleDns}
               disabled={!platform.dnsGuard || isDnsPending}
-              className={`px-2.5 py-1 rounded-xl border text-xs font-medium flex items-center space-x-1.5 shadow-2xs transition ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition ${
                 isDnsPending ? "opacity-60 cursor-wait" : "cursor-pointer"
               } ${
                 dnsGuardEnabled
-                  ? dnsGuardOrigin === "bundle"
-                    ? "bg-emerald-50/90 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-400 dark:border-emerald-600/70 shadow-emerald-500/10"
-                    : "bg-slate-50 dark:bg-slate-800/80 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700/60"
-                  : "bg-slate-50 dark:bg-slate-800/80 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "bg-slate-100/80 hover:bg-slate-200/80 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-slate-600 dark:text-zinc-400"
               }`}
               title={
                 !platform.dnsGuard
@@ -535,15 +541,13 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               }
             >
               <span>🛡️</span>
-              <span>系统DNS护航: <strong className={
+              <span>系统DNS: <strong className={
                 dnsGuardEnabled
-                  ? dnsGuardOrigin === "bundle"
-                    ? "text-emerald-700 dark:text-emerald-300 font-bold"
-                    : "text-emerald-600 dark:text-emerald-400 font-bold"
-                  : "text-slate-700 dark:text-slate-300"
+                  ? "text-emerald-600 dark:text-emerald-400 font-bold"
+                  : "text-slate-700 dark:text-zinc-300"
               }>
                 {!platform.dnsGuard
-                  ? "暂不支持"
+                  ? "不支持"
                   : isDnsPending
                   ? "切换中..."
                   : dnsGuardEnabled
@@ -558,27 +562,27 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
             <button
               type="button"
               onClick={handleConflictCheck}
-              className="px-2.5 py-1 rounded-xl bg-slate-50 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 cursor-pointer transition text-xs font-medium flex items-center space-x-1 shadow-2xs"
+              className="px-2.5 py-1 rounded-lg bg-slate-100/80 dark:bg-white/[0.04] hover:bg-slate-200/80 dark:hover:bg-white/[0.08] text-slate-700 dark:text-zinc-300 cursor-pointer transition text-xs font-medium flex items-center space-x-1.5"
             >
               <span>🔍</span>
               <span>冲突体检</span>
             </button>
 
-            {/* 进程跟踪说明悬停气泡 (替代原大黄条) */}
+            {/* 进程跟踪说明悬停气泡 */}
             <div className="relative group">
               <button
                 type="button"
                 className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition cursor-help ${
                   bundleState.view?.running && Boolean(bundleState.view.tracking.warnings?.length)
                     ? "text-amber-500 hover:bg-amber-500/10"
-                    : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    : "text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/10"
                 }`}
                 aria-label="进程跟踪说明"
               >
                 {bundleState.view?.running && Boolean(bundleState.view.tracking.warnings?.length) ? "⚠️" : "ⓘ"}
               </button>
-              <div className="hidden group-hover:block absolute right-0 top-7 z-50 w-72 bg-slate-800 dark:bg-slate-900 text-white text-[11px] p-2.5 rounded-xl shadow-xl leading-relaxed border border-slate-700 dark:border-slate-800 pointer-events-none">
-                <span className="font-bold text-amber-300 block mb-1">
+              <div className="hidden group-hover:block absolute right-0 top-7 z-50 w-72 bg-white/95 dark:bg-[#0d1015]/95 backdrop-blur-2xl text-slate-800 dark:text-zinc-200 text-[11px] p-2.5 rounded-xl shadow-[0_20px_40px_-15px_rgba(0,0,0,0.8)] leading-relaxed border border-slate-200 dark:border-white/10 pointer-events-none">
+                <span className="font-bold text-amber-500 block mb-1">
                   {bundleState.view?.running && Boolean(bundleState.view.tracking.warnings?.length)
                     ? "进程跟踪提示："
                     : "进程跟踪说明："}
@@ -590,72 +594,65 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
             </div>
           </div>
         </header>}
-        {!processOnly && bundleState.view?.config.bundlesEnabled === false && (
-          <p className="text-xs text-amber-600 dark:text-amber-400 px-1">
-            业务包规则与新接管已撤销，单包设置保留。应用遵循自身及系统网络设置；已有 Hook、代理启动参数或 Fake-IP 缓存的应用，请正常退出并重启。
-          </p>
-        )}
 
-        {/* 主导航切换器与动作区 */}
-        <nav className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
-          <div className="flex flex-wrap items-center gap-2">
+        {/* 主导航切换器与动作区 (Linear 标志性无缝下沉胶囊分段条 + 物理反光高光主按钮) */}
+        <nav className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-white/[0.06] pb-3">
+          <div className="flex items-center p-0.5 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] shrink-0">
             <button
               type="button"
               onClick={() => setActiveTab("installed")}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-2 cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-2 cursor-pointer select-none ${
                 activeTab === "installed"
-                  ? "bg-indigo-600 text-white shadow-md"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-900"
+                  ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
               <span>📦 已装载套件</span>
-              <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
-                activeTab === "installed" ? "bg-white/20 text-white" : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400"
-              }`}>
+              <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-[10px] font-mono font-bold">
                 {instances.length}
               </span>
             </button>
+
             <button
               type="button"
               onClick={() => {
                 setActiveTab("presets");
               }}
-              className={`px-4 py-2 rounded-xl text-xs font-medium transition flex items-center space-x-2 cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-2 cursor-pointer select-none ${
                 activeTab === "presets"
-                  ? "bg-indigo-600 text-white shadow-md font-bold"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-900"
+                  ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
               <span>🌐 仓库中心</span>
-              <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
-                activeTab === "presets" ? "bg-white/20 text-white font-bold" : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400"
-              }`}>
+              <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-[10px] font-mono font-bold">
                 {loadingRepo ? "..." : repoCount}
               </span>
             </button>
+
             <button
               type="button"
               onClick={() => setActiveTab("studio")}
-              className={`px-4 py-2 rounded-xl text-xs font-medium transition flex items-center space-x-2 cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-2 cursor-pointer select-none ${
                 activeTab === "studio"
-                  ? "bg-indigo-600 text-white shadow-md font-bold"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-900"
+                  ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
-              <Wrench className="w-3.5 h-3.5" />
+              <Wrench className="w-3.5 h-3.5 text-amber-400" />
               <span>自定义工坊</span>
             </button>
           </div>
 
-          {/* 右侧动作区：导入向导 */}
+          {/* 右侧动作区：导入向导 (Linear 物理反光高光白底主按钮) */}
           <div className="flex items-center space-x-2 text-xs">
             <button
               type="button"
               onClick={() => setIsImportOpen(true)}
-              className="px-3.5 py-1.5 rounded-xl font-bold bg-gradient-to-r from-indigo-500 to-purple-600 text-white hover:opacity-95 shadow-md flex items-center space-x-1.5 cursor-pointer transition"
+              className="px-3.5 py-1.5 rounded-xl font-semibold bg-zinc-100 hover:bg-white text-zinc-950 shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] flex items-center space-x-1.5 cursor-pointer transition select-none active:scale-[0.98]"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>导入规则包 (.pwpack.json)</span>
+              <Download className="w-3.5 h-3.5 text-zinc-950" />
+              <span>导入规则包 (.pwpack)</span>
             </button>
           </div>
         </nav>
@@ -694,9 +691,9 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   </div>
                 </div>
 
-                {/* 列表项 */}
+                {/* 列表项 (统一黑曜石发丝底座, 内部去卡片化发丝平铺) */}
                 {search && !instances.some(instance => `${instance.definition.packageName} ${bundleExes(instance.definition, os).join(" ")}`.toLowerCase().includes(search.toLowerCase())) && <p role="status" className="py-8 text-center text-sm text-slate-500">没有匹配的业务包，请调整搜索条件。</p>}
-                <div className="space-y-2">
+                <div className="rounded-2xl bg-white/70 dark:bg-[#121316]/50 border border-slate-200/80 dark:border-white/[0.08] overflow-hidden shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
                   {instances.map((instance, idx) => (!search || `${instance.definition.packageName} ${bundleExes(instance.definition, os).join(" ")}`.toLowerCase().includes(search.toLowerCase())) && (
                     <BundleRow
                       key={instance.instanceId}
@@ -708,6 +705,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                       trafficMode={currentTrafficMode}
                       unavailable={processOnly && instance.backend !== "external"}
                       compact={processOnly}
+                      masterEnabled={bundleState.view?.config.bundlesEnabled !== false}
                       onLaunch={() => void bundleTools.launch({ instanceId: instance.instanceId })}
                       onShortcuts={() => void bundleTools.shortcuts(instance.instanceId)}
                       onToggleSwitch={handleToggleSwitch}
@@ -724,6 +722,43 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                     />
                   ))}
                 </div>
+
+                {/* 底部探索与扩展微卡 (填补空洞, Raycast 灵动发现槽) */}
+                {instances.length > 0 && instances.length <= 4 && (
+                  <div className="mt-3 p-3.5 rounded-2xl bg-white/40 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.05] flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 dark:bg-white/[0.04] text-indigo-600 dark:text-zinc-400 flex items-center justify-center shrink-0">
+                        <Sparkles className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="text-[11.5px] text-slate-600 dark:text-zinc-400">
+                        <span>发现更多开箱即用规则包：前往</span>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("presets")}
+                          className="mx-1 text-indigo-600 dark:text-zinc-200 font-semibold hover:underline cursor-pointer"
+                        >
+                          【仓库中心】
+                        </button>
+                        <span>一键装载 Telegram、Steam、Epic、流媒体规则，或使用</span>
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab("studio")}
+                          className="mx-1 text-indigo-600 dark:text-zinc-200 font-semibold hover:underline cursor-pointer"
+                        >
+                          【自定义工坊】
+                        </button>
+                        <span>按进程自由分流。</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("presets")}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-slate-700 dark:text-zinc-300 transition cursor-pointer"
+                    >
+                      前往探索 →
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </main>

@@ -37,7 +37,7 @@ pub struct TrayMenuPayload {
     pub tun_enabled: bool,
     #[serde(rename = "autoRun", default)]
     pub auto_run: bool,
-    #[serde(rename = "processEnabled", default = "default_true")]
+    #[serde(rename = "processEnabled", default)]
     pub process_enabled: bool,
     #[serde(rename = "activeNode")]
     pub active_node: Option<String>,
@@ -95,18 +95,7 @@ pub fn rebuild_tray_in_place(app: &tauri::AppHandle) {
                     format_speed(payload.up_speed.unwrap_or(0.0))
                 );
                 let _ = tray.set_tooltip(Some(tooltip));
-
-                let style = crate::commands::settings::get_general_settings()
-                    .map(|s| s.tray_menu_style)
-                    .unwrap_or_else(|_| "modern".into());
-
-                if style == "classic" {
-                    if let Ok(new_menu) = build_tray_menu(app, payload) {
-                        let _ = tray.set_menu(Some(new_menu));
-                    }
-                } else {
-                    let _ = tray.set_menu(None::<Menu<tauri::Wry>>);
-                }
+                let _ = tray.set_menu(None::<Menu<tauri::Wry>>);
             }
         }
     }
@@ -703,17 +692,57 @@ fn tray_tooltip(payload: &TrayMenuPayload) -> String {
 
 #[tauri::command]
 pub fn update_tray_traffic(app: tauri::AppHandle, down_speed: f64, up_speed: f64) -> Result<(), String> {
-    let tooltip = {
+    let (tooltip, should_probe) = {
         let mut guard = CURRENT_TRAY_PAYLOAD.lock().map_err(|_| "托盘状态暂不可用")?;
-        let payload = guard.as_mut().ok_or("托盘尚未初始化")?;
+        if guard.is_none() {
+            *guard = Some(TrayMenuPayload {
+                running: false,
+                mode: "rule".into(),
+                sys_proxy_enabled: false,
+                sys_proxy_state: "unknown".into(),
+                tun_enabled: false,
+                auto_run: false,
+                process_enabled: true,
+                active_node: None,
+                active_node_delay: None,
+                down_speed: None,
+                up_speed: None,
+                groups: vec![],
+                direction: None,
+            });
+        }
+        let payload = guard.as_mut().unwrap();
         payload.down_speed = Some(if down_speed.is_finite() { down_speed.max(0.0) } else { 0.0 });
         payload.up_speed = Some(if up_speed.is_finite() { up_speed.max(0.0) } else { 0.0 });
-        tray_tooltip(payload)
+        let need_probe = !payload.running || payload.active_node.is_none();
+        (tray_tooltip(payload), need_probe)
     };
     if let Some(tray) = app.tray_by_id("procweaver") { let _ = tray.set_tooltip(Some(tooltip)); }
     if let Some(window) = app.get_webview_window("tray-menu") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.emit("tray-traffic-updated", serde_json::json!({"downSpeed": down_speed, "upSpeed": up_speed}));
+        }
+    }
+    if should_probe {
+        static LAST_PROBE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        let mut trigger = false;
+        if let Ok(mut lp) = LAST_PROBE.lock() {
+            let now = std::time::Instant::now();
+            if let Some(last) = *lp {
+                if now.duration_since(last).as_secs() >= 3 {
+                    *lp = Some(now);
+                    trigger = true;
+                }
+            } else {
+                *lp = Some(now);
+                trigger = true;
+            }
+        }
+        if trigger {
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = get_tray_payload(app_handle).await;
+            });
         }
     }
     Ok(())
@@ -732,24 +761,23 @@ pub fn update_tray_menu(
         if let Some(previous) = guard.as_ref() {
             payload.down_speed = payload.down_speed.or(previous.down_speed);
             payload.up_speed = payload.up_speed.or(previous.up_speed);
+            if payload.active_node.is_none() {
+                payload.active_node = previous.active_node.clone();
+            }
+            if payload.active_node_delay.is_none() {
+                payload.active_node_delay = previous.active_node_delay;
+            }
+            if payload.groups.is_empty() && !previous.groups.is_empty() {
+                payload.groups = previous.groups.clone();
+            }
         }
         *guard = Some(payload.clone());
     }
     let _ = app.emit("tray-payload-updated", payload.clone());
 
-    let style = crate::commands::settings::get_general_settings()
-        .map(|s| s.tray_menu_style)
-        .unwrap_or_else(|_| "modern".into());
-
     if let Some(tray) = app.tray_by_id("procweaver") {
         let _ = tray.set_tooltip(Some(tray_tooltip(&payload)));
-        if style == "classic" {
-            if let Ok(new_menu) = build_tray_menu(&app, &payload) {
-                let _ = tray.set_menu(Some(new_menu));
-            }
-        } else {
-            let _ = tray.set_menu(None::<Menu<tauri::Wry>>);
-        }
+        let _ = tray.set_menu(None::<Menu<tauri::Wry>>);
     }
     Ok(())
 }
@@ -961,7 +989,7 @@ pub async fn get_tray_payload(app: tauri::AppHandle) -> Option<TrayMenuPayload> 
         sys_proxy_state: "unknown".into(),
         tun_enabled: false,
         auto_run: false,
-        process_enabled: true,
+        process_enabled: false,
         active_node: None,
         active_node_delay: None,
         down_speed: None,
@@ -1054,9 +1082,6 @@ pub fn show_tray_menu(app: tauri::AppHandle) {
 
 pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let tray_icon = tauri::include_image!("icons/32x32.png");
-    let style = crate::commands::settings::get_general_settings()
-        .map(|s| s.tray_menu_style)
-        .unwrap_or_else(|_| "modern".into());
 
     let mut builder = TrayIconBuilder::with_id("procweaver")
         .icon(tray_icon)
@@ -1065,11 +1090,6 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     if !crate::function_mode::core_features_enabled() {
         builder = builder.menu(&process_menu(app.handle())?);
-    } else if style == "classic" {
-        let open = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
-        let quit = MenuItem::with_id(app, "quit", "彻底退出 ProcWeaver", true, None::<&str>)?;
-        let menu = Menu::with_items(app, &[&open, &quit])?;
-        builder = builder.menu(&menu);
     }
 
     builder
@@ -1096,16 +1116,19 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 position,
                 ..
             } => {
-                let style = crate::commands::settings::get_general_settings()
-                    .map(|s| s.tray_menu_style)
-                    .unwrap_or_else(|_| "modern".into());
-                if style == "modern" && crate::function_mode::core_features_enabled() {
+                if crate::function_mode::core_features_enabled() {
                     show_or_toggle_tray_menu(tray.app_handle(), position);
                 }
             }
             _ => {}
         })
         .build(app)?;
+
+    let app_handle = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = get_tray_payload(app_handle).await;
+    });
+
     Ok(())
 }
 

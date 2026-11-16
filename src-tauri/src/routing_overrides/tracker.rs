@@ -124,6 +124,14 @@ pub fn observer_alive() {
 pub fn entry(identity: &str) -> Option<ProcessEntry> {
     TRACKER.lock().unwrap_or_else(|p| p.into_inner()).entries.get(identity).cloned()
 }
+pub fn resolve_ancestors(mut item: ProcessEntry) -> ProcessEntry {
+    let mut state = TRACKER.lock().unwrap_or_else(|p| p.into_inner());
+    attach(&mut item, &state.entries);
+    if !item.identity.is_empty() && state.entries.len() < 8192 {
+        state.entries.insert(item.identity.clone(), item.clone());
+    }
+    item
+}
 /// 进程发现独立于启动参数、核心状态及网络出口核验。
 pub fn observation() -> Observation {
     let state = TRACKER.lock().unwrap_or_else(|p| p.into_inner());
@@ -171,6 +179,18 @@ fn is_windows_process_bridge(path: &str) -> bool {
     #[cfg(not(windows))] { let _ = path; false }
 }
 
+fn is_generic_interpreter(name: &str) -> bool {
+    let name = std::path::Path::new(name).file_name().and_then(|f| f.to_str()).unwrap_or(name);
+    ["node.exe", "python.exe", "python3.exe", "pythonw.exe", "pwsh.exe", "powershell.exe", "cmd.exe"]
+        .iter().any(|s| name.eq_ignore_ascii_case(s))
+}
+
+fn is_system_browser_or_shell(name: &str) -> bool {
+    let name = std::path::Path::new(name).file_name().and_then(|f| f.to_str()).unwrap_or(name);
+    ["msedge.exe", "chrome.exe", "firefox.exe", "brave.exe", "opera.exe", "360se.exe", "360chrome.exe", "explorer.exe", "searchhost.exe"]
+        .iter().any(|s| name.eq_ignore_ascii_case(s))
+}
+
 fn inherited_destination(rule: &ProcessRule) -> &str {
     rule.target.as_ref().map(|t| t.name.as_str()).unwrap_or(rule.action.as_str())
 }
@@ -206,6 +226,11 @@ pub fn derive(config: &Overrides, entries: &[ProcessEntry]) -> (Vec<ProcessRule>
             })
         });
         let Some(root) = root else { continue; };
+        // 通用解释器/脚本环境调起系统默认浏览器或桌面宿主时，绝不连坐生成全局路径规则，
+        // 避免整台电脑的日常浏览器被脚本派生规则绑架；显式配置为业务包的浏览器不受此限制。
+        if is_system_browser_or_shell(&p.name) && is_generic_interpreter(&root.match_value) {
+            continue;
+        }
         let key = crate::platform::path_key(path);
         if let Some(old) = derived.get_mut(&key) {
             if old.action != root.action || old.target != root.target {
@@ -273,6 +298,8 @@ fn clear_observation() {
 pub async fn run(notify: impl Fn(MonitorChange) + Send + 'static) {
     let mut observer: Option<std::thread::JoinHandle<()>> = None;
     let mut previous = String::new();
+    let mut pending_fingerprint: Option<String> = None;
+    let mut pending_apply_at: Option<std::time::Instant> = None;
     let mut notifications = Notifications::default();
     let mut retry_at = std::time::Instant::now();
     let mut snapshot_at = std::time::Instant::now();
@@ -294,6 +321,7 @@ pub async fn run(notify: impl Fn(MonitorChange) + Send + 'static) {
         if !enabled {
             if observer.as_ref().is_some_and(|h| h.is_finished()) { if let Some(h) = observer.take() { let _ = h.join(); } }
             clear_observation(); previous.clear();
+            pending_fingerprint = None; pending_apply_at = None;
             if let Some(change) = notifications.update(&config, &status(&config), crate::commands::process::ACTIVE.load(Ordering::SeqCst)) { notify(change); }
             retry_at = std::time::Instant::now(); snapshot_at = retry_at;
             continue;
@@ -322,10 +350,12 @@ pub async fn run(notify: impl Fn(MonitorChange) + Send + 'static) {
         if !state.ready { continue; }
         // 核心停止/正在切换时继续监控，不验证配置、不写运行文件，也不阻塞事件通知。
         if !crate::commands::process::ACTIVE.load(Ordering::SeqCst) {
-            previous.clear(); TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None; continue;
+            previous.clear(); pending_fingerprint = None; pending_apply_at = None;
+            TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None; continue;
         }
         if !config.effective().process_rules.iter().any(|r| r.enabled && r.include_descendants) {
-            previous.clear(); TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None; continue;
+            previous.clear(); pending_fingerprint = None; pending_apply_at = None;
+            TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None; continue;
         }
         let Ok(_lock) = crate::commands::process::LIFECYCLE.try_lock() else { continue; };
         if !crate::commands::process::ACTIVE.load(Ordering::SeqCst) { previous.clear(); continue; }
@@ -359,17 +389,27 @@ pub async fn run(notify: impl Fn(MonitorChange) + Send + 'static) {
         }
         let fingerprint = serde_json::to_string(&(config.revision, &state.derived)).unwrap_or_default();
         if fingerprint != previous {
-            match super::reapply(&config).await {
-                Ok(_) => {
-                    previous = fingerprint;
-                    super::set_applied(config.revision, state.generation);
-                    TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None;
-                }
-                Err(error) => {
-                    TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = Some(error);
+            if pending_fingerprint.as_deref() != Some(&fingerprint) {
+                pending_fingerprint = Some(fingerprint.clone());
+                // 防抖延迟 2.5 秒，短命进程平稳后再重载核心，避免频繁全量重载核心
+                pending_apply_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(2500));
+            } else if pending_apply_at.is_some_and(|t| std::time::Instant::now() >= t) {
+                match super::reapply(&config).await {
+                    Ok(_) => {
+                        previous = fingerprint;
+                        pending_fingerprint = None;
+                        pending_apply_at = None;
+                        super::set_applied(config.revision, state.generation);
+                        TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None;
+                    }
+                    Err(error) => {
+                        TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = Some(error);
+                    }
                 }
             }
         } else {
+            pending_fingerprint = None;
+            pending_apply_at = None;
             super::set_applied(config.revision, state.generation);
             TRACKER.lock().unwrap_or_else(|p| p.into_inner()).apply_error = None;
         }

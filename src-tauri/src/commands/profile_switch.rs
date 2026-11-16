@@ -52,7 +52,7 @@ pub async fn select(id: String, decision: Option<BindingDecision>) -> Result<boo
     let path = profile::get_base_dir().join(&next.file_path);
     let old = routing::read()?;
     let mut config = old.clone();
-    let affected = foreign_targets::bindings(&old, &id);
+    let _affected = foreign_targets::bindings(&old, &id);
     if let Some(decision) = decision {
         if decision.revision != old.revision || decision.current_profile_id != routing::current_source().0 {
             return Err("订阅或分流规则已改变，请取消后重新选择订阅".into());
@@ -60,8 +60,9 @@ pub async fn select(id: String, decision: Option<BindingDecision>) -> Result<boo
         config.retain_foreign_targets = match decision.mode.as_str() {
             "keep" => true, "hold" => false, _ => return Err("原绑定出口处理方式无效".into()),
         };
-    } else if !affected.is_empty() {
-        return Err("此订阅切换涉及已绑定出口，请先选择继续使用原节点或保留绑定后换绑".into());
+    } else {
+        // 订阅隔离模式：切换时不跨订阅保留外来节点，由业务层进行按订阅源出口记忆与恢复
+        config.retain_foreign_targets = false;
     }
     let changed = config.retain_foreign_targets != old.retain_foreign_targets;
     if changed { config.revision = old.revision.checked_add(1).ok_or("规则修订号已耗尽")?; }

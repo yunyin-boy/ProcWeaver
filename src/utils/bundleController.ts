@@ -104,7 +104,7 @@ export function getBundleStatus(instance: BundleLocalInstance, state: BundleStat
   if (state.readError) return result("error", state.readError);
   if (state.error && state.errorInstanceIds?.includes(instance.instanceId)) return result("error", state.error);
   if (!instance.enabled || !instance.slotBindings.main) {
-    if (rules.length) return result("error", "停用尚未确认，核心仍保留上次规则");
+    if (rules.length && state.view?.running) return result("error", "停用尚未确认，核心仍保留上次规则");
     return instance.enabled ? result("unbound", "请先绑定本机出口") : result("disabled", "已停用，跟随现有规则");
   }
   if (!state.view) return result("pending", "尚未核实核心状态");
@@ -129,13 +129,13 @@ export function getBundleStatus(instance: BundleLocalInstance, state: BundleStat
     }
     const { expected, dns, routes } = viewCache.get(instance.instanceId)!;
     const config = state.view.config;
+    if (!state.view.running) return result("saved", "已保存，等待核心启动");
     if (routeSignature(config.bundles?.filter(b => b.id === instance.instanceId)) !== routeSignature(routes) ||
       ruleSignature(rules) !== ruleSignature(expected) ||
       (dns.length > 0 && dns.some(r => !config.dnsRules.some(actual =>
         ruleSignature([{ ...actual, id: r.id }]) === ruleSignature([r]))))) {
       return result("error", state.error ? "本次更新未应用，保留上次规则；请查看失败原因" : "本次选择尚未应用，核心仍使用已保存的配置");
     }
-    if (!state.view.running) return result("saved", "已保存，等待核心启动");
     if (state.view.appliedRevision !== config.revision) {
       return result("pending", "已保存，等待核心确认规则版本");
     }
@@ -283,5 +283,9 @@ export function createBundleController(api: Pick<RoutingApi, "read" | "save">, s
       return work;
     },
     restore: () => apply(state.instances, true), whenIdle: () => tail,
+    reloadInstances: (instances?: BundleLocalInstance[]) => {
+      const loaded = instances ?? storage.load();
+      publish({ instances: loaded });
+    },
   };
 }

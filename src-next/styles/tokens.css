@@ -1,0 +1,99 @@
+/* ==========================================================================
+   ProcWeaver src-next 核心设计 Token (真实物理玻璃拟态系统)
+   规范溯源: tauri-linear-raycast-ui / ui-surface-elevation-hierarchy
+   ========================================================================== */
+
+:root {
+  /* ------------------------------------------------------------------------
+     1. 八级 Z-Index 语义标尺
+     ------------------------------------------------------------------------ */
+  --z-canvas: 0;
+  --z-sunken: 0;
+  --z-surface: 10;
+  --z-sticky: 100;
+  --z-floating: 500;
+  --z-dropdown: 1000;
+  --z-drawer: 1200;
+  --z-modal: 1300;
+  --z-toast: 1500;
+
+  /* ------------------------------------------------------------------------
+     2. 高阻尼动效物理曲线与视效动态调谐 (Visual Optics & Damping)
+     ------------------------------------------------------------------------ */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-micro: 120ms;
+  --duration-normal: 180ms;
+  
+  /* 窗口全局背景通透度与毛玻璃模糊度 (由系统首选项滑块动态驱动，默认设定 95% 扎实安全底垫) */
+  --window-opacity: 0.95;
+  --window-blur: 32px;
+
+  /* ------------------------------------------------------------------------
+     3. 浅色模式玻璃拟态 (Light Mode - 瑞士白瓷与液态透光晶体玻璃 - 光学清晰度加固)
+     ------------------------------------------------------------------------ */
+  --color-scheme: light;
+  --surface-canvas: rgba(245, 248, 252, var(--window-opacity, 0.95));  /* 动态通透冷瓷基底 */
+  --surface-sunken: rgba(15, 23, 42, 0.04);     /* 微雕刻内凹槽道 */
+  --surface-card: rgba(255, 255, 255, 0.90);    /* 90% 扎实白瓷晶体底垫，彻底垫死底层杂光穿透，字底高洁清晰 */
+  --surface-card-hover: rgba(255, 255, 255, 0.96);
+  --surface-card-subtle: rgba(255, 255, 255, 0.78);
+  --glass-bg: rgba(255, 255, 255, 0.90);
+  --glass-bg-hover: rgba(255, 255, 255, 0.96);
+  --glass-border: rgba(226, 232, 240, 0.85);    /* 浅色 1px 清晰微边框 (slate-200) */
+  --glass-border-subtle: rgba(241, 245, 249, 0.85);
+  --glass-border-dark: rgba(15, 23, 42, 0.08);  /* 浅色环境遮蔽背阴边 */
+  --glass-hover: rgba(255, 255, 255, 0.40);
+  --glass-specular: rgba(255, 255, 255, 1);     /* 浅色 1px 物理高光反射 */
+  
+  --text-primary: #090d16;       /* 极致深邃高反差炭黑 (超越普通 slate-900，确保主文字顶格清晰) */
+  --text-secondary: #1e293b;     /* slate-800 次要文本 (提升 30% 密度，杜绝发虚) */
+  --text-muted: #475569;         /* slate-600 辅助标签与小标题 (彻底根除 slate-500 死灰模糊感) */
+  --text-subtle: #64748b;        /* slate-500 微弱装饰提示 (原 slate-400 过浅) */
+
+  /* 亮色双层光感：迎光面亮白切角 + 柔和环境光遮蔽 */
+  --card-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 1), inset 0 0 12px 0 rgba(255, 255, 255, 0.20), 0 4px 16px -2px rgba(15, 23, 42, 0.06), 0 1px 2px 0 rgba(15, 23, 42, 0.02);
+  --window-shadow: inset 0 1px 1.5px 0 rgba(255, 255, 255, 1), 0 24px 60px -12px rgba(15, 23, 42, 0.14);
+  --modal-shadow: inset 0 1px 1.5px 0 rgba(255, 255, 255, 1), 0 28px 64px -12px rgba(15, 23, 42, 0.18);
+
+  --font-grade: 20;              /* 亮色模式微补强骨架厚度 */
+  --font-tracking: 0.005em;
+
+  --accent-healthy: #047857;     /* emerald-700 浅底高反差深绿 */
+  --accent-healthy-bg: rgba(16, 185, 129, 0.12);
+}
+
+/* --------------------------------------------------------------------------
+   4. 深色模式玻璃拟态 (Dark Mode - 黑曜石冰晶透光与光学排版校准)
+   -------------------------------------------------------------------------- */
+.dark {
+  --color-scheme: dark;
+  --surface-canvas: rgba(13, 16, 22, var(--window-opacity, 0.96));     /* 纯正曜石黑晶扎实基底 (彻底杜绝桌面穿透重影) */
+  --surface-sunken: rgba(0, 0, 0, 0.50);        /* 深度微雕刻暗槽 */
+  --surface-card: rgba(22, 26, 35, 0.92);       /* 黑曜石安全底垫卡片 (拒绝死灰白雾，确保文字 8:1 超高对比) */
+  --surface-card-hover: rgba(30, 35, 48, 0.95);
+  --surface-card-subtle: rgba(22, 26, 35, 0.75);
+  --glass-bg: rgba(18, 21, 28, 0.92);
+  --glass-bg-hover: rgba(28, 33, 44, 0.96);
+  --glass-border: rgba(255, 255, 255, 0.09);    /* 迎光 1px 极细发丝晶体边框 */
+  --glass-border-subtle: rgba(255, 255, 255, 0.055);
+  --glass-border-dark: rgba(0, 0, 0, 0.45);
+  --glass-hover: rgba(255, 255, 255, 0.05);
+  --glass-specular: rgba(255, 255, 255, 0.12);  /* 物理顶部 1px 倒角微高光 */
+
+  /* 文字明度光学标定 (彻底杜绝 WCAG 2.5:1 以下暗色死灰文字) */
+  --text-primary: #f8fafc;       /* 95% 纯净高对比白 */
+  --text-secondary: #cbd5e1;     /* 80% slate-300 次级正文 (解决原 60% 偏暗发虚) */
+  --text-muted: #94a3b8;         /* 60% slate-400 辅助标签 (彻底根治副标题看不清硬伤) */
+  --text-subtle: #64748b;        /* 40% slate-500 微弱装饰提示 */
+
+  /* 暗色双层光感：发丝级顶部 1px 倒角切削天光微反光 + 悬浮漫反射暗影 */
+  --card-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.09), inset 0 0 16px 0 rgba(255, 255, 255, 0.01), 0 10px 28px -4px rgba(0, 0, 0, 0.60);
+  --window-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.14), 0 24px 64px -16px rgba(0, 0, 0, 0.85);
+  --modal-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.18), 0 32px 72px -16px rgba(0, 0, 0, 0.90);
+
+  --font-grade: -50;
+  --font-tracking: 0.015em;      /* 补偿暗底文字光渗，消除笔画黏连 */
+
+  --accent-healthy: #34d399;     /* emerald-400 暗底高亮绿 */
+  --accent-healthy-bg: rgba(52, 211, 153, 0.15);
+}

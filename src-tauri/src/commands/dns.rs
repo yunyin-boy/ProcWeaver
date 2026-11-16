@@ -83,13 +83,28 @@ fn default_fallbacks() -> Vec<String> {
 }
 fn default_fake_ip_filter() -> Vec<String> {
     vec![
+        // ---- 局域网 / 本地服务 ----
         "*.lan".into(),
         "*.local".into(),
-        "localhost.ptlogin2.qq.com".into(),
+        "*.home.arpa".into(),           // RFC 8375 本地 mDNS 域名，fake-ip 会导致局域网设备发现失败
+        // ---- Windows 网络探测 / 时间同步 ----
         "+.msftconnecttest.com".into(),
         "+.msftncsi.com".into(),
         "*.msftncsi.com".into(),
+        "time.windows.com".into(),      // Windows NTP 时间同步；fake-ip 下同步会长期失败
+        "time.nist.gov".into(),
+        "pool.ntp.org".into(),
+        "+.pool.ntp.org".into(),
+        // ---- 腾讯 / 小米 兼容 ----
+        "localhost.ptlogin2.qq.com".into(),
         "+.market.xiaomi.com".into(),
+        // ---- Steam 游戏平台 ----
+        "+.steamserver.net".into(),     // Steam P2P 联机; fake-ip 下 NAT 穿透失败
+        "+.cm.steampowered.com".into(), // Steam CM 长连接
+        // ---- 苹果 / 安卓推送 ----
+        "+.apple.com".into(),
+        "+.icloud.com".into(),
+        "lens.l.google.com".into(),
     ]
 }
 
@@ -202,15 +217,21 @@ pub(crate) async fn save_dns_settings_transaction(
     let path = crate::storage::data_dir().join("config/dns-preferences.json");
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|e| e.to_string())?;
     let write_path = path.clone();
+    let write_bytes = bytes.clone();
     let previous_bytes = tokio::task::spawn_blocking(move || {
         let previous = match std::fs::read(&write_path) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => return Err("无法读取原 DNS 配置，未覆盖".to_string()),
         };
-        crate::storage::replace(&write_path, &bytes)?;
+        crate::storage::replace(&write_path, &write_bytes)?;
         Ok(previous)
     }).await.map_err(|_| "保存 DNS 配置任务失败")??;
+
+    // 若配置内容无实质变化，直接返回，避免无谓重启核心与网络抖动
+    if previous_bytes.as_deref() == Some(&bytes) {
+        return Ok(settings);
+    }
 
     // 若核心当前正在运行，由于 DNS 覆写影响底层网络，重启核心以应用新 DNS
     if running {
@@ -362,6 +383,17 @@ pub fn build_dns_mapping(settings: &DnsSettings) -> serde_yaml::Value {
     );
 
     serde_yaml::Value::Mapping(map)
+}
+
+#[tauri::command]
+pub fn get_hosts_conflict_warning() -> Result<Option<String>, String> {
+    Ok(crate::routing_overrides::bundles::get_hosts_warning())
+}
+
+#[tauri::command]
+pub fn clear_hosts_conflict_warning() -> Result<(), String> {
+    crate::routing_overrides::bundles::clear_hosts_warning();
+    Ok(())
 }
 
 #[cfg(test)]

@@ -36,9 +36,13 @@ pub struct VerifiedComponents {
 
 pub(crate) fn reject_reparse(path: &Path) -> Result<(), String> {
     use std::os::windows::fs::MetadataExt;
-    for ancestor in path.ancestors() {
-        let metadata = std::fs::symlink_metadata(ancestor).map_err(|_| "组件路径不存在或不可读取")?;
-        if metadata.file_attributes() & 0x400 != 0 { return Err("组件路径不能包含重解析点".into()); }
+    if !path.exists() {
+        return Ok(());
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("组件路径不能包含重解析点或符号链接".into());
+        }
     }
     Ok(())
 }

@@ -4,10 +4,10 @@
   "version": "2.3.4",
   "identifier": "com.procweaver.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "npm run dev:next",
+    "devUrl": "http://localhost:1425",
+    "beforeBuildCommand": "npm run build:next",
+    "frontendDist": "../dist-next"
   },
   "bundle": {
     "active": true,
@@ -39,13 +39,14 @@
         "label": "main",
         "title": "ProcWeaver",
         "visible": false,
-        "width": 1200,
-        "height": 800,
-        "minWidth": 1200,
-        "minHeight": 800,
+        "width": 1160,
+        "height": 740,
+        "minWidth": 360,
+        "minHeight": 520,
         "center": true,
         "resizable": true,
-        "decorations": false
+        "decorations": false,
+        "transparent": true
       },
       {
         "label": "tray-menu",

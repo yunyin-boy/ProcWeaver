@@ -3,6 +3,10 @@ pub mod smart_arbiter;
 pub mod tcp_reset;
 pub mod user_mode;
 #[cfg(windows)]
+pub mod local_proxy;
+#[cfg(windows)]
+pub mod packet;
+#[cfg(windows)]
 pub mod windivert;
 use crate::routing_overrides::{model::*, tracker::ProcessEntry};
 use serde::{Deserialize, Serialize};

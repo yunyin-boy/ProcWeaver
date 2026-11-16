@@ -48,6 +48,55 @@ pub fn inspect(pid: u32, parent_pid: u32, name: String) -> ProcessEntry {
     item
 }
 #[cfg(windows)]
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtQueryInformationProcess(
+        process_handle: windows_sys::Win32::Foundation::HANDLE,
+        process_information_class: u32,
+        process_information: *mut std::ffi::c_void,
+        process_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+#[cfg(windows)]
+pub fn parent_pid_of(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::{Foundation::*, System::Threading::*};
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        #[repr(C)]
+        struct ProcessBasicInformation {
+            exit_status: i32,
+            peb_base_address: *mut std::ffi::c_void,
+            affinity_mask: usize,
+            base_priority: i32,
+            unique_process_id: usize,
+            inherited_from_unique_process_id: usize,
+        }
+        let mut info: ProcessBasicInformation = std::mem::zeroed();
+        let mut return_length = 0u32;
+        let status = NtQueryInformationProcess(
+            handle,
+            0,
+            &mut info as *mut _ as *mut std::ffi::c_void,
+            std::mem::size_of::<ProcessBasicInformation>() as u32,
+            &mut return_length,
+        );
+        CloseHandle(handle);
+        if status == 0 && info.inherited_from_unique_process_id != 0 {
+            Some(info.inherited_from_unique_process_id as u32)
+        } else {
+            None
+        }
+    }
+}
+#[cfg(not(windows))]
+pub fn parent_pid_of(_pid: u32) -> Option<u32> {
+    None
+}
+#[cfg(windows)]
 pub fn process_list() -> Result<Vec<ProcessRecord>, String> {
     use windows_sys::Win32::{Foundation::*, System::Diagnostics::ToolHelp::*};
     unsafe {

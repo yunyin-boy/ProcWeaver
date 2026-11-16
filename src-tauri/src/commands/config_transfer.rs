@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
 const LIMIT: usize = 6 * 1024 * 1024 - 1024;
 const FILES: &[&str] = &["config/preferences.json", "config/profiles.json", "config/default.yaml", "config/dns-preferences.json",
-    "config/routing-overrides.json", "config/local-nodes.json", "config/local-rules.json", "config/exclusions.json",
+    "config/routing-overrides.json", "config/business-bundles.json", "config/local-nodes.json", "config/local-rules.json", "config/exclusions.json",
     "config/geo_config.json", "config/smart_groups.json", "config/business_channels.json"];
 const UI_KEYS: &[&str] = &["netbox_business_bundles_instances_v1"];
 const JOURNAL: &str = "config/restore-pending.procweaver-backup";

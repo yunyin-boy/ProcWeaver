@@ -348,7 +348,7 @@ export const BundleStudio: React.FC<Props> = ({
   return (
     <div className="flex-1 flex flex-col space-y-3 font-sans">
       {/* 1. 快捷起步预设栏 (Starter Presets) */}
-      <div className="px-3.5 py-2 bg-gradient-to-r from-indigo-50/80 via-purple-50/50 to-slate-50 border border-indigo-100/80 dark:border-indigo-950/60 dark:from-indigo-950/30 dark:via-purple-950/20 dark:to-slate-900 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs shrink-0 shadow-2xs">
+      <div className="px-3.5 py-2 bg-white/80 dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-indigo-600 dark:text-indigo-400 font-bold text-[11px] flex items-center space-x-1">
             <Sparkles className="w-3.5 h-3.5" />
@@ -358,28 +358,28 @@ export const BundleStudio: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => handleApplyStarter("ai")}
-              className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition flex items-center space-x-1 shadow-2xs cursor-pointer"
+              className="px-2.5 py-1 rounded-xl px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-zinc-300 text-[11px] font-medium transition flex items-center space-x-1 cursor-pointer"
             >
               <span>🤖 AI 编程伴侣</span>
             </button>
             <button
               type="button"
               onClick={() => handleApplyStarter("business")}
-              className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition flex items-center space-x-1 shadow-2xs cursor-pointer"
+              className="px-2.5 py-1 rounded-xl px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-zinc-300 text-[11px] font-medium transition flex items-center space-x-1 cursor-pointer"
             >
               <span>💬 跨国商务通讯</span>
             </button>
             <button
               type="button"
               onClick={() => handleApplyStarter("game")}
-              className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition flex items-center space-x-1 shadow-2xs cursor-pointer"
+              className="px-2.5 py-1 rounded-xl px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-zinc-300 text-[11px] font-medium transition flex items-center space-x-1 cursor-pointer"
             >
               <span>🎮 国际游戏专线</span>
             </button>
             <button
               type="button"
               onClick={() => handleApplyStarter("dev")}
-              className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-750 border border-slate-200 dark:border-slate-700 hover:border-indigo-300 text-slate-700 dark:text-slate-300 text-[11px] font-medium transition flex items-center space-x-1 shadow-2xs cursor-pointer"
+              className="px-2.5 py-1 rounded-xl px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-zinc-300 text-[11px] font-medium transition flex items-center space-x-1 cursor-pointer"
             >
               <span>🧑‍💻 全栈开发工具</span>
             </button>
@@ -400,7 +400,7 @@ export const BundleStudio: React.FC<Props> = ({
         {/* ====== 左栏：规则装配与配置 (62% 宽度) ====== */}
         <div className="flex-[3] overflow-y-auto space-y-3.5 pr-1 text-xs">
           {/* 模块 1: 基础属性与标识 */}
-          <div className="p-4 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-3 shadow-2xs">
+          <div className="p-4 bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] rounded-2xl space-y-3">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <h3 className="font-bold text-slate-800 dark:text-white flex items-center space-x-1.5 text-xs">
                 <span className="text-indigo-500">🏷️</span>
@@ -470,7 +470,7 @@ export const BundleStudio: React.FC<Props> = ({
           </div>
 
           {/* 模块 2: 接管模式与隔离防线 */}
-          <div className="p-4 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-3 shadow-2xs">
+          <div className="p-4 bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] rounded-2xl space-y-3">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <h3 className="font-bold text-slate-800 dark:text-white flex items-center space-x-1.5 text-xs">
                 <Shield className="w-3.5 h-3.5 text-indigo-500" />
@@ -568,7 +568,7 @@ export const BundleStudio: React.FC<Props> = ({
           </div>
 
           {/* 模块 3: 进程匹配与装配 */}
-          <div className="p-4 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-3 shadow-2xs">
+          <div className="p-4 bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] rounded-2xl space-y-3">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center space-x-2">
                 <Layers className="w-3.5 h-3.5 text-indigo-500" />
@@ -694,7 +694,7 @@ export const BundleStudio: React.FC<Props> = ({
           </div>
 
           {/* 模块 4: 域名群与智能嗅探 */}
-          <div className="p-4 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-3 shadow-2xs">
+          <div className="p-4 bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] rounded-2xl space-y-3">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2">
               <div className="flex items-center space-x-2">
                 <span className="text-indigo-500 font-bold">🌐</span>

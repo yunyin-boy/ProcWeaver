@@ -318,7 +318,17 @@ pub fn attach(yaml: &Value, contexts: &[CompiledContext], ports: &[u16]) -> Resu
                 return Err("WinDivert 上下文子规则名称冲突".into());
             }
         }
-        listeners.push(serde_yaml::to_value(serde_json::json!({"name":name,"type":"socks","listen":"127.0.0.1","port":port,"udp":true,"rule":name})).map_err(|_| "上下文入口序列化失败")?);
+        for (suffix, listen) in [("", "127.0.0.1"), ("-v6", "::1")] {
+            let listener_name = format!("{name}{suffix}");
+            listeners.push(serde_yaml::to_value(serde_json::json!({
+                "name": listener_name,
+                "type": "mixed",
+                "listen": listen,
+                "port": port,
+                "udp": true,
+                "rule": name
+            })).map_err(|_| "上下文入口序列化失败")?);
+        }
     }
     next["listeners"] = listeners.into();
     next["sub-rules"] = subrules.into();

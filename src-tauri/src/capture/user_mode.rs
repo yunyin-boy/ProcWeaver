@@ -186,6 +186,7 @@ pub fn launch_with_hook(
                 if ok != 0 && pid != 0 {
                     lease.committed = true;
                     if let Some(name) = &lease.name { control::confirm(name)?; }
+                    check_process_alive_after_launch(pid)?;
                     return Ok(pid);
                 }
             }
@@ -195,8 +196,35 @@ pub fn launch_with_hook(
     // Fallback：挂起远程线程方式
     let result = launch_with_remote_thread_fallback(exe, args, working_dir, bundle_port, dns_port, &target_dll, policy, &mut environment);
     lease.committed = result.is_ok();
-    if lease.committed { if let Some(name) = &lease.name { control::confirm(name)?; } }
+    if lease.committed {
+        if let Some(name) = &lease.name { control::confirm(name)?; }
+        if let Ok(pid) = result {
+            check_process_alive_after_launch(pid)?;
+        }
+    }
     result
+}
+
+#[cfg(windows)]
+fn check_process_alive_after_launch(pid: u32) -> Result<(), String> {
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        const STILL_ACTIVE: u32 = 259;
+        let h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h_proc.is_null() {
+            return Err("受控进程启动后句柄无法打开或进程已过早退出；请确认权限并完全退出旧实例后重试".into());
+        }
+        let mut exit_code: u32 = 0;
+        let ok = GetExitCodeProcess(h_proc, &mut exit_code);
+        windows_sys::Win32::Foundation::CloseHandle(h_proc);
+        if ok != 0 && exit_code != STILL_ACTIVE {
+            return Err("程序启动后立即退出，检测到可能复用了已在后台运行的旧实例；请先完全退出该程序所有旧实例后重新尝试受控接管".into());
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -215,6 +243,41 @@ fn hook_environment(port: u16, dns: u16, policy: Option<&crate::routing_override
         ("PROCWEAVER_PORT_FILTER_MODE", p.port_filter_mode.clone()),
         ("PROCWEAVER_CUSTOM_PORTS", p.custom_ports.clone()), ("PROCWEAVER_TARGET_FILTER_MODE", p.target_filter_mode.clone()),
         ("PROCWEAVER_TARGET_RULES", p.target_rules.join(","))] { set(key, value); }
+    let mixed_port = if crate::storage::is_initialized() {
+        crate::commands::settings::get_general_settings().map(|s| s.mixed_port).unwrap_or(7890)
+    } else {
+        7890
+    };
+    let managed_ports = crate::capture::local_proxy::managed_endpoints_with_port(Some(mixed_port))
+        .into_iter().map(|a| a.port().to_string()).collect::<Vec<_>>().join(",");
+    set("PROCWEAVER_SYSTEM_PROXY_PORTS", managed_ports);
+
+    if let Ok(config) = crate::routing_overrides::read() {
+        let mut override_rules = Vec::new();
+        for r in &config.process_rules {
+            if !r.enabled { continue; }
+            let name = std::path::Path::new(&r.match_value).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| r.match_value.clone());
+            let rule_act = match r.action.as_str() {
+                "direct" => "DIRECT".to_string(),
+                "reject" => "REJECT".to_string(),
+                "proxy" => {
+                    if let Some(target) = &r.target {
+                        config.bundles.iter().find(|b| b.main_target.as_ref() == Some(target)).map(|b| b.port.to_string()).unwrap_or_else(|| mixed_port.to_string())
+                    } else {
+                        mixed_port.to_string()
+                    }
+                }
+                _ => mixed_port.to_string(),
+            };
+            override_rules.push(format!("{name}={rule_act}"));
+        }
+        for b in &config.bundles {
+            if !b.enabled || b.port == 0 { continue; }
+            let name = std::path::Path::new(&b.main_exe).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| b.main_exe.clone());
+            override_rules.push(format!("{name}={}", b.port));
+        }
+        set("PROCWEAVER_OVERRIDE_RULES", override_rules.join(";"));
+    }
     if crate::function_mode::core_features_enabled() && !crate::external_proxy::routes().iter().any(|b| b.port == port) {
         set("PROCWEAVER_HOOK_CONTROL", control::create(port)?);
         set("PROCWEAVER_HOOK_HOST_PID", std::process::id().to_string());

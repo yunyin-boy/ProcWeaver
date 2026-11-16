@@ -240,9 +240,15 @@ fn scan_and_handle_bare_processes(generation: u64) {
             if bundle_names.iter().any(|name| name.eq_ignore_ascii_case(proc_name)) { continue; }
             let cmd = commands.get(&item.identity).map(String::as_str).unwrap_or("");
 
-            // 【第一道铁锁】：严格过滤 Chromium/Electron 内部辅助子进程
-            // 带有 --type=crashpad-handler、--type=gpu-process、--type=renderer、--type=utility 的进程坚决不碰！
-            if cmd.contains("--type=") {
+            // 【第一道铁锁】：严格过滤无网络调用的 Chromium/Electron 内部辅助子进程
+            // 过滤 --type=crashpad-handler、--type=gpu-process、--type=renderer、--type=zygote；
+            // 严密保留并接管实际执行网络请求的 NetworkService (network.mojom.NetworkService)！
+            let is_ignorable_chromium_type = cmd.contains("--type=crashpad-handler")
+                || cmd.contains("--type=gpu-process")
+                || cmd.contains("--type=renderer")
+                || cmd.contains("--type=zygote")
+                || (cmd.contains("--type=utility") && !cmd.contains("network.mojom.NetworkService"));
+            if is_ignorable_chromium_type {
                 continue;
             }
 

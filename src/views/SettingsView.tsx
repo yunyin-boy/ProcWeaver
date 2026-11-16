@@ -14,9 +14,11 @@ import {
   Palette,
   Zap,
   Shield,
+  Trash2,
+  ShieldAlert,
 } from "lucide-react";
 import { useTheme, Theme } from "../context/ThemeContext";
-import { getGeneralSettings, saveGeneralSettings } from "../api/settings";
+import { getGeneralSettings, saveGeneralSettings, cleanWindivertResidualService } from "../api/settings";
 import { DnsSettingsView } from "./DnsSettingsView";
 import { usePlatform } from "../context/PlatformContext";
 import { getMacTunReadiness } from "../services/platform";
@@ -62,6 +64,24 @@ export const SettingsView: React.FC = () => {
   const [settingsError, setSettingsError] = useState("");
   const [macTunReadiness, setMacTunReadiness] = useState<MacTunReadiness | null>(null);
   const [macTunError, setMacTunError] = useState("");
+  const [cleaningDriver, setCleaningDriver] = useState(false);
+  const [driverCleanMsg, setDriverCleanMsg] = useState<{ text: string; error?: boolean } | null>(null);
+
+  const handleCleanDriver = async () => {
+    if (!window.confirm("确定要清理 WinDivert 内核驱动残留服务及临时文件吗？\n此操作将停止并移除系统服务并清理已解压的驱动文件。")) {
+      return;
+    }
+    setCleaningDriver(true);
+    setDriverCleanMsg(null);
+    try {
+      const res = await cleanWindivertResidualService();
+      setDriverCleanMsg({ text: res });
+    } catch (err) {
+      setDriverCleanMsg({ text: String(err), error: true });
+    } finally {
+      setCleaningDriver(false);
+    }
+  };
 
   useEffect(() => {
     if (platform.os !== "macos") return;
@@ -862,6 +882,45 @@ export const SettingsView: React.FC = () => {
                       系统级全量捕获（需 UAC 提权）。劫持注册表启动器，附带防套娃死锁安全保护。
                     </span>
                   </button>
+                </div>
+
+                {/* WinDivert 内核驱动服务治理与清理 */}
+                <div className="pt-4 border-t border-slate-200/80 dark:border-slate-800/80 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <span className="block text-sm font-semibold flex items-center gap-1.5">
+                        <ShieldAlert className="w-4 h-4 text-amber-500" />
+                        <span>WinDivert 内核驱动服务治理</span>
+                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-mono">
+                          便携免残留
+                        </span>
+                      </span>
+                      <span className="block text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                        正常退出本软件会自动卸载驱动与服务。若遇其它软件冲突、系统残留占用或想彻底重置，可点击一键停用并清除残留服务与临时文件。
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleCleanDriver}
+                      disabled={cleaningDriver}
+                      className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/20 hover:bg-rose-100/70 dark:hover:bg-rose-900/40 text-rose-700 dark:text-rose-300 text-xs font-semibold transition shrink-0 cursor-pointer disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{cleaningDriver ? "正在清理驱动与服务..." : "清理残留驱动服务"}</span>
+                    </button>
+                  </div>
+
+                  {driverCleanMsg && (
+                    <div className={`p-2.5 rounded-lg text-xs flex items-center gap-2 ${
+                      driverCleanMsg.error
+                        ? "bg-rose-50 border border-rose-200 text-rose-700 dark:bg-rose-950/40 dark:border-rose-800/60 dark:text-rose-300"
+                        : "bg-emerald-50 border border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-800/60 dark:text-emerald-300"
+                    }`}>
+                      {driverCleanMsg.error ? <AlertCircle className="w-4 h-4 shrink-0" /> : <Check className="w-4 h-4 shrink-0" />}
+                      <span>{driverCleanMsg.text}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

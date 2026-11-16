@@ -60,7 +60,14 @@ pub(crate) fn resolve(expected: &Identity) -> Result<Option<Context>, String> {
                 .as_deref()
                 .is_some_and(|v| crate::platform::same_path(v, &expected.path))
         })
-        .unwrap_or(proof);
+        .unwrap_or_else(|| {
+            let mut proof = proof;
+            #[cfg(windows)]
+            if let Some(ppid) = crate::routing_overrides::native::parent_pid_of(expected.pid) {
+                proof.parent_pid = ppid;
+            }
+            tracker::resolve_ancestors(proof)
+        });
     let config = runtime.config.read().map_err(|_| "读取独立代理规则失败")?;
     if !config.enabled {
         return Ok(None);
@@ -182,6 +189,12 @@ pub(crate) async fn tcp(
     mut client: TcpStream,
     destination: SocketAddr,
 ) -> Result<(), String> {
+    let _ = client.set_nodelay(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        crate::capture::windivert::runtime::configure_socket_keepalive(client.as_raw_socket());
+    }
     if context.effective_block_ipv6() && destination.is_ipv6() {
         return Err("当前策略已阻断 IPv6 TCP 连接".into());
     }
@@ -258,6 +271,12 @@ pub(crate) async fn tcp(
     let trace=Trace::new(Some(record)); let _activity=trace.activity("tcp");
     let result:Result<(u64,u64),String>=async {
         let mut upstream=transport::connect_traced(endpoint.as_ref(),&target,&ports,&trace).await?;
+        let _ = upstream.set_nodelay(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            crate::capture::windivert::runtime::configure_socket_keepalive(upstream.as_raw_socket());
+        }
         if !context.valid(){return Err("业务包已停用或进程身份改变".into());}
         upstream.write_all(&prefix).await.map_err(|_|"转发首包失败")?;
         context.runtime.update(record,"active","已建立独立透明 TCP 隧道",(prefix.len()as u64,0));

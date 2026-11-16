@@ -20,14 +20,14 @@ export const BundlePolicyForm: React.FC<Props> = ({
   return (
     <div className="space-y-4">
       {/* 选项卡导航 */}
-      <div className="flex border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 rounded-xl p-1 gap-1">
+      <div className="flex border-b border-slate-200 dark:border-slate-800 bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] rounded-xl p-0.5 gap-1">
         <button
           type="button"
           onClick={() => setActiveTab("protocol")}
           className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === "protocol"
-              ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
-              : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
           }`}
         >
           <Cpu className="w-3.5 h-3.5" />
@@ -38,8 +38,8 @@ export const BundlePolicyForm: React.FC<Props> = ({
           onClick={() => setActiveTab("network")}
           className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === "network"
-              ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
-              : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
           }`}
         >
           <Globe className="w-3.5 h-3.5" />
@@ -50,8 +50,8 @@ export const BundlePolicyForm: React.FC<Props> = ({
           onClick={() => setActiveTab("filter")}
           className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeTab === "filter"
-              ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs"
-              : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
           }`}
         >
           <Shield className="w-3.5 h-3.5" />
@@ -70,7 +70,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
       {activeTab === "protocol" && (
         <div className="space-y-2.5">
           {/* 代理 TCP */}
-          <div className="flex items-start justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="flex items-start justify-between p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="space-y-0.5 pr-3">
               <div className="text-xs font-bold text-slate-900 dark:text-white">
                 代理 TCP 连接
@@ -88,7 +88,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 阻止 IPv6 */}
-          <div className="flex items-start justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="flex items-start justify-between p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="space-y-0.5 pr-3">
               <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                 <span>阻止 IPv6 连接旁路</span>
@@ -109,7 +109,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 禁止 UDP */}
-          <div className="flex items-start justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="flex items-start justify-between p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="space-y-0.5 pr-3">
               <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                 <span>禁止 UDP (最高优先级 · 强制覆写)</span>
@@ -134,7 +134,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           <div
             className={`flex items-start justify-between p-3 rounded-xl border transition-colors ${
               policy.blockUdp
-                ? "bg-slate-100/50 dark:bg-slate-800/20 border-slate-200/50 dark:border-slate-800/50 opacity-60"
+                ? "bg-slate-100/50 dark:bg-black/20 border-slate-200/50 dark:border-white/[0.04] opacity-50"
                 : "bg-slate-50 dark:bg-slate-800/40 border-slate-200/80 dark:border-slate-700/60"
             }`}
           >
@@ -161,7 +161,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 代理衍生子进程 */}
-          <div className="flex items-start justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="flex items-start justify-between p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="space-y-0.5 pr-3">
               <div className="text-xs font-bold text-slate-900 dark:text-white">
                 代理衍生子进程
@@ -179,7 +179,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 禁用启动代理参数 */}
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60 space-y-2.5">
+          <div className="p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-2.5">
             <div className="flex items-start justify-between">
               <div className="space-y-0.5 pr-3">
                 <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
@@ -219,7 +219,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 存量旧连接热接管策略 (TCP Hot-Reset) */}
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60 space-y-2">
+          <div className="p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-2">
             <div className="space-y-0.5">
               <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                 <span>存量旧长连接接管策略 (TCP Hot-Reset)</span>
@@ -357,7 +357,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 绕过局域网与本地回环 */}
-          <div className="flex items-start justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="flex items-start justify-between p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="space-y-0.5 pr-3">
               <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                 <span>本地回环与局域网直连绕过 (Bypass LAN)</span>
@@ -383,7 +383,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
       {activeTab === "filter" && (
         <div className="space-y-3.5">
           {/* 端口过滤 */}
-          <div className="space-y-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="space-y-2 p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="text-xs font-bold text-slate-900 dark:text-white">
               端口黑白名单过滤 (Port Filter)
             </div>
@@ -430,7 +430,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
                   value={policy.customPorts ?? ""}
                   onChange={(e) => onChange({ ...policy, customPorts: e.target.value })}
                   placeholder="例如：80, 443, 8000-8080 (逗号或短横线)"
-                  className="w-full px-3 py-1.5 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="w-full px-3 py-1.5 text-xs font-mono rounded-lg bg-slate-100/80 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 />
                 <p className="text-[10px] text-slate-400">
                   支持单端口（如 443）及端口区间（如 3000-3010）。
@@ -440,7 +440,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
           </div>
 
           {/* 目标域名/IP 过滤 */}
-          <div className="space-y-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-700/60">
+          <div className="space-y-2 p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="text-xs font-bold text-slate-900 dark:text-white">
               目标域名 / IP 过滤规则 (Target Filter)
             </div>
@@ -490,7 +490,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
                     targetRules: e.target.value.split("\n").map(s => s.trim()).filter(Boolean),
                   })}
                   placeholder="例如：&#10;api.openai.com&#10;*.google.com&#10;1.1.1.1"
-                  className="w-full px-3 py-1.5 text-xs font-mono rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="w-full px-3 py-1.5 text-xs font-mono rounded-lg bg-slate-100/80 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-zinc-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 />
                 <p className="text-[10px] text-slate-400">
                   支持通配符域名与 IP 地址段，每行一个。

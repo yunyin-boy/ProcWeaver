@@ -107,7 +107,7 @@ pub fn run() {
             let preferences = commands::settings::get_general_settings();
             let is_direct_launch = std::env::args().any(|a| a == "--direct" || a == "--shim" || a == "--quick");
             if (!proxy_recovery_ready || preferences.as_ref().map_or(true, |s| !s.silent_start)) && !is_direct_launch { app_lifecycle::show(app.handle()); }
-            if function_mode::core_features_enabled() && proxy_recovery_ready && preferences.as_ref().is_ok_and(|s| s.auto_run) {
+            if function_mode::core_features_enabled() && proxy_recovery_ready {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(error) = commands::process::start_core(None, handle.state()).await {
@@ -176,6 +176,8 @@ pub fn run() {
             commands::bundle_launch::reset_bundle_stale_connections,
             commands::bundle_shortcuts::get_bundle_shortcuts,
             commands::bundle_shortcuts::change_bundle_shortcut,
+            commands::business_bundles::get_business_bundles,
+            commands::business_bundles::save_business_bundles,
             commands::routing_overrides::get_routing_overrides,
             commands::routing_overrides::save_routing_overrides,
             commands::routing_overrides::get_process_tree,
@@ -246,8 +248,11 @@ pub fn run() {
             commands::settings::save_general_settings,
             commands::settings::set_close_action,
             commands::settings::get_active_traffic_driver,
+            commands::settings::clean_windivert_residual_service,
             commands::dns::get_dns_settings,
             commands::dns::save_dns_settings,
+            commands::dns::get_hosts_conflict_warning,
+            commands::dns::clear_hosts_conflict_warning,
             #[cfg(windows)]
             commands::dns_listener::get_dns_listener_status,
             commands::health_probe::begin_health_probe,
@@ -261,6 +266,8 @@ pub fn run() {
             commands::window::window_is_maximized,
             commands::window::window_close,
             commands::window::window_execute_close,
+            commands::window::window_set_form_factor,
+            commands::window::window_set_always_on_top,
             commands::unlock_probe::probe_unlock_matrix,
             commands::system::check_is_admin,
             commands::system::restart_elevated,

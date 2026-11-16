@@ -18,7 +18,17 @@ pub fn targets(raw: &str, profile_id: &str) -> Result<Vec<Target>, String> {
 pub fn destination<'a>(rule: &'a ProcessRule, available: &[Target]) -> &'a str {
     match rule.action.as_str() {
         "direct" => "DIRECT",
-        "proxy" => rule.target.as_ref().filter(|t| available.contains(t)).map(|t| t.name.as_str()).unwrap_or("REJECT"),
+        "proxy" => {
+            if let Some(t) = &rule.target {
+                if t.name == "DIRECT" {
+                    return "DIRECT";
+                }
+                if available.contains(t) {
+                    return t.name.as_str();
+                }
+            }
+            "REJECT"
+        }
         _ => "REJECT",
     }
 }
@@ -43,9 +53,9 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
     let available = targets(raw, profile_id)?;
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
     if config.process_enabled {
-        // 尊重外部已有进程查找模式设定（如 strict / always）；未设定或为 off 时默认采用 strict 按需查找，避免全局遍历连接表
+        // 尊重外部已有进程查找模式设定（如 strict / always）；开启进程分流时默认采用 always 确保代理入站连接可精准匹配发起进程
         if yaml.get("find-process-mode").is_none() || yaml["find-process-mode"].as_str() == Some("off") {
-            yaml["find-process-mode"] = "strict".into();
+            yaml["find-process-mode"] = "always".into();
         }
         let mut prefix = Vec::new();
         for rule in config.process_rules.iter().filter(|r| r.enabled).chain(derived.iter()) {
@@ -193,13 +203,60 @@ pub fn core_bypass(raw: &str) -> Result<String, String> {
     serde_yaml::to_string(&yaml).map_err(|_| "生成核心防回环规则失败".into())
 }
 
+/// 确保本机回环、核心进程与局域网直连规则始终位于 rules 序列最顶层，
+/// 避免业务进程规则（如 PROCESS-NAME,Antigravity.exe）把发往 127.0.0.1 或局域网的 IPC 请求劫持至远端节点造成死锁。
+pub fn safety_guard(raw: &str) -> Result<String, String> {
+    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
+    let rules = yaml.as_mapping_mut().ok_or("配置须为对象")?
+        .entry(Value::from("rules")).or_insert(Value::Sequence(vec![]))
+        .as_sequence_mut().ok_or("rules 须为数组")?;
+
+    let guards: &[&str] = &[
+        "PROCESS-NAME,mihomo.exe,DIRECT",
+        "PROCESS-NAME,mihomo-v3.exe,DIRECT",
+        "PROCESS-NAME,mihomo-compatible.exe,DIRECT",
+        "DOMAIN,localhost,DIRECT",
+        "DOMAIN-SUFFIX,localhost,DIRECT",
+        "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR6,::1/128,DIRECT,no-resolve",
+        "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+        "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+        "IP-CIDR6,fc00::/7,DIRECT,no-resolve",
+        "IP-CIDR6,fe80::/10,DIRECT,no-resolve",
+    ];
+
+    rules.retain(|r| !r.as_str().is_some_and(|s| guards.contains(&s)));
+
+    #[allow(unused_mut)]
+    let mut prefix: Vec<Value> = guards.iter().map(|&s| Value::from(s)).collect();
+    #[cfg(target_os = "macos")]
+    for name in ["mihomo-darwin-arm64", "mihomo-darwin-amd64"] {
+        prefix.insert(3, format!("PROCESS-NAME,{name},DIRECT").into());
+    }
+
+    rules.splice(0..0, prefix);
+    serde_yaml::to_string(&yaml).map_err(|_| "生成安全保护规则失败".into())
+}
+
+/// 检查节点是否为订阅服务商提供的说明/虚拟假节点（如到期时间、剩余流量提示）
+fn is_info_or_fake_node(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    let keywords = [
+        "到期", "剩余", "流量", "套餐", "官网", "网址", "重置", "通知", "公告",
+        "expire", "traffic", "reset", "website",
+    ];
+    keywords.iter().any(|&k| name.contains(k) || lower.contains(k))
+}
+
 /// 强制注入 BT/PT 下载客户端与 Tracker 直连规则，
-/// 并在存在真实节点时，确保标准主出站代理组 PROXY 存在并置于首位，兜底规则指向 PROXY。
+/// 并在存在真实节点时，确保标准主出站代理组 PROXY 存在并置于首位，联动原订阅主策略组；
+/// 同时规整国内直连分流（补齐 GEOSITE,cn 并移除 GEOIP,CN 的 no-resolve），彻底根除系统代理下国内流量误走代理的缺陷。
 pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
     let map = yaml.as_mapping_mut().ok_or("配置须为对象")?;
 
-    // 1. 提取所有真实出站节点名称
+    // 1. 提取所有真实出站节点名称（严格过滤说明/到期假节点）
     let mut valid_nodes = Vec::new();
     if let Some(proxies) = map.get(Value::from("proxies")).and_then(|v| v.as_sequence()) {
         for p in proxies {
@@ -211,6 +268,7 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
                     && trimmed != "GLOBAL"
                     && trimmed != "PROXY"
                     && !trimmed.starts_with(super::foreign_targets::PREFIX)
+                    && !is_info_or_fake_node(trimmed)
                 {
                     valid_nodes.push(trimmed.to_string());
                 }
@@ -220,6 +278,58 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
 
     if valid_nodes.is_empty() {
         return Ok(raw.into());
+    }
+
+    // 提取现有所有策略组名称
+    let mut existing_group_names = std::collections::HashSet::new();
+    if let Some(groups) = map.get(Value::from("proxy-groups")).and_then(|v| v.as_sequence()) {
+        for g in groups {
+            if let Some(n) = g.get("name").and_then(|n| n.as_str()) {
+                existing_group_names.insert(n.to_string());
+            }
+        }
+    }
+
+    // 提取原订阅中 MATCH 规则的原目标及国内直连目标
+    let mut original_match_target: Option<String> = None;
+    let mut direct_target = "DIRECT".to_string();
+    if let Some(rules) = map.get(Value::from("rules")).and_then(|v| v.as_sequence()) {
+        for r in rules {
+            if let Some(s) = r.as_str() {
+                let trimmed = s.trim();
+                if trimmed.starts_with("MATCH,") {
+                    let target = trimmed.trim_start_matches("MATCH,").trim();
+                    if !target.is_empty() {
+                        original_match_target = Some(target.to_string());
+                    }
+                } else if trimmed.starts_with("GEOIP,CN,") {
+                    let parts: Vec<&str> = trimmed.split(',').collect();
+                    if parts.len() >= 3 {
+                        let t = parts[2].trim();
+                        if !t.is_empty() && (t == "DIRECT" || existing_group_names.contains(t)) {
+                            direct_target = t.to_string();
+                        }
+                    }
+                } else if trimmed.starts_with("GEOSITE,cn,") || trimmed.starts_with("GEOSITE,CN,") {
+                    let parts: Vec<&str> = trimmed.split(',').collect();
+                    if parts.len() >= 3 {
+                        let t = parts[2].trim();
+                        if !t.is_empty() && (t == "DIRECT" || existing_group_names.contains(t)) {
+                            direct_target = t.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if direct_target == "DIRECT" {
+        for name in &existing_group_names {
+            if name.contains("全球直连") || name.contains("直连") {
+                direct_target = name.clone();
+                break;
+            }
+        }
     }
 
     // 2. 当存在真实出站节点时，确保 proxy-groups 中有标准 PROXY select 组，并置于首位
@@ -238,10 +348,36 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
                 }
             }
 
-            let mut node_values: Vec<Value> = valid_nodes.iter()
-                .map(|n| Value::String(n.clone()))
-                .collect();
-            node_values.push(Value::String("DIRECT".to_string()));
+            let mut node_values: Vec<Value> = Vec::new();
+            // 2.1 若原订阅原本有主分流组（如 🚀 节点选择），优先作为 PROXY 组首位默认选中项
+            if let Some(orig) = &original_match_target {
+                if orig != "PROXY" && orig != "DIRECT" && orig != "REJECT" && orig != "GLOBAL"
+                    && existing_group_names.contains(orig)
+                {
+                    node_values.push(Value::String(orig.clone()));
+                }
+            }
+            // 2.2 将原订阅中核心选择策略组（如包含"选择"/"Select"）加入 PROXY
+            for g in groups.iter() {
+                if let Some(gname) = g.get("name").and_then(|n| n.as_str()) {
+                    if (gname.contains("选择") || gname.contains("Select"))
+                        && !node_values.iter().any(|v| v.as_str() == Some(gname))
+                        && gname != "PROXY"
+                    {
+                        node_values.push(Value::String(gname.to_string()));
+                    }
+                }
+            }
+            // 2.3 填入真实出站节点
+            for n in &valid_nodes {
+                if !node_values.iter().any(|v| v.as_str() == Some(n.as_str())) {
+                    node_values.push(Value::String(n.clone()));
+                }
+            }
+            // 2.4 补充 DIRECT 直连
+            if !node_values.iter().any(|v| v.as_str() == Some("DIRECT")) {
+                node_values.push(Value::String("DIRECT".to_string()));
+            }
 
             let mut proxy_group_map = serde_yaml::Mapping::new();
             proxy_group_map.insert("name".into(), "PROXY".into());
@@ -274,7 +410,60 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
         }
     }
 
-    // 3. 强制在 rules 首部注入 BT/PT 下载客户端与 Tracker 规则（保证全部为 DIRECT）
+    // 3. 补齐国内直连规则，解决系统代理纯域名跳过 GEOIP,CN 导致搜狗/微信/国内网站掉入 MATCH 走代理的问题
+    if let Some(rules) = map.get_mut(Value::from("rules")).and_then(|v| v.as_sequence_mut()) {
+        let mut has_geosite_cn = false;
+        let mut has_geoip_cn = false;
+        let mut geoip_cn_index = None;
+        let mut first_match_index = None;
+
+        for (idx, r) in rules.iter().enumerate() {
+            if let Some(s) = r.as_str() {
+                let trimmed = s.trim();
+                let upper = trimmed.to_ascii_uppercase();
+                if upper.starts_with("GEOSITE,CN") {
+                    has_geosite_cn = true;
+                } else if upper.starts_with("GEOIP,CN") {
+                    has_geoip_cn = true;
+                    if geoip_cn_index.is_none() {
+                        geoip_cn_index = Some(idx);
+                    }
+                } else if upper.starts_with("MATCH,") {
+                    if first_match_index.is_none() {
+                        first_match_index = Some(idx);
+                    }
+                }
+            }
+        }
+
+        // 去除 GEOIP,CN 尾部的 `,no-resolve`，确保走系统代理的纯域名未命中 GEOSITE 时仍能通过 DNS 获得 IP 命中国内直连
+        for r in rules.iter_mut() {
+            if let Some(s) = r.as_str() {
+                let trimmed = s.trim();
+                if (trimmed.starts_with("GEOIP,CN") || trimmed.starts_with("GEOIP,cn")) && trimmed.ends_with(",no-resolve") {
+                    let cleaned = trimmed.trim_end_matches(",no-resolve").trim();
+                    *r = Value::String(cleaned.to_string());
+                }
+            }
+        }
+
+        // 无条件保底注入国内域名集与国内 IP 直连规则：
+        // 插入点优先在现有 GEOIP,CN 之前，其次在 MATCH 兜底规则之前，否则在 rules 序列末尾
+        let insert_idx = geoip_cn_index.or(first_match_index).unwrap_or(rules.len());
+        let mut injected = Vec::new();
+        if !has_geosite_cn {
+            injected.push(Value::String(format!("GEOSITE,cn,{}", direct_target)));
+        }
+        if !has_geoip_cn {
+            injected.push(Value::String(format!("GEOIP,CN,{}", direct_target)));
+        }
+
+        if !injected.is_empty() {
+            rules.splice(insert_idx..insert_idx, injected);
+        }
+    }
+
+    // 4. 强制在 rules 首部注入 BT/PT 下载客户端与 Tracker 规则（保证全部为 DIRECT）
     let bt_pt_rules = [
         "PROCESS-NAME,qbittorrent.exe,DIRECT",
         "PROCESS-NAME,qbittorrent,DIRECT",
@@ -313,6 +502,45 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
         }
         if !to_insert.is_empty() {
             rules.splice(0..0, to_insert);
+        }
+    }
+
+    // 5. 确保国内与直连 DNS 智能分流（彻底根除国内网站在直连时被海外 DNS 调度到境外 CDN 的严重缺陷）
+    if let Some(dns) = map.get_mut(Value::from("dns")).and_then(|v| v.as_mapping_mut()) {
+        let is_dns_enabled = dns.get(Value::from("enable")).and_then(|v| v.as_bool()).unwrap_or(true);
+        if is_dns_enabled {
+            // 5.1 注入 direct-nameserver 与 direct-nameserver-follow-policy
+            let direct_ns_key = Value::from("direct-nameserver");
+            let has_direct = dns.get(&direct_ns_key)
+                .and_then(|v| v.as_sequence())
+                .map_or(false, |s| !s.is_empty());
+            if !has_direct {
+                dns.insert(
+                    direct_ns_key,
+                    serde_yaml::to_value(["223.5.5.5", "119.29.29.29"]).unwrap(),
+                );
+            }
+            dns.insert(Value::from("direct-nameserver-follow-policy"), Value::Bool(true));
+
+            // 5.2 仅在本地存在 geosite.dat 时注入 nameserver-policy 国内分流策略
+            let geosite_exists = crate::storage::data_dir().join("core_data/geosite.dat").exists()
+                || crate::storage::data_dir().join("config/geosite.dat").exists();
+            if geosite_exists {
+                let policy_key = Value::from("nameserver-policy");
+                let policy_map = dns.entry(policy_key)
+                    .or_insert_with(|| Value::Mapping(Default::default()))
+                    .as_mapping_mut();
+                if let Some(policy) = policy_map {
+                    let cn_key = Value::from("geosite:cn,private");
+                    let cn_alt_key = Value::from("geosite:cn");
+                    if !policy.contains_key(&cn_key) && !policy.contains_key(&cn_alt_key) {
+                        policy.insert(
+                            cn_key,
+                            serde_yaml::to_value(["223.5.5.5", "119.29.29.29"]).unwrap(),
+                        );
+                    }
+                }
+            }
         }
     }
 

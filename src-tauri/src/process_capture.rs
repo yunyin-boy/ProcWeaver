@@ -109,6 +109,7 @@ fn stop_blocking() {
         let engine = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(engine)=&engine { crate::external_proxy::diagnostics::emit("capture.stopping","info",serde_json::json!({"stats":engine.stats()})); }
         drop(engine);
+        let _ = crate::capture::windivert::assets::cleanup_driver_and_service();
     }
 }
 pub(crate) fn stop() {

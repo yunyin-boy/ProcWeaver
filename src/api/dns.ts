@@ -104,3 +104,15 @@ export async function saveDnsSettings(settings: DnsSettings): Promise<DnsSetting
   window.dispatchEvent(new Event("netbox-settings-saved"));
   return saved;
 }
+
+export async function getHostsConflictWarning(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string | null>("get_hosts_conflict_warning");
+}
+
+export async function clearHostsConflictWarning(): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("clear_hosts_conflict_warning");
+}

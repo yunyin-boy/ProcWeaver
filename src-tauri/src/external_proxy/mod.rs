@@ -73,7 +73,7 @@ impl Engine {
         };
         model::validate(&mut config)?;
         Ok(Arc::new(Self { root, config: RwLock::new(config), listeners: Mutex::new(BTreeMap::new()), dns_listeners: Mutex::new(BTreeMap::new()), errors: Mutex::new(BTreeMap::new()),
-            records: Mutex::new(VecDeque::new()), serial: AtomicU64::new(1), capacity: Arc::new(Semaphore::new(512)) }))
+            records: Mutex::new(VecDeque::new()), serial: AtomicU64::new(1), capacity: Arc::new(Semaphore::new(4096)) }))
     }
     fn config(&self) -> Config { self.config.read().unwrap_or_else(|e| e.into_inner()).clone() }
     fn view(&self) -> View {

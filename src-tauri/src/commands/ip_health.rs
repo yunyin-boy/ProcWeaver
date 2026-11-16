@@ -109,11 +109,45 @@ pub(crate) fn parse_ippure_json(text: &str) -> Option<IpHealthInfo> {
     })
 }
 
-// 备用免盾通道：通过免盾权威接口探测真实出口 IP 与风控数据，避免因节点机房属性被 CF 5秒盾拦截
+// 解析来自 IP.SB 的标准免盾 HTTPS 返回数据
+pub(crate) fn parse_ipsb_json(val: serde_json::Value) -> Result<IpHealthInfo, String> {
+    let ip = val.get("ip").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if ip.parse::<std::net::IpAddr>().is_err() {
+        return Err("未获取到有效出口 IP".to_string());
+    }
+
+    let asn = val.get("asn").and_then(|v| v.as_u64().map(|n| n as u32));
+    let as_org = val.get("asn_organization").and_then(|v| v.as_str())
+        .or_else(|| val.get("organization").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+
+    Ok(IpHealthInfo {
+        source: "IP.SB (安全HTTPS免盾通道)".into(),
+        ip,
+        asn,
+        as_organization: as_org,
+        country: val.get("country").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        country_code: val.get("country_code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        region: val.get("region").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        region_code: None,
+        city: val.get("city").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        timezone: val.get("timezone").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        longitude: val.get("longitude").map(|v| v.to_string()),
+        latitude: val.get("latitude").map(|v| v.to_string()),
+        postal_code: val.get("postal_code").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        fraud_score: None,
+        is_residential: None,
+        is_broadcast: None,
+        user_agent: Some("curl/8.7.1".to_string()),
+    })
+}
+
+// 备用免盾通道：优先通过 HTTPS 接口探测真实出口 IP 与地理数据，避免因节点机房属性被 CF 5秒盾拦截
 async fn fetch_fallback_ip_info(proxy_port: Option<u16>) -> Result<IpHealthInfo, String> {
     let mut builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_millis(1500))
-        .timeout(std::time::Duration::from_millis(3000));
+        .connect_timeout(std::time::Duration::from_millis(3500))
+        .timeout(std::time::Duration::from_millis(6000))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36");
 
     if let Some(port) = proxy_port {
         let proxy_url = format!("http://127.0.0.1:{}", port);
@@ -123,7 +157,19 @@ async fn fetch_fallback_ip_info(proxy_port: Option<u16>) -> Result<IpHealthInfo,
     }
 
     let client = builder.build().map_err(|e| e.to_string())?;
-    // fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query,hosting
+
+    // 优先尝试 HTTPS 接口 api.ip.sb，免盾且极速
+    if let Ok(resp) = client.get("https://api.ip.sb/geoip").send().await {
+        if resp.status().is_success() {
+            if let Ok(val) = resp.json::<serde_json::Value>().await {
+                if let Ok(info) = parse_ipsb_json(val) {
+                    return Ok(info);
+                }
+            }
+        }
+    }
+
+    // 备用二：ip-api
     let resp = client
         .get("http://ip-api.com/json/?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,query,hosting")
         .send()
@@ -184,10 +230,10 @@ mod tests {
 
 #[tauri::command]
 pub async fn check_ip_health(proxy_port: Option<u16>) -> Result<IpHealthInfo, String> {
-    // 方案一：优先采用 Rust 原生超轻量异步连接池（0 进程开销，1.8秒建连短路 + 3.5秒总超时）
+    // 方案一：优先采用 Rust 原生超轻量异步连接池（4.0秒建连 + 7.5秒总超时，留足海外专线与 TLS 协商窗口）
     let mut builder = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_millis(1800))
-        .timeout(std::time::Duration::from_millis(3500))
+        .connect_timeout(std::time::Duration::from_millis(4000))
+        .timeout(std::time::Duration::from_millis(7500))
         .redirect(reqwest::redirect::Policy::limited(3))
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36");
 
@@ -216,6 +262,6 @@ pub async fn check_ip_health(proxy_port: Option<u16>) -> Result<IpHealthInfo, St
         }
     }
 
-    // 方案二：若 IPpure 出现 5 秒盾或不可用，极速切换至免盾通道 ip-api (同样受 3.0 秒短路保护)
+    // 方案二：若 IPpure 出现 5 秒盾或不可用，极速切换至免盾通道 ip-api
     fetch_fallback_ip_info(proxy_port).await
 }

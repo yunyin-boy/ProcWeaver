@@ -120,7 +120,7 @@ hostent* WSAAPI HookGetHostByName(const char* name) {
     if (!address) { WSASetLastError(WSA_NOT_ENOUGH_MEMORY); return nullptr; }
     hostname = name;
     addresses[0] = reinterpret_cast<char*>(&address); addresses[1] = nullptr;
-    result.h_name = hostname.data(); result.h_aliases = aliases;
+    result.h_name = &hostname[0]; result.h_aliases = aliases;
     result.h_addrtype = AF_INET; result.h_length = 4; result.h_addr_list = addresses;
     return &result;
 }

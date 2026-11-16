@@ -67,13 +67,34 @@ fn dns_provider_names(value: &Value, names: &mut std::collections::HashSet<Strin
     }
 }
 
+/// 判定规则是否属于系统兼容性注入（如 WebRTC 探测防御、IP 探测、OpenAI 基础补丁）或兜底规则
+fn is_system_compat_or_match(rule_str: &str) -> bool {
+    let s = rule_str.trim();
+    if s.is_empty() { return true; }
+    let upper = s.to_ascii_uppercase();
+    if upper.starts_with("MATCH,") || upper.starts_with("FINAL,") || upper == "MATCH" || upper == "FINAL" {
+        return true;
+    }
+    // 拦截 STUN 探测与 IP 健康探测等系统级注入补丁
+    if s.contains("DST-PORT,3478") || s.contains("DST-PORT,5349") || s.contains("ippure") {
+        return true;
+    }
+    // ensure_config_compat 中注入的 OpenAI 基础域名补丁
+    if (s.contains("openai.com") || s.contains("chatgpt.com") || s.contains("oaistatic.com") || s.contains("oaiusercontent.com"))
+        && s.starts_with("DOMAIN-SUFFIX,")
+    {
+        return true;
+    }
+    false
+}
+
 /// 仅合成运行配置，不回写订阅。稳定策略组独立于订阅提供的组名。
 pub fn compose(raw: &str, plan: &LocalRulePlan) -> Result<String, String> {
     if !plan.enabled { return Ok(raw.into()); }
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
-    // 订阅有实际分流规则时优先使用；空规则、只有 MATCH/FINAL 时使用本地方案。
+    // 订阅有实际分流规则时优先使用；空规则、只有 MATCH/FINAL 或仅含系统兼容补丁时使用本地方案。
     if yaml["rules"].as_sequence().is_some_and(|rules| rules.iter().any(|rule| {
-        rule.as_str().is_some_and(|s| !matches!(s.split(',').next().unwrap_or("").trim().to_ascii_uppercase().as_str(), "MATCH" | "FINAL" | ""))
+        rule.as_str().is_some_and(|s| !is_system_compat_or_match(s))
     })) { return Ok(raw.into()); }
     let mut nodes: Vec<Value> = yaml["proxies"].as_sequence().into_iter().flatten()
         .filter_map(|node| node["name"].as_str().map(Value::from)).collect();
@@ -115,6 +136,12 @@ pub fn compose(raw: &str, plan: &LocalRulePlan) -> Result<String, String> {
         }
     }
     yaml["rule-providers"] = Value::Mapping(dns_providers);
+    // 规则链拓扑排序基线（金字塔短路执行序）：
+    //   第 0 层：私网 IP 段直连（no-resolve，纳秒级）
+    //   第 1 层：REJECT 类广告拦截置顶（后由 edit_rule_provider 插入至 rules[0]，故此先占位）
+    //   第 2 层：域名 / GEOSITE 规则集（Radix Tree，微秒级）
+    //   第 3 层：国内 IP 兜底（允许 DNS 解析，ls-cncidr 由后续特判延后至此）
+    //   第 4 层：MATCH 兜底
     yaml["rules"] = serde_yaml::to_value(vec![
         "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve".to_string(),
         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve".into(),
@@ -153,6 +180,26 @@ pub fn compose(raw: &str, plan: &LocalRulePlan) -> Result<String, String> {
                 *rule = format!("{text},no-resolve").into();
             }
         }
+    }
+    // 金字塔拓扑排序 P0：REJECT 类广告拦截置顶至 LAN 段之后，实现最高优先级熔断。
+    // 命中 REJECT 即短路返回，完全跳过后续数万条规则扫描，大幅降低 CPU 周期与连接延迟。
+    // 收集所有指向 REJECT 的 RULE-SET 规则，从当前位置提取后批量插入 LAN 段末尾（索引 7）。
+    let lan_end = 7usize; // 7 条 IP-CIDR/IP-CIDR6 局域网规则之后
+    let mut reject_rules: Vec<Value> = Vec::new();
+    rules.retain(|r| {
+        if r.as_str().is_some_and(|s| {
+            let upper = s.to_ascii_uppercase();
+            upper.starts_with("RULE-SET,") && upper.ends_with(",REJECT")
+        }) {
+            reject_rules.push(r.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for (offset, rule) in reject_rules.into_iter().enumerate() {
+        let insert_at = (lan_end + offset).min(rules.len());
+        rules.insert(insert_at, rule);
     }
     // 国内 IP 是兜底：放在域名规则和 GEOSITE 后，仍允许解析。
     // 服务专用规则（如 Telegram IP、Steam 国内下载）保持原有业务优先级。

@@ -44,6 +44,10 @@ import { useProfileSwitch } from "../hooks/useProfileSwitch";
 import { ProfileSwitchDialog } from "../components/ProfileSwitchDialog";
 import { LocalNodeDialog } from "../components/LocalNodeDialog";
 import { useLocalNodes } from "../hooks/useLocalNodes";
+import type { LocalNodeSummary } from "../types/localNodes";
+import { useCoreStatus } from "../hooks/useCoreStatus";
+import { probeUnlockMatrix } from "../api/unlock";
+import { UnlockItem } from "../types";
 import {
   Search,
   RefreshCw,
@@ -59,11 +63,20 @@ import {
   X,
   Shield,
   Check,
-  AlertCircle,
   Eye,
   EyeOff,
   ScrollText,
   ChevronDown,
+  List,
+  LayoutGrid,
+  Info,
+  Sparkles,
+  Compass,
+  Copy,
+  SlidersHorizontal,
+  ArrowDownUp,
+  Cpu,
+  Layers,
 } from "lucide-react";
 
 // 格式化字节为易读格式 (GB / MB)
@@ -101,7 +114,10 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
   const [probeDetailOpen, setProbeDetailOpen] = useState(false);
   const readRevision = useRef(0);
   const nodeSession = useRef(0);
-  const openSubscriptions = () => {
+  const [subDrawerTab, setSubDrawerTab] = useState<"subscriptions" | "custom">("subscriptions");
+  const openSubscriptions = (tab?: "subscriptions" | "custom" | React.MouseEvent) => {
+    const validTab = (tab === "subscriptions" || tab === "custom") ? tab : "subscriptions";
+    setSubDrawerTab(validTab);
     if (mobile) window.dispatchEvent(new CustomEvent("netbox-navigate-tab", { detail: "profiles" }));
     else setSubDrawerOpen(true);
   };
@@ -110,6 +126,50 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
   const localByAlias = useMemo(() => new Map(localNodes.view?.nodes.map(n => [n.alias, n]) || []), [localNodes.view]);
   const nodeLabel = (name: string) => localByAlias.get(name)?.name || name;
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [activeFilterDropdown, setActiveFilterDropdown] = useState<"group" | "filter" | "sort" | null>(null);
+  const [filterDropdownPos, setFilterDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const groupBtnRef = useRef<HTMLButtonElement>(null);
+  const filterBtnRef = useRef<HTMLButtonElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
+  const filterDropdownRef = useRef<HTMLDivElement>(null);
+
+  const toggleFilterDropdown = (type: "group" | "filter" | "sort", btn: HTMLButtonElement | null) => {
+    if (activeFilterDropdown === type) {
+      setActiveFilterDropdown(null);
+      return;
+    }
+    if (btn) {
+      const rect = btn.getBoundingClientRect();
+      setFilterDropdownPos({
+        top: rect.bottom + 6,
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - 240)),
+      });
+    }
+    setActiveFilterDropdown(type);
+  };
+
+  useEffect(() => {
+    if (!activeFilterDropdown) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (filterDropdownRef.current?.contains(target)) return;
+      if (groupBtnRef.current?.contains(target)) return;
+      if (filterBtnRef.current?.contains(target)) return;
+      if (sortBtnRef.current?.contains(target)) return;
+      setActiveFilterDropdown(null);
+    };
+    const handleScrollOrResize = () => {
+      setActiveFilterDropdown(null);
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    window.addEventListener("scroll", handleScrollOrResize, true);
+    window.addEventListener("resize", handleScrollOrResize);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      window.removeEventListener("scroll", handleScrollOrResize, true);
+      window.removeEventListener("resize", handleScrollOrResize);
+    };
+  }, [activeFilterDropdown]);
   const [groups, setGroups] = useState<ProxyGroup[]>([]);
   const [selectionGroup, setSelectionGroup] = useState("");
   const switchingNode = useRef(false);
@@ -147,51 +207,24 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
     }
   });
   const [sortBy, setSortBy] = useState<"default" | "latency-asc" | "name-asc">("default");
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [addMenuPos, setAddMenuPos] = useState({ top: 0, right: 0 });
-  const addMenuButtonRef = useRef<HTMLButtonElement>(null);
-  const addMenuDropdownRef = useRef<HTMLDivElement>(null);
-
-  const updateAddMenuPos = () => {
-    if (addMenuButtonRef.current) {
-      const rect = addMenuButtonRef.current.getBoundingClientRect();
-      setAddMenuPos({
-        top: rect.bottom + 6,
-        right: Math.max(8, window.innerWidth - rect.right),
-      });
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (sourceFilter !== "all") count++;
+    if (hideTimeout) count++;
+    return count;
+  }, [sourceFilter, hideTimeout]);
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
+  const handleCopyNodeInfo = async (node: LocalNodeSummary) => {
+    const info = `${node.protocol}://${node.server}:${node.port}#${encodeURIComponent(node.name)}`;
+    try {
+      await navigator.clipboard.writeText(info);
+      setCopyNotice(`已复制「${node.name}」配置链接`);
+      setTimeout(() => setCopyNotice(null), 2500);
+    } catch {
+      setCopyNotice("剪贴板写入失败");
+      setTimeout(() => setCopyNotice(null), 2000);
     }
   };
-
-  const handleToggleAddMenu = () => {
-    if (!addMenuOpen) {
-      updateAddMenuPos();
-    }
-    setAddMenuOpen((prev) => !prev);
-  };
-
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    const handleOutsideClick = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        addMenuButtonRef.current && !addMenuButtonRef.current.contains(target) &&
-        addMenuDropdownRef.current && !addMenuDropdownRef.current.contains(target)
-      ) {
-        setAddMenuOpen(false);
-      }
-    };
-    const handleWindowChange = () => {
-      updateAddMenuPos();
-    };
-    document.addEventListener("mousedown", handleOutsideClick);
-    window.addEventListener("resize", handleWindowChange);
-    window.addEventListener("scroll", handleWindowChange, true);
-    return () => {
-      document.removeEventListener("mousedown", handleOutsideClick);
-      window.removeEventListener("resize", handleWindowChange);
-      window.removeEventListener("scroll", handleWindowChange, true);
-    };
-  }, [addMenuOpen]);
 
   // 自建智能策略组规则
   const [smartRules, setSmartRules] = useState<SmartGroupRule[]>([]);
@@ -218,6 +251,74 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
   // 侧边订阅管理抽屉
   const [subDrawerOpen, setSubDrawerOpen] = useState(false);
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
+
+  // 核心状态联动
+  const { status: coreStatus } = useCoreStatus();
+
+  // A+B 双模视图控制 (方案 A：默认 Table View 紧凑表格，支持切换为 Grid View 自适应微卡)
+  const [viewMode, setViewMode] = useState<"table" | "grid">(() => {
+    try {
+      return (localStorage.getItem("netbox_lines_view_mode") as "table" | "grid") || "table";
+    } catch {
+      return "table";
+    }
+  });
+  const handleToggleViewMode = (mode: "table" | "grid") => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem("netbox_lines_view_mode", mode);
+    } catch {}
+  };
+
+  // 浮动右侧：节点全息解锁/风控详情抽屉 (Inspector Drawer)
+  const [inspectorNode, setInspectorNode] = useState<ProxyItem | null>(null);
+  const [inspectorUnlocks, setInspectorUnlocks] = useState<UnlockItem[]>([]);
+  const [testingUnlocks, setTestingUnlocks] = useState(false);
+  const [copiedIp, setCopiedIp] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const copyToClipboard = (text: string) => {
+    try {
+      void navigator.clipboard.writeText(text);
+      setCopiedIp(true);
+      setTimeout(() => setCopiedIp(false), 2000);
+    } catch {}
+  };
+
+  const openInspector = (node: ProxyItem) => {
+    setInspectorNode(node);
+    setInspectorUnlocks([]);
+  };
+  const closeInspector = () => {
+    setInspectorNode(null);
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (inspectorNode) closeInspector();
+        if (activeFilterDropdown) setActiveFilterDropdown(null);
+      } else if (e.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [inspectorNode, activeFilterDropdown]);
+
+  const handleRetestUnlocks = async () => {
+    if (testingUnlocks) return;
+    setTestingUnlocks(true);
+    try {
+      const port = coreStatus.mixedPort || 7890;
+      const results = await probeUnlockMatrix(port);
+      setInspectorUnlocks(results);
+    } catch (err) {
+      console.error("探测流媒体/AI 解锁能力失败:", err);
+    } finally {
+      setTestingUnlocks(false);
+    }
+  };
   const [subLoading, setSubLoading] = useState(false);
   const [newSubUrl, setNewSubUrl] = useState("");
   const [newSubName, setNewSubName] = useState("");
@@ -1007,22 +1108,22 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
   }, [probeMessage, probingAll, anySingleProbe, probeDetailOpen]);
 
   return (
-    <div className={`${mobile ? "mobile-nodes-page " : ""}flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-950 transition-colors duration-200 relative`}>
+    <div className={`${mobile ? "mobile-nodes-page " : ""}flex-1 flex flex-col h-full overflow-hidden bg-slate-50 dark:bg-[#0a0c10] transition-colors duration-200 relative`}>
       {(catalogMessage || (!mobile && catalogOffline)) && <div role="status" className="mobile-notice mx-3 my-2 shrink-0">
         {!mobile && catalogOffline && <p>当前为本地配置管理，可管理订阅、本地节点和自建线路，保存后在下次启动核心时使用。切换出口、测速和 IP 体检需启动核心。</p>}
         {catalogMessage && <p>{catalogMessage} <button onClick={() => void loadData()}>重新读取</button></p>}
       </div>}
       {((probeMessage && (!mobile || (!probingAll && !anySingleProbe))) || (!mobile && (probingAll || anySingleProbe))) && (
-        <div role="status" className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center max-w-[92vw]">
-          <div className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full bg-slate-900/92 dark:bg-slate-800/95 text-white text-xs font-medium shadow-xl border border-slate-700/70 backdrop-blur-md">
+        <div role="status" className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex flex-col-reverse items-center max-w-[92vw] animate-in fade-in slide-in-from-bottom-3 duration-200" data-no-drag>
+          <div className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#121316]/95 dark:bg-[#121316]/95 text-zinc-100 text-xs font-medium shadow-[0_20px_40px_-15px_rgba(0,0,0,0.8),inset_0_1px_0_0_rgba(255,255,255,0.08)] border hairline-divider backdrop-blur-2xl">
             {(probingAll || anySingleProbe) ? (
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping shrink-0" />
+              <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping shrink-0" />
             ) : probeFailures.length > 0 || /失败|未完成|取消|需要先启动/.test(probeMessage) ? (
               <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
             ) : (
               <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
             )}
-            <span className="truncate max-w-[60vw]">
+            <span className="truncate max-w-[60vw] font-mono">
               {probeMessage || (probeProgress ? `正在体检 (${probeProgress.completed}/${probeProgress.total})…` : "正在检测节点 IP 画像…")}
             </span>
             {!probingAll && !anySingleProbe && probeFailures.length > 1 && (
@@ -1038,7 +1139,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
               <button
                 type="button"
                 onClick={() => { pendingJobs.current.forEach(job => job.abort()); setProbeMessage("正在取消体检…"); }}
-                className="px-2 py-0.5 rounded-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-400/30 text-[11px] font-semibold transition shrink-0"
+                className="px-2 py-0.5 rounded-full bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-400/30 text-[11px] font-semibold transition shrink-0 cursor-pointer"
               >
                 取消检测
               </button>
@@ -1048,29 +1149,29 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                 type="button"
                 aria-label="关闭体检提示"
                 onClick={() => { setProbeMessage(""); setProbeFailures([]); setProbeDetailOpen(false); }}
-                className="ml-0.5 w-4 h-4 rounded-full inline-flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700/60 transition shrink-0"
+                className="ml-0.5 w-4 h-4 rounded-full inline-flex items-center justify-center text-zinc-400 hover:text-white hover:bg-white/10 transition shrink-0 cursor-pointer"
               >
                 ✕
               </button>
             )}
           </div>
           {probeDetailOpen && probeFailures.length > 0 && (
-            <div className="mt-2 w-[360px] max-w-[90vw] rounded-2xl bg-slate-900/95 dark:bg-slate-800/95 text-slate-200 border border-slate-700/80 shadow-2xl backdrop-blur-md p-3 text-xs">
-              <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-700/70">
-                <span className="font-semibold text-amber-300">失败节点摘要（可单独点击节点卡片重试）</span>
+            <div className="mb-2 w-[380px] max-w-[90vw] rounded-2xl bg-[#121316]/95 text-zinc-200 border hairline-divider shadow-2xl backdrop-blur-2xl p-3.5 text-xs animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-2 mb-2 border-b hairline-divider">
+                <span className="font-semibold text-amber-300">失败节点摘要（可单独点击节点重试）</span>
                 <button
                   type="button"
                   onClick={() => setProbeDetailOpen(false)}
-                  className="text-slate-400 hover:text-white text-[11px]"
+                  className="text-zinc-400 hover:text-white text-[11px]"
                 >
                   收起
                 </button>
               </div>
-              <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+              <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1 font-mono">
                 {probeFailures.map((item, idx) => (
-                  <div key={`${item.node}-${idx}`} className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-slate-800/70 dark:bg-slate-900/60">
-                    <span className="truncate text-slate-200 font-medium">{item.node}</span>
-                    <span className="shrink-0 text-[11px] text-amber-300/90 bg-amber-500/10 px-1.5 py-0.5 rounded">{item.reason}</span>
+                  <div key={`${item.node}-${idx}`} className="flex items-center justify-between gap-2 py-1 px-2 rounded-lg bg-white/[0.03] border hairline-divider">
+                    <span className="truncate text-zinc-200 font-medium">{item.node}</span>
+                    <span className="shrink-0 text-[11px] text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">{item.reason}</span>
                   </div>
                 ))}
               </div>
@@ -1305,228 +1406,346 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
           )}
         </div>
       ) : (
-        <div className="px-5 py-2.5 border-b border-slate-200/90 dark:border-slate-800/80 bg-white/70 dark:bg-slate-900/40 backdrop-blur-md flex items-center justify-between gap-3 shrink-0 relative z-20 shadow-2xs overflow-x-auto">
-          {/* 左侧：搜索 + 来源筛选 + 超时过滤 + 排序 (单行规整排布，严禁断行错位) */}
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            {/* 搜索框 */}
-            <div className="relative flex-1 min-w-[130px] max-w-[220px]">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                aria-label="搜索节点"
-                placeholder="搜索节点名称、地区、协议..."
-                value={searchKeyword}
-                onChange={(e) => setSearchKeyword(e.target.value)}
-                className="w-full pl-9 pr-7 py-1.5 text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-xl focus:outline-hidden focus:border-indigo-500 transition"
-              />
-              {searchKeyword && (
-                <button
-                  type="button"
-                  onClick={() => setSearchKeyword("")}
-                  aria-label="清空搜索"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
+        <div className="px-5 py-2.5 border-b border-slate-200/80 dark:border-white/[0.06] bg-white/80 dark:bg-[#0a0c10]/90 backdrop-blur-2xl flex items-center justify-between gap-3 shrink-0 relative z-30 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)]">
+          {/* 左侧：一体化控制台容器 (Linear Obsidian 风格：黑曜石深色内凹下沉底座，极简 2~3 项，绝无叠字重叠) */}
+          <div className="flex items-center min-w-0 flex-1">
+            <div className="flex items-center rounded-xl border border-slate-200/80 dark:border-white/[0.08] bg-slate-100/80 dark:bg-black/45 p-0.5 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3),0_1px_0_0_rgba(255,255,255,0.03)] min-w-0">
+              {/* 1. 策略组选择 (冷灰静音指南针) */}
+              {groups.some(g => g.name !== "GLOBAL" && /^(selector|select)$/i.test(g.type)) && (
+                <>
+                  <button
+                    ref={groupBtnRef}
+                    type="button"
+                    onClick={(e) => toggleFilterDropdown("group", e.currentTarget)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg text-slate-800 dark:text-zinc-200 transition cursor-pointer select-none shrink-0 ${
+                      activeFilterDropdown === "group"
+                        ? "bg-slate-200/90 dark:bg-white/10 text-slate-950 dark:text-white"
+                        : "hover:bg-slate-200/50 dark:hover:bg-white/[0.06]"
+                    }`}
+                    title="切换当前聚焦的策略组"
+                  >
+                    <Compass className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                    <span className="truncate max-w-[100px] font-sans">
+                      {selectionGroup || (groups.find(g => g.name !== "GLOBAL" && /^(selector|select)$/i.test(g.type))?.name ?? "PROXY")}
+                    </span>
+                    <ChevronDown className={`w-3 h-3 text-slate-400 dark:text-zinc-500 transition-transform duration-200 ${activeFilterDropdown === "group" ? "rotate-180" : ""}`} />
+                  </button>
+                  <div className="h-3.5 w-px bg-slate-200 dark:bg-white/[0.08] shrink-0 mx-0.5" />
+                </>
               )}
+
+              {/* 2. 搜索框 (自适应弹性伸缩，绝不挤压右侧) */}
+              <div className="relative flex items-center min-w-[90px] max-w-[160px] px-2 py-0.5">
+                <Search className="w-3.5 h-3.5 text-slate-400 dark:text-zinc-500 shrink-0 mr-1.5 pointer-events-none" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  aria-label="搜索节点"
+                  placeholder="搜索节点..."
+                  value={searchKeyword}
+                  onChange={(e) => setSearchKeyword(e.target.value)}
+                  className="w-full bg-transparent border-0 text-xs text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-500 focus:outline-hidden"
+                />
+                <div className="flex items-center gap-1 shrink-0 ml-1">
+                  {searchKeyword ? (
+                    <button
+                      type="button"
+                      onClick={() => setSearchKeyword("")}
+                      aria-label="清空搜索"
+                      className="text-slate-400 hover:text-slate-600 dark:hover:text-zinc-200 p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  ) : (
+                    <kbd className="hidden sm:inline-flex px-1.5 py-0.2 text-[10px] font-mono text-zinc-400 dark:text-zinc-500 bg-black/5 dark:bg-white/5 border border-slate-200/50 dark:border-white/5 rounded">
+                      /
+                    </kbd>
+                  )}
+                </div>
+              </div>
+
+              <div className="h-3.5 w-px bg-slate-200 dark:bg-white/[0.08] shrink-0 mx-0.5" />
+
+              {/* 3. 🎛️ 筛选与排序 (彻底合并排序+来源+超时，左侧宽度骤减，杜绝与右侧测速相撞) */}
+              <button
+                ref={filterBtnRef}
+                type="button"
+                onClick={(e) => toggleFilterDropdown("filter", e.currentTarget)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg text-slate-800 dark:text-zinc-200 transition cursor-pointer select-none shrink-0 ${
+                  activeFilterCount > 0
+                    ? "bg-slate-200 dark:bg-white/10 text-slate-950 dark:text-white font-medium shadow-2xs border border-slate-300 dark:border-white/10"
+                    : activeFilterDropdown === "filter"
+                    ? "bg-slate-200/90 dark:bg-white/10 text-slate-950 dark:text-white"
+                    : "hover:bg-slate-200/50 dark:hover:bg-white/[0.06]"
+                }`}
+                title="节点来源过滤、测速超时排除与排序选项"
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                <span>
+                  {sortBy === "latency-asc"
+                    ? "延迟优先"
+                    : sortBy === "name-asc"
+                    ? "名称排序"
+                    : sourceFilter === "subscription"
+                    ? "仅订阅"
+                    : sourceFilter === "local"
+                    ? "仅自建"
+                    : "筛选与排序"}
+                </span>
+                {hideTimeout && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" title="已过滤测速超时节点" />
+                )}
+                <ChevronDown className={`w-3 h-3 text-slate-400 dark:text-zinc-500 transition-transform duration-200 ${activeFilterDropdown === "filter" ? "rotate-180" : ""}`} />
+              </button>
             </div>
-
-            {/* 来源下拉 */}
-            <select
-              aria-label="节点来源"
-              value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
-              className="px-2.5 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium cursor-pointer shrink-0"
-            >
-              <option value="all">全部来源</option>
-              <option value="subscription">仅订阅节点</option>
-              <option value="local">仅本地自建</option>
-            </select>
-
-            {/* 排除超时 */}
-            <button
-              type="button"
-              onClick={() => {
-                const next = !hideTimeout;
-                setHideTimeout(next);
-                try {
-                  localStorage.setItem("netbox_hide_timeout_nodes", String(next));
-                } catch {}
-              }}
-              className={`px-2.5 py-1.5 text-xs rounded-xl border font-medium transition cursor-pointer select-none shrink-0 whitespace-nowrap ${
-                hideTimeout
-                  ? "bg-indigo-50 text-indigo-600 border-indigo-200 dark:bg-indigo-600/15 dark:text-indigo-400 dark:border-indigo-500/30 font-semibold"
-                  : "bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700"
-              }`}
-              title="过滤测速超时的无效节点"
-            >
-              排除超时
-            </button>
-
-            {/* 排序方式 */}
-            <select
-              aria-label="节点排序"
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="px-2.5 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium cursor-pointer shrink-0"
-            >
-              <option value="default">默认排序</option>
-              <option value="latency-asc">延迟优先</option>
-              <option value="name-asc">名称排序</option>
-            </select>
           </div>
 
-          {/* 右侧：诊断运维 + 订阅入口 + 聚合添加菜单 */}
-          <div className="flex items-center space-x-2 shrink-0">
-            {/* 1. 全量测速 */}
-            <button
-              type="button"
-              onClick={handleTestAll}
-              disabled={testingAll || realNodes.length === 0 || catalogOffline}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs font-semibold transition shadow-2xs disabled:opacity-50 cursor-pointer"
-              title="测试全部节点真实往返握手延迟"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${testingAll ? "animate-spin text-indigo-500" : ""}`} />
-              <span>{testingAll ? "测速中..." : "全量测速"}</span>
-            </button>
-
-            {/* 2. 全量 IP 体检 */}
-            <button
-              type="button"
-              onClick={() => void handleProbeAllHealth()}
-              disabled={healthUnavailable || probingAll || anySingleProbe || realNodes.length === 0}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 dark:bg-purple-600/15 dark:hover:bg-purple-600/25 dark:text-purple-300 border border-purple-200 dark:border-purple-800/60 text-xs font-semibold transition shadow-2xs disabled:opacity-50 cursor-pointer"
-              title={healthUnavailable ? "启动核心后可进行 IP 体检" : "深度检测全部节点的真实出口 IP、风控评分与住宅/机房属性"}
-            >
-              <Shield className={`w-3.5 h-3.5 ${probingAll ? "animate-spin text-purple-600 dark:text-purple-400" : "text-purple-500"}`} />
-              <span>
-                {probingAll
-                  ? `体检中 ${probeProgress?.completed || 0}/${probeProgress?.total || realNodes.length}`
-                  : "IP 体检"}
-              </span>
-            </button>
-
-            {/* 3. 日志 */}
-            <button
-              type="button"
-              onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent("netbox-navigate-tab", { detail: "logs" })
-                );
-              }}
-              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs transition shadow-2xs cursor-pointer"
-              title="查看测速、IP 体检与网络运行日志"
-            >
-              <ScrollText className="w-3.5 h-3.5 text-indigo-500" />
-            </button>
-
-            {/* 分隔线 */}
-            <div className="h-4 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block" />
-
-            {/* 4. 订阅管理 */}
-            <button
-              type="button"
-              onClick={() => {
-                openSubscriptions();
-                if (!mobile) void runSubscriptionAction(async () => { setProfiles(await getProfiles()); });
-              }}
-              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-600/15 dark:hover:bg-indigo-600/25 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 text-xs font-semibold transition shadow-2xs cursor-pointer"
-            >
-              <Radio className="w-3.5 h-3.5" />
-              <span>订阅管理</span>
-              {profiles.length > 0 && (
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-200/80 dark:bg-indigo-500/40 font-mono">
-                  {profiles.length}
-                </span>
-              )}
-            </button>
-
-            {/* 5. 聚合操作：添加与自建 ▾ */}
-            <div className="relative inline-block">
-              <button
-                ref={addMenuButtonRef}
-                type="button"
-                onClick={handleToggleAddMenu}
-                className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 transition cursor-pointer select-none"
+          {/* 统一过滤器下拉菜单 (Portal 挂载到 body，深空黑曜石背景与冷白微光) */}
+          {activeFilterDropdown &&
+            createPortal(
+              <div
+                ref={filterDropdownRef}
+                style={{ top: `${filterDropdownPos.top}px`, left: `${filterDropdownPos.left}px` }}
+                className="fixed z-[9999] bg-white/95 dark:bg-[#0d1015]/95 backdrop-blur-2xl border border-slate-200/80 dark:border-white/[0.08] rounded-2xl shadow-[0_25px_50px_-12px_rgba(0,0,0,0.85),inset_0_1px_0_0_rgba(255,255,255,0.06)] p-1.5 text-xs space-y-0.5 animate-in fade-in zoom-in-95 duration-100 font-sans select-none"
+                data-no-drag
               >
-                <Plus className="w-3.5 h-3.5" />
-                <span>节点与自建</span>
-                <ChevronDown className={`w-3 h-3 text-white/80 transition-transform duration-200 ${addMenuOpen ? "rotate-180" : ""}`} />
+                {activeFilterDropdown === "group" && (
+                  <div className="w-52">
+                    <div className="px-2.5 py-1.5 text-[10px] text-zinc-400 font-mono font-semibold uppercase tracking-wider border-b border-slate-200/60 dark:border-white/[0.06]">
+                      策略组 (Policy Group)
+                    </div>
+                    <div className="max-h-60 overflow-y-auto space-y-0.5 py-1">
+                      {groups.filter(g => g.name !== "GLOBAL" && /^(selector|select)$/i.test(g.type)).map(g => {
+                        const isCurrent = (selectionGroup === g.name || (!selectionGroup && g.name === groups.find(x => x.name !== "GLOBAL" && /^(selector|select)$/i.test(x.type))?.name));
+                        return (
+                          <button
+                            key={g.name}
+                            type="button"
+                            onClick={() => {
+                              setSelectionGroup(g.name);
+                              setActiveFilterDropdown(null);
+                            }}
+                            className={`w-full px-2.5 py-1.5 text-left rounded-lg transition flex items-center justify-between cursor-pointer ${
+                              isCurrent
+                                ? "bg-white/10 text-white font-semibold"
+                                : "hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-zinc-300"
+                            }`}
+                          >
+                            <span className="truncate flex-1">{g.name}</span>
+                            <span className="text-[10px] font-mono opacity-50 shrink-0 ml-1.5">{g.all.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {activeFilterDropdown === "filter" && (
+                  <div className="w-52 space-y-2 p-1">
+                    {/* 排序模块 */}
+                    <div>
+                      <div className="flex items-center gap-1.5 px-2 py-1 text-[10px] text-zinc-400 font-mono font-semibold uppercase tracking-wider border-b border-slate-200/60 dark:border-white/[0.06] mb-1">
+                        <ArrowDownUp className="w-3 h-3 text-zinc-400" />
+                        <span>排序方式 (Sort By)</span>
+                      </div>
+                      <div className="space-y-0.5">
+                        {[
+                          { value: "default", label: "默认排序" },
+                          { value: "latency-asc", label: "延迟优先" },
+                          { value: "name-asc", label: "名称排序" },
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => {
+                              setSortBy(opt.value as any);
+                              setActiveFilterDropdown(null);
+                            }}
+                            className={`w-full px-2.5 py-1.5 text-left rounded-lg transition flex items-center justify-between cursor-pointer ${
+                              sortBy === opt.value
+                                ? "bg-white/10 text-white font-semibold"
+                                : "text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06]"
+                            }`}
+                          >
+                            <span>{opt.label}</span>
+                            {sortBy === opt.value && <Check className="w-3 h-3 text-zinc-200" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 来源模块 */}
+                    <div>
+                      <div className="px-2 py-1 text-[10px] text-zinc-400 font-mono font-semibold uppercase tracking-wider border-b border-slate-200/60 dark:border-white/[0.06] mb-1">
+                        节点来源 (Source)
+                      </div>
+                      <div className="space-y-0.5">
+                        {[
+                          { value: "all", label: "全部来源" },
+                          { value: "subscription", label: "仅订阅节点" },
+                          { value: "local", label: "仅本地自建" },
+                        ].map((opt) => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => {
+                              setSourceFilter(opt.value);
+                              setActiveFilterDropdown(null);
+                            }}
+                            className={`w-full px-2.5 py-1.5 text-left rounded-lg transition flex items-center justify-between cursor-pointer ${
+                              sourceFilter === opt.value
+                                ? "bg-white/10 text-white font-semibold"
+                                : "text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.06]"
+                            }`}
+                          >
+                            <span>{opt.label}</span>
+                            {sourceFilter === opt.value && <Check className="w-3 h-3 text-zinc-200" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 选项模块 */}
+                    <div className="pt-1.5 border-t border-slate-200/60 dark:border-white/[0.06]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !hideTimeout;
+                          setHideTimeout(next);
+                          try {
+                            localStorage.setItem("netbox_hide_timeout_nodes", String(next));
+                          } catch {}
+                        }}
+                        className="w-full px-2.5 py-1.5 rounded-lg transition flex items-center justify-between cursor-pointer hover:bg-slate-100 dark:hover:bg-white/[0.06] text-left select-none text-xs"
+                      >
+                        <span className="text-slate-800 dark:text-zinc-200">隐藏测速超时节点</span>
+                        <span className={`w-4 h-4 rounded border flex items-center justify-center transition ${
+                          hideTimeout
+                            ? "bg-sky-500 border-sky-400 text-white"
+                            : "border-slate-300 dark:border-zinc-600 bg-transparent"
+                        }`}>
+                          {hideTimeout && <Check className="w-3 h-3 stroke-[3]" />}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>,
+              document.body
+            )}
+
+          {/* 右侧：诊断运维 + 视图切换 + 订阅入口 + 聚合添加菜单 */}
+          <div className="flex items-center space-x-2 shrink-0">
+            {/* 诊断运维微按钮组 (冷灰单色系统) */}
+            <div className="flex items-center p-0.5 rounded-xl bg-slate-100/80 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shrink-0 gap-0.5 shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.2)]">
+              <button
+                type="button"
+                onClick={handleTestAll}
+                disabled={testingAll || realNodes.length === 0 || catalogOffline}
+                className="flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-700 dark:text-zinc-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-white/10 transition cursor-pointer disabled:opacity-50"
+                title="全量节点往返握手延迟测速"
+              >
+                <RefreshCw className={`w-3 h-3 ${testingAll ? "animate-spin text-sky-400" : "text-zinc-400"}`} />
+                <span>{testingAll ? "测速中" : "测速"}</span>
               </button>
 
-              {/* 下拉浮层卡片 (Portal 挂载到 body，彻底消除局部 overflow-x-auto 容器的裁剪和下层遮挡) */}
-              {addMenuOpen &&
-                createPortal(
-                  <div
-                    ref={addMenuDropdownRef}
-                    style={{ top: `${addMenuPos.top}px`, right: `${addMenuPos.right}px` }}
-                    className="fixed z-[9999] w-52 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-1.5 text-xs space-y-1 animate-in fade-in zoom-in-95 duration-100 font-sans"
-                    data-no-drag
-                  >
-                    <div className="px-2.5 py-1.5 text-[10px] text-slate-400 font-semibold uppercase tracking-wider border-b border-slate-100 dark:border-slate-800/80">
-                      管理与自定义
-                    </div>
-                    <button
-                      type="button"
-                      disabled={localNodes.busy || !localNodes.view}
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        localNodes.openNew();
-                      }}
-                      className="w-full p-2 rounded-xl text-left hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition flex items-center space-x-2.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <Plus className="w-3.5 h-3.5 text-indigo-500" />
-                      <div>
-                        <div className="font-semibold text-slate-900 dark:text-slate-100">新增本地节点</div>
-                        <div className="text-[10px] text-slate-400">手动录入单节点配置</div>
-                      </div>
-                    </button>
+              <button
+                type="button"
+                onClick={() => void handleProbeAllHealth()}
+                disabled={healthUnavailable || probingAll || anySingleProbe || realNodes.length === 0}
+                className="flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-medium text-slate-700 dark:text-zinc-300 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-white/10 transition cursor-pointer disabled:opacity-50"
+                title={healthUnavailable ? "启动核心后可进行 IP 体检" : "深度体检全部节点的真实出口 IP、风控评分与属性"}
+              >
+                <Shield className={`w-3 h-3 ${probingAll ? "animate-spin text-purple-400" : "text-zinc-400"}`} />
+                <span>{probingAll ? `${probeProgress?.completed || 0}/${probeProgress?.total || realNodes.length}` : "体检"}</span>
+              </button>
 
-                    <button
-                      type="button"
-                      disabled={localNodes.busy || !localNodes.view}
-                      onClick={() => {
-                        setAddMenuOpen(false);
-                        localNodes.openImport();
-                      }}
-                      className="w-full p-2 rounded-xl text-left hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition flex items-center space-x-2.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <Link2 className="w-3.5 h-3.5 text-emerald-500" />
-                      <div>
-                        <div className="font-semibold text-slate-900 dark:text-slate-100">导入节点配置</div>
-                        <div className="text-[10px] text-slate-400">从剪贴板或链接批量导入</div>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        setAddMenuOpen(false);
-                        smartTrigger.current = event.currentTarget;
-                        setEditingRule(null);
-                        setSmartModalOpen(true);
-                      }}
-                      className="w-full p-2 rounded-xl text-left hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition flex items-center space-x-2.5 cursor-pointer"
-                    >
-                      <Zap className="w-3.5 h-3.5 text-amber-500" />
-                      <div>
-                        <div className="font-semibold text-slate-900 dark:text-slate-100">新建自建线路</div>
-                        <div className="text-[10px] text-slate-400">配置轮询/负载均衡策略组</div>
-                      </div>
-                    </button>
-                  </div>,
-                  document.body
-                )}
+              <button
+                type="button"
+                onClick={() => {
+                  window.dispatchEvent(
+                    new CustomEvent("netbox-navigate-tab", { detail: "logs" })
+                  );
+                }}
+                className="p-1 rounded-lg text-zinc-400 hover:text-slate-950 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-white/10 transition cursor-pointer"
+                title="查看测速、IP 体检与网络运行日志"
+              >
+                <ScrollText className="w-3.5 h-3.5 text-zinc-400" />
+              </button>
             </div>
+
+            {/* 分隔线 */}
+            <div className="h-4 w-px bg-slate-200 dark:bg-white/[0.08] mx-0.5 hidden sm:block" />
+
+            {/* 视图切换：高密度紧凑表格 Table ⇋ 自适应微卡 Grid */}
+            <div className="flex items-center p-0.5 rounded-xl bg-slate-100/80 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shrink-0">
+              <button
+                type="button"
+                onClick={() => handleToggleViewMode("table")}
+                title="高密度紧凑数据表格 (方案 A)"
+                className={`p-1.5 rounded-lg transition cursor-pointer ${
+                  viewMode === "table"
+                    ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-bold"
+                    : "text-zinc-500 hover:text-zinc-200"
+                }`}
+              >
+                <List className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleToggleViewMode("grid")}
+                title="自适应微卡网格"
+                className={`p-1.5 rounded-lg transition cursor-pointer ${
+                  viewMode === "grid"
+                    ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-bold"
+                    : "text-zinc-500 hover:text-zinc-200"
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* 分隔线 */}
+            <div className="h-4 w-px bg-slate-200 dark:bg-white/[0.08] mx-0.5 hidden sm:block" />
+
+            {/* 节点源与自建聚合入口 (Linear 风格发丝高光胶囊，统一管理订阅源与本地自建) */}
+            <button
+              type="button"
+              onClick={() => {
+                openSubscriptions("subscriptions");
+                if (!mobile) void runSubscriptionAction(async () => { setProfiles(await getProfiles()); });
+              }}
+              title="统一管理订阅源配置与本地自建节点"
+              className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-slate-100/90 dark:bg-white/[0.05] hover:bg-slate-200/90 dark:hover:bg-white/[0.09] text-slate-800 dark:text-zinc-100 border border-slate-200/80 dark:border-white/[0.08] text-xs font-medium transition shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] cursor-pointer shrink-0 select-none active:scale-[0.99]"
+            >
+              <Radio className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span>节点源与自建</span>
+              <div className="flex items-center gap-1 font-mono text-[10px]">
+                {subMeta.remainingTraffic ? (
+                  <span className="px-1.5 py-0.2 rounded-md bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 font-bold">
+                    {subMeta.remainingTraffic}
+                  </span>
+                ) : profiles.length > 0 ? (
+                  <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-slate-600 dark:text-zinc-300">
+                    {profiles.length} 订阅
+                  </span>
+                ) : null}
+                {localNodes.view?.nodes && localNodes.view.nodes.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20 font-bold">
+                    {localNodes.view.nodes.length} 自建
+                  </span>
+                )}
+              </div>
+            </button>
           </div>
         </div>
       )}
 
       {/* 主工作区滚动面板 */}
-      <VirtualGridScroller className={`${mobile ? "mobile-node-scroller " : ""}flex-1 min-h-0 overflow-y-auto p-6 space-y-6`} resetKey={`${search}:${hideTimeout}:${sourceFilter}`}>
+      <VirtualGridScroller className={`${mobile ? "mobile-node-scroller " : ""}flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4`} resetKey={`${search}:${hideTimeout}:${sourceFilter}`}>
         {/* 全局 / 直连模式状态横幅 */}
         {coreMode === "global" && (
-          <div className="p-3.5 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/80 text-xs text-indigo-800 dark:text-indigo-200 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+          <div className="p-3 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/80 text-xs text-indigo-800 dark:text-indigo-200 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
             <div className="flex items-center gap-2">
               <span className="font-bold flex items-center gap-1.5">🌐 全局代理模式 (Global)</span>
               <span className="text-[11px] text-indigo-600/90 dark:text-indigo-300">常规全网出站强锁主出口；业务套件优先保留独立专属出口 (选项 A)</span>
@@ -1538,7 +1757,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
           </div>
         )}
         {coreMode === "direct" && (
-          <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between gap-2 shadow-2xs">
+          <div className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 flex items-center justify-between gap-2 shadow-2xs">
             <div className="flex items-center gap-2">
               <span className="font-bold flex items-center gap-1.5">⚡ 直接连接模式 (Direct)</span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400">所有出站流量均不走代理直接通信</span>
@@ -1546,62 +1765,19 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
           </div>
         )}
 
-        {/* 节点订阅账号状态看板 (由伪节点提炼为纯净看板) */}
-        {!mobile && (subMeta.remainingTraffic || subMeta.expireDate || subMeta.resetDays) && (
-          <div className={mobile
-            ? "p-2 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-800/40 flex items-center justify-between gap-2 text-[11px]"
-            : "p-3.5 rounded-2xl bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-sky-500/10 border border-indigo-200/80 dark:border-indigo-500/30 flex flex-wrap items-center justify-between gap-3 shadow-2xs"
-          }>
-            <div hidden={mobile} className="flex items-center space-x-2.5">
-              <div className="p-1.5 rounded-xl bg-indigo-500/20 text-indigo-600 dark:text-indigo-400">
-                <Radio className="w-4 h-4" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">节点订阅状态看板</h4>
-                <p className="text-[10px] text-slate-500 dark:text-slate-400">订阅提供的流量与有效期信息</p>
+        {/* 自建核心线路区 (仅在有自建规则时展示，空规则时完全静默隐藏，不占任何空间) */}
+        {smartRules.length > 0 && (
+          <div>
+            <div className={`${mobile ? "mobile-node-list-heading " : ""}flex items-center justify-between mb-2.5`}>
+              <div className="flex items-center space-x-2">
+                <Zap className="w-4 h-4 text-indigo-500" />
+                <h3 className="text-xs font-bold text-slate-800 dark:text-slate-200 tracking-wide uppercase">
+                  {mobile ? "自建线路" : "自建核心线路 (智能优选 / 双跳中继)"}
+                </h3>
+                <span className="text-[11px] text-slate-400 font-mono">({smartRules.length})</span>
               </div>
             </div>
 
-            <div className={`flex items-center ${mobile ? "justify-between w-full" : "space-x-3"} text-xs font-mono`}>
-              {subMeta.remainingTraffic && (
-                <div className={`flex items-center space-x-1.5 ${mobile ? "px-2 py-0.5" : "px-3 py-1"} rounded-lg bg-white/80 dark:bg-slate-900/80 border border-indigo-200 dark:border-indigo-800`}>
-                  <span className="text-[10px] text-slate-400 font-sans">余量:</span>
-                  <span className="font-bold text-indigo-600 dark:text-indigo-400">{subMeta.remainingTraffic}</span>
-                </div>
-              )}
-              {subMeta.expireDate && (
-                <div className={`flex items-center space-x-1.5 ${mobile ? "px-2 py-0.5" : "px-3 py-1"} rounded-lg bg-white/80 dark:bg-slate-900/80 border border-purple-200 dark:border-purple-800`}>
-                  <span className="text-[10px] text-slate-400 font-sans">到期:</span>
-                  <span className="font-bold text-purple-600 dark:text-purple-400">{subMeta.expireDate}</span>
-                </div>
-              )}
-              {subMeta.resetDays && (
-                <div className={`flex items-center space-x-1.5 ${mobile ? "px-2 py-0.5" : "px-3 py-1"} rounded-lg bg-white/80 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800`}>
-                  <span className="text-[10px] text-slate-400 font-sans">重置:</span>
-                  <span className="font-bold text-slate-700 dark:text-slate-300">{subMeta.resetDays}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 板块一：自建核心线路区 */}
-        {(!mobile || smartRules.length > 0) && <div>
-          <div className={`${mobile ? "mobile-node-list-heading " : ""}flex items-center justify-between mb-3`}>
-            <div className="flex items-center space-x-2">
-              <Zap className="w-4 h-4 text-indigo-500" />
-              <h3 className="text-xs font-bold text-slate-800 dark:text-slate-200 tracking-wide uppercase">
-                {mobile ? "自建线路" : "自建核心线路 (智能优选 / 双跳中继)"}
-              </h3>
-              <span className="text-[11px] text-slate-400 font-mono">({smartRules.length})</span>
-            </div>
-          </div>
-
-          {smartRules.length === 0 ? (
-            <div className="p-4 rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 text-center text-xs text-slate-500 dark:text-slate-400">
-              <span>暂无自建线路。您可以在下方节点库中勾选多个节点，在底部操作栏一键打包为“自动优选组”或“中继链”。</span>
-            </div>
-          ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {smartRules.map((rule) => {
                 const isRelay = rule.type === "relay";
@@ -1612,36 +1788,36 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                   <div
                     key={rule.id}
                     onClick={() => handleSelectProxy(rule.name)}
-                    className={`p-4 rounded-2xl transition-all cursor-pointer group select-none border relative flex flex-col justify-between ${
+                    className={`p-3.5 rounded-xl transition-all cursor-pointer group select-none border hairline-divider relative flex flex-col justify-between ${
                       isActive
-                        ? "bg-emerald-50/80 border-emerald-500 dark:bg-emerald-600/15 dark:border-emerald-500 shadow-xs ring-1 ring-emerald-500/50"
-                        : "bg-white/90 dark:bg-slate-900/80 border-slate-200/90 dark:border-slate-800/80 shadow-xs hover:border-indigo-400 dark:hover:border-indigo-500/50"
+                        ? "bg-emerald-500/[0.05] dark:bg-emerald-500/[0.08] ring-1 ring-emerald-500/40 shadow-[inset_0_1px_0_0_rgba(16,185,129,0.15)]"
+                        : "bg-white/60 dark:bg-[#121316]/60 hover:dark:bg-[#121316]/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] hover:border-zinc-400 dark:hover:border-zinc-700"
                     }`}
                   >
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center space-x-2 min-w-0 flex-1">
                           <span
-                            className={`p-1.5 rounded-lg text-xs ${
+                            className={`p-1.5 rounded-lg text-xs font-mono ${
                               isRelay
-                                ? "bg-purple-100 text-purple-600 dark:bg-purple-500/20 dark:text-purple-400"
-                                : "bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400"
+                                ? "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20"
+                                : "bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20"
                             }`}
                           >
                             {isRelay ? <Link2 className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
                           </span>
-                          <span className="text-xs font-bold text-slate-900 dark:text-white truncate" title={rule.name}>
+                          <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate" title={rule.name}>
                             {rule.name}
                           </span>
                         </div>
                         <div className="flex items-center space-x-1.5 shrink-0">
                           {isActive ? (
-                            <span className="flex items-center space-x-0.5 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold">
+                            <span className="flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-mono font-bold border border-emerald-500/20">
                               <Check className="w-3 h-3" />
                               <span>使用中</span>
                             </span>
                           ) : (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 opacity-70 group-hover:opacity-100 transition font-medium">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/[0.04] text-zinc-400 border hairline-divider opacity-70 group-hover:opacity-100 transition font-mono">
                               {catalogOffline ? "已保存" : "点击启用"}
                             </span>
                           )}
@@ -1655,7 +1831,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                             }}
                             title="编辑该自建线路"
                             aria-label={`编辑自建线路：${rule.name}`}
-                            className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition"
+                            className="p-1 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition"
                           >
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
@@ -1666,28 +1842,28 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                               handleDeleteSmartRule(rule.id, e);
                             }}
                             title="删除该自建线路"
-                            className="p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition"
+                            className="p-1 rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 transition"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </div>
 
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
+                      <div className="text-[11px] text-zinc-400 space-y-1">
                         {isRelay ? (
-                          <div className="flex items-center space-x-1 text-xs">
-                            <span className="truncate max-w-[110px]">{rule.relayEntry || "入口"}</span>
-                            <span>➔</span>
-                            <span className="truncate max-w-[110px] font-semibold text-purple-500">
+                          <div className="flex items-center space-x-1.5 text-xs font-mono">
+                            <span className="truncate max-w-[110px] text-zinc-300">{rule.relayEntry || "入口"}</span>
+                            <span className="text-zinc-500">➔</span>
+                            <span className="truncate max-w-[110px] font-semibold text-purple-400">
                               {rule.relayExit || "出口"}
                             </span>
                           </div>
                         ) : (
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-medium text-slate-700 dark:text-slate-300">
-                              成员节点: <b className="font-mono text-indigo-600 dark:text-indigo-400">{matchedCount}</b> 个
+                          <div className="flex items-center justify-between text-xs font-mono">
+                            <span className="text-zinc-400 font-sans">
+                              成员节点: <b className="font-mono text-zinc-200">{matchedCount}</b> 个
                             </span>
-                            <span className="text-indigo-500 font-mono text-[10px] uppercase">
+                            <span className="text-sky-400 font-mono text-[10px] uppercase">
                               {rule.type} 智能优选
                             </span>
                           </div>
@@ -1698,53 +1874,11 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                 );
               })}
             </div>
-          )}
-        </div>}
+          </div>
+        )}
 
-        {/* 板块二：基础节点库 */}
+        {/* 基础节点池 */}
         <div>
-          {!mobile && (
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center space-x-2">
-                <Globe className="w-4 h-4 text-indigo-500" />
-                <h3 className="text-xs font-bold text-slate-800 dark:text-slate-200 tracking-wide uppercase">
-                  基础节点池大盘 (按真实出口 IP 归属持久化)
-                </h3>
-                <span className="text-[11px] text-slate-400 font-mono">({filteredNodes.length} 可用)</span>
-              </div>
-            </div>
-          )}
-
-          {/* 首次无 IP 体检体验或存在未确认节点提示横幅 */}
-          {!mobile && unprobedCount > 0 && (
-            <div className="mb-3.5 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-900 dark:text-amber-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-start space-x-2.5 max-w-[80%]">
-                <div className="p-1.5 rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
-                  <AlertCircle className="w-4 h-4" />
-                </div>
-                <div className="space-y-0.5">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-xs font-bold">检测到 {unprobedCount} 个节点尚未体检真实出口 IP</span>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-amber-500/20 font-mono">出口待核验</span>
-                  </div>
-                  <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
-                    节点名称可能与实际出口地区不同。完成 IP 体检后，按检测到的地区分类。
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => void handleProbeAllHealth()}
-                disabled={healthUnavailable || probingAll || anySingleProbe}
-                className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition shadow-xs cursor-pointer shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Shield className="w-3.5 h-3.5" />
-                <span>{probingAll ? "体检中..." : "一键体检确认"}</span>
-              </button>
-            </div>
-          )}
-
           {regionGroups.length === 0 ? (
             <div className="p-8 rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 text-center space-y-3">
               <Radio className="w-8 h-8 text-slate-300 mx-auto" />
@@ -1758,32 +1892,74 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
               </button>
             </div>
           ) : (
-            <div className="space-y-5">
+            <div className="space-y-4">
+              {/* 表头 (Sticky Table Header: 精确 CSS Grid 体系，优化列宽权重，杜绝黑洞断层，大幅扩充节点名空间) */}
+              {viewMode === "table" && !mobile && (
+                <div className="sticky top-0 z-10 grid grid-cols-[minmax(240px,3.5fr)_76px_52px_minmax(180px,1.6fr)_56px_96px_40px] items-center gap-2.5 px-3.5 py-1.5 border-b border-slate-200/80 dark:border-white/[0.06] text-[10.5px] font-mono text-slate-600 dark:text-zinc-400 bg-slate-50/90 dark:bg-[#0a0c10]/95 backdrop-blur-md select-none tracking-wider font-medium">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-3.5" />
+                    <span className="truncate">节点线路与出口</span>
+                  </div>
+                  <div className="text-center">协议</div>
+                  <div className="text-center">倍率</div>
+                  <div className="min-w-0 truncate">落地 IP & 运营商</div>
+                  <div className="text-center">风控</div>
+                  <div className="text-center">握手延迟</div>
+                  <div className="text-right pr-1">操作</div>
+                </div>
+              )}
               {(mobile ? [["全部节点", filteredNodes] as [string, ProxyItem[]]] : regionGroups).map(([regionTitle, nodes]) => (
                 <div key={regionTitle} className="space-y-2">
-                  {!mobile && <div className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-300 pb-1 border-b border-slate-200/80 dark:border-slate-800/60">
+                  {!mobile && <div className="flex items-center justify-between text-xs font-semibold text-zinc-700 dark:text-zinc-300 pb-1.5 border-b hairline-divider">
                     <div className="flex items-center space-x-2">
                       <span>{regionTitle}</span>
-                      <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200/80 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono">
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-md font-mono border hairline-divider ${
+                        regionTitle.startsWith("⏳")
+                          ? "bg-amber-500/10 text-amber-500 border-amber-500/20 font-bold"
+                          : "bg-white/[0.04] text-zinc-400"
+                      }`}>
                         {nodes.length}
                       </span>
+                      {regionTitle.startsWith("⏳") && (
+                        <span className="text-[11px] text-amber-500/80 font-normal hidden sm:inline">
+                          节点出口真实地区尚未体检核验
+                        </span>
+                      )}
                     </div>
 
-                    {/* 待确认真实出口分组提供【一键忽略本组】 */}
+                    {/* 待确认真实出口分组提供【一键体检本组】与【一键忽略本组】 */}
                     {regionTitle.startsWith("⏳") && (
-                      <button
-                        type="button"
-                        onClick={(e) => handleIgnoreAllUnprobed(nodes, e)}
-                        className="flex items-center space-x-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition cursor-pointer"
-                        title="一键忽略这批尚未确认真实出口的节点，从大盘隐藏且不再提示"
-                      >
-                        <EyeOff className="w-3.5 h-3.5 text-slate-400" />
-                        <span>忽略本组</span>
-                      </button>
+                      <div className="flex items-center space-x-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleProbeAllHealth(nodes.map(n => n.name))}
+                          disabled={healthUnavailable || probingAll || anySingleProbe}
+                          className="flex items-center space-x-1 px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/20 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] transition cursor-pointer disabled:opacity-50"
+                          title="一键体检确认这批节点的真实出口地区"
+                        >
+                          <Shield className={`w-3 h-3 ${probingAll ? "animate-spin" : ""}`} />
+                          <span>{probingAll ? "体检中..." : "一键体检本组"}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleIgnoreAllUnprobed(nodes, e)}
+                          className="flex items-center space-x-1 px-2 py-0.5 rounded-md text-[11px] font-mono text-zinc-400 hover:text-zinc-200 bg-white/[0.04] hover:bg-white/[0.08] border hairline-divider transition cursor-pointer"
+                          title="一键忽略这批尚未确认真实出口的节点，从大盘隐藏且不再提示"
+                        >
+                          <EyeOff className="w-3 h-3 text-zinc-400" />
+                          <span>忽略本组</span>
+                        </button>
+                      </div>
                     )}
                   </div>}
 
-                  <VirtualGrid items={nodes} itemKey={node => node.name} label={`${regionTitle}节点`} columns={mobile ? 2 : undefined} rowHeight={mobile ? 138 : undefined} renderItem={(node) => {
+                  <VirtualGrid
+                    items={nodes}
+                    itemKey={node => node.name}
+                    label={`${regionTitle}节点`}
+                    columns={mobile ? 2 : viewMode === "table" ? 1 : undefined}
+                    rowHeight={mobile ? 138 : viewMode === "table" ? 42 : 112}
+                    renderItem={(node) => {
                       const isSelected = selectedSet.has(node.name);
                       const isActive = activeNodeName === node.name;
                       const delay = delayMap[node.name] ?? node.history?.[node.history.length - 1]?.delay ?? null;
@@ -1806,16 +1982,204 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                         onEdit={() => { const local = localByAlias.get(node.name); if (local) void localNodes.edit(local.id); }}
                         onDelete={() => { const local = localByAlias.get(node.name); if (local) localNodes.remove(local); }} />;
 
+                      if (viewMode === "table") {
+                        return (
+                          <div
+                            key={node.name}
+                            onClick={() => handleSelectProxy(node.name)}
+                            className={`h-full grid grid-cols-[minmax(240px,3.5fr)_76px_52px_minmax(180px,1.6fr)_56px_96px_40px] items-center gap-2.5 px-3.5 transition-colors cursor-pointer relative group select-none text-xs border-b border-slate-200/60 dark:border-white/[0.04] ${
+                              isActive
+                                ? "bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] text-zinc-900 dark:text-zinc-100 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-1 before:bg-emerald-500 before:rounded-r"
+                                : isSelected
+                                ? "bg-indigo-500/[0.06] dark:bg-indigo-500/[0.1] text-zinc-900 dark:text-zinc-100"
+                                : "hover:bg-slate-100/60 dark:hover:bg-white/[0.03] text-zinc-700 dark:text-zinc-300"
+                            }`}
+                          >
+                            {/* 列 1：勾选 + 节点名称 + 当前出口徽标 */}
+                            <div className="flex items-center space-x-2.5 min-w-0 truncate pr-1">
+                              <button
+                                type="button"
+                                onClick={(e) => toggleSelectNode(node.name, e)}
+                                title={isSelected ? "取消勾选" : "勾选以打包为线路"}
+                                className="text-zinc-400 hover:text-sky-400 transition shrink-0"
+                              >
+                                {isSelected ? (
+                                  <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+                                ) : (
+                                  <Square className="w-3.5 h-3.5 opacity-30 group-hover:opacity-80 transition" />
+                                )}
+                              </button>
+                              <div className="flex items-center space-x-2 min-w-0 flex-1 truncate">
+                                <span className="font-medium text-zinc-900 dark:text-zinc-200 truncate" title={nodeLabel(node.name)}>
+                                  {nodeLabel(node.name)}
+                                </span>
+                                {isActive && (
+                                  <span className="shrink-0 flex items-center space-x-1 px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-mono font-bold">
+                                    <Check className="w-3 h-3" />
+                                    <span>当前出口</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* 列 2：协议类型 */}
+                            <div className="flex items-center justify-center min-w-0">
+                              <span className="text-[10px] px-2 py-0.5 rounded bg-white/[0.04] border hairline-divider text-zinc-400 font-mono truncate max-w-full">
+                                {node.type}
+                              </span>
+                            </div>
+
+                            {/* 列 3：倍率与本地 */}
+                            <div className="flex items-center justify-center gap-1 min-w-0">
+                              {localByAlias.has(node.name) ? (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 font-mono">
+                                  本地
+                                </span>
+                              ) : mult !== null ? (
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono font-bold">
+                                  {formatMultiplier(mult)}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-zinc-600 font-mono">1.0x</span>
+                              )}
+                            </div>
+
+                            {/* 列 4：真实落地 IP 与 ASN 运营商 (空间重平衡，支持直接单节点快速体检，消除大面积留白虚无) */}
+                            <div className="flex items-center space-x-1.5 min-w-0 truncate text-[11px] text-zinc-400 dark:text-zinc-500 font-mono">
+                              {health?.ip ? (
+                                <div className="flex items-center space-x-1.5 min-w-0 truncate w-full">
+                                  <span className="text-zinc-300 shrink-0 font-medium">{health.ip}</span>
+                                  <span className="text-[10px] text-zinc-500 truncate" title={health.asOrganization || (health.asn ? `AS${health.asn}` : "")}>
+                                    {health.asOrganization || (health.asn ? `AS${health.asn}` : "")}
+                                  </span>
+                                </div>
+                              ) : realCountry ? (
+                                <div className="flex items-center space-x-1.5 min-w-0 truncate">
+                                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-sans font-medium truncate">
+                                    {realCountry}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleProbeHealth(node.name, e)}
+                                    disabled={healthUnavailable || isProbing || probingAll || anySingleProbe}
+                                    title="点击测出落地 IP 与风控详情"
+                                    className="text-[9.5px] text-zinc-500 hover:text-sky-400 font-mono transition cursor-pointer"
+                                  >
+                                    [体检]
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleProbeHealth(node.name, e)}
+                                  disabled={healthUnavailable || isProbing || probingAll || anySingleProbe}
+                                  title="该节点真实出口未确认，点击发起深度体检"
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 border border-amber-500/25 text-[10px] font-sans font-medium transition cursor-pointer disabled:opacity-50"
+                                >
+                                  <Shield className={`w-3 h-3 ${isProbing ? "animate-spin" : "opacity-75"}`} />
+                                  <span>{isProbing ? "体检中..." : "出口待核验"}</span>
+                                </button>
+                              )}
+                            </div>
+
+                            {/* 列 5：风控分数 (居中对齐) */}
+                            <div className="flex items-center justify-center min-w-0">
+                              {health && health.fraudScore != null ? (
+                                <span
+                                  className={`text-[10px] px-1.5 py-0.2 rounded font-mono border ${
+                                    health.fraudScore <= 25
+                                      ? "text-emerald-500 bg-emerald-500/10 border-emerald-500/20"
+                                      : health.fraudScore <= 60
+                                      ? "text-amber-500 bg-amber-500/10 border-amber-500/20"
+                                      : "text-rose-500 bg-rose-500/10 border-rose-500/20"
+                                  }`}
+                                  title={`欺诈风险评分: ${health.fraudScore}`}
+                                >
+                                  {health.fraudScore}分
+                                </span>
+                              ) : (
+                                <span className="text-zinc-600 font-mono text-[11px]">-</span>
+                              )}
+                            </div>
+
+                            {/* 列 6：握手延迟与测速 (居中对齐) */}
+                            <div className="flex items-center justify-center min-w-0">
+                              <button
+                                type="button"
+                                onClick={(e) => handleTestNode(node.name, e)}
+                                disabled={catalogOffline || isTesting}
+                                title={catalogOffline ? "启动核心后可测速" : delay === null ? "尚未测速，点击为此节点测速" : "单独为此节点测速"}
+                                className="inline-flex items-center space-x-1.5 px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold transition cursor-pointer hover:bg-white/10"
+                              >
+                                {isTesting ? (
+                                  <span className="text-sky-400 animate-pulse flex items-center gap-1">
+                                    <Zap className="w-3 h-3 animate-bounce" />
+                                    <span>测速中</span>
+                                  </span>
+                                ) : delay === null ? (
+                                  <span className="text-zinc-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 inline-block" />
+                                    <span>未测速</span>
+                                  </span>
+                                ) : delay <= 0 ? (
+                                  <span className="text-rose-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block" />
+                                    <span>超时</span>
+                                  </span>
+                                ) : delay < 100 ? (
+                                  <span className="text-emerald-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
+                                    <span>{delay}ms</span>
+                                  </span>
+                                ) : delay < 200 ? (
+                                  <span className="text-amber-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
+                                    <span>{delay}ms</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-rose-400 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 inline-block" />
+                                    <span>{delay}ms</span>
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+
+                            {/* 列 7：操作与详情 (右对齐) */}
+                            <div className="flex items-center justify-end space-x-1 pr-1 min-w-0">
+                              {localByAlias.has(node.name) && (
+                                <div className="flex items-center gap-0.5">
+                                  <button type="button" aria-label={`编辑 ${nodeLabel(node.name)}`} title="编辑本地节点" disabled={localNodes.busy} onClick={e => { e.stopPropagation(); void localNodes.edit(localByAlias.get(node.name)!.id); }} className="p-1 text-zinc-400 hover:text-zinc-200 cursor-pointer"><Pencil size={12} /></button>
+                                  <button type="button" aria-label={`删除 ${nodeLabel(node.name)}`} title="删除本地节点" disabled={localNodes.busy} onClick={e => { e.stopPropagation(); localNodes.remove(localByAlias.get(node.name)!); }} className="p-1 text-zinc-400 hover:text-rose-400 cursor-pointer"><Trash2 size={12} /></button>
+                                </div>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openInspector(node);
+                                }}
+                                title="查看全息解锁探针与风控详情"
+                                className="p-1 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition cursor-pointer"
+                              >
+                                <Info className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+
                       return (
                         <div
                           key={node.name}
                           onClick={() => handleSelectProxy(node.name)}
-                          className={`h-full p-3 rounded-2xl border transition-colors cursor-pointer relative group flex flex-col justify-between select-none ${
+                          className={`h-full p-3 rounded-xl border hairline-divider transition-all cursor-pointer relative group flex flex-col justify-between select-none ${
                             isActive
-                              ? "bg-emerald-50/80 border-emerald-500 dark:bg-emerald-600/15 dark:border-emerald-500 shadow-xs ring-1 ring-emerald-500/50"
+                              ? "bg-emerald-500/[0.04] dark:bg-emerald-500/[0.06] ring-1 ring-emerald-500/40 shadow-[inset_0_1px_0_0_rgba(16,185,129,0.15)]"
                               : isSelected
-                              ? "bg-indigo-50/70 border-indigo-400 dark:bg-indigo-600/15 dark:border-indigo-500 shadow-2xs"
-                              : "bg-white/80 dark:bg-slate-900/60 border-slate-200/80 dark:border-slate-800/80 hover:border-indigo-300 dark:hover:border-slate-700 hover:shadow-xs"
+                              ? "bg-indigo-500/[0.06] dark:bg-indigo-500/[0.1] border-indigo-500/40 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]"
+                              : "bg-white/60 dark:bg-[#121316]/60 hover:dark:bg-[#121316]/90 border hairline-divider shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] hover:border-zinc-400 dark:hover:border-zinc-700"
                           }`}
                         >
                           {/* 节点第一行：勾选框、名称与活动徽章 */}
@@ -1825,24 +2189,24 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                                 type="button"
                                 onClick={(e) => toggleSelectNode(node.name, e)}
                                 title={isSelected ? "取消勾选" : "勾选以打包为线路"}
-                                className="text-slate-400 hover:text-indigo-600 transition shrink-0"
+                                className="text-zinc-400 hover:text-sky-400 transition shrink-0"
                               >
                                 {isSelected ? (
-                                  <CheckSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                                  <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
                                 ) : (
-                                  <Square className="w-3.5 h-3.5 opacity-40 group-hover:opacity-100 transition" />
+                                  <Square className="w-3.5 h-3.5 opacity-30 group-hover:opacity-80 transition" />
                                 )}
                               </button>
-                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate flex-1" title={nodeLabel(node.name)}>
+                              <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-200 truncate flex-1" title={nodeLabel(node.name)}>
                                 {nodeLabel(node.name)}
                               </span>
                             </div>
                             {localByAlias.has(node.name) && <div className="flex items-center gap-1 shrink-0">
-                              <button type="button" aria-label={`编辑 ${nodeLabel(node.name)}`} title="编辑本地节点" disabled={localNodes.busy} onClick={e => { e.stopPropagation(); void localNodes.edit(localByAlias.get(node.name)!.id); }} className="p-1 text-slate-400 hover:text-indigo-500"><Pencil size={13} /></button>
-                              <button type="button" aria-label={`删除 ${nodeLabel(node.name)}`} title="删除本地节点" disabled={localNodes.busy} onClick={e => { e.stopPropagation(); localNodes.remove(localByAlias.get(node.name)!); }} className="p-1 text-slate-400 hover:text-rose-500"><Trash2 size={13} /></button>
+                              <button type="button" aria-label={`编辑 ${nodeLabel(node.name)}`} title="编辑本地节点" disabled={localNodes.busy} onClick={e => { e.stopPropagation(); void localNodes.edit(localByAlias.get(node.name)!.id); }} className="p-1 text-zinc-400 hover:text-zinc-200"><Pencil size={12} /></button>
+                              <button type="button" aria-label={`删除 ${nodeLabel(node.name)}`} title="删除本地节点" disabled={localNodes.busy} onClick={e => { e.stopPropagation(); localNodes.remove(localByAlias.get(node.name)!); }} className="p-1 text-zinc-400 hover:text-rose-400"><Trash2 size={12} /></button>
                             </div>}
                             {isActive && (
-                              <span className="flex items-center space-x-0.5 px-1.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold shrink-0">
+                              <span className="flex items-center space-x-1 px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-mono font-bold shrink-0">
                                 <Check className="w-3 h-3" />
                                 <span>使用中</span>
                               </span>
@@ -1850,27 +2214,27 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                           </div>
 
                           {/* 节点第二行：协议、倍率、真实出口与体检/测速/忽略 */}
-                          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-100 dark:border-slate-800/40">
+                          <div className="flex items-center justify-between text-[11px] pt-1.5 border-t hairline-divider">
                             <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
-                              <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-white/[0.04] border hairline-divider text-zinc-400 font-mono">
                                 {node.type}
                               </span>
-                              {localByAlias.has(node.name) && <span className="text-[10px] px-1.5 rounded-md bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-300">本地</span>}
+                              {localByAlias.has(node.name) && <span className="text-[10px] px-1.5 py-0.2 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 font-mono">本地</span>}
                               {mult !== null && (
-                                <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-amber-50 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 font-mono font-bold">
+                                <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono font-bold">
                                   {formatMultiplier(mult)}
                                 </span>
                               )}
                               {realCountry ? (
                                 <span
-                                  className="text-[10px] px-1.5 py-0.2 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium"
+                                  className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-sans font-medium"
                                   title={`真实出口 IP: ${health?.ip || "已验证"} (${realCountry})`}
                                 >
                                   {realCountry}
                                 </span>
                               ) : (
                                 <span
-                                  className="inline-flex items-center space-x-0.5 text-[10px] px-1.5 py-0.2 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium"
+                                  className="inline-flex items-center space-x-0.5 text-[10px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-sans font-medium"
                                   title="该节点尚未进行过真实出口 IP 体检"
                                 >
                                   <Shield className="w-2.5 h-2.5 opacity-80" />
@@ -1879,12 +2243,12 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                               )}
                               {health && health.fraudScore != null && (
                                 <span
-                                  className={`text-[10px] px-1 py-0.2 rounded-md font-mono ${
+                                  className={`text-[10px] px-1 py-0.2 rounded font-mono border ${
                                     health.fraudScore <= 25
-                                      ? "text-emerald-500 bg-emerald-500/10"
+                                      ? "text-emerald-500 bg-emerald-500/10 border-emerald-500/20"
                                       : health.fraudScore <= 60
-                                      ? "text-amber-500 bg-amber-500/10"
-                                      : "text-rose-500 bg-rose-500/10"
+                                      ? "text-amber-500 bg-amber-500/10 border-amber-500/20"
+                                      : "text-rose-500 bg-rose-500/10 border-rose-500/20"
                                   }`}
                                   title={`欺诈风险分: ${health.fraudScore}`}
                                 >
@@ -1893,7 +2257,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                               )}
                             </div>
 
-                            {/* 操作区：⚡ 单节点测速、🛡️ 单节点体检、🙈 忽略本节点 */}
+                            {/* 操作区：⚡ 单节点测速、🛡️ 单节点体检、ℹ 详情、🙈 忽略本节点 */}
                             <div className="flex items-center space-x-1 shrink-0 ml-1">
                               {/* 延迟数字与单测速 */}
                               <button
@@ -1901,22 +2265,39 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                                 onClick={(e) => handleTestNode(node.name, e)}
                                 disabled={catalogOffline || isTesting}
                                 title={catalogOffline ? "启动核心后可测速" : delay === null ? "尚未测速，点击为此节点测速" : "单独为此节点测速"}
-                                className={`inline-flex items-center space-x-0.5 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold transition cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 ${
-                                  isTesting
-                                    ? "text-indigo-500 animate-pulse"
-                                    : delay === null
-                                    ? "text-slate-400 bg-slate-100/80 dark:bg-slate-800/60"
-                                    : delay <= 0
-                                    ? "text-rose-500 bg-rose-50 dark:bg-rose-950/30"
-                                    : delay < 200
-                                    ? "text-emerald-500"
-                                    : delay < 500
-                                    ? "text-amber-500"
-                                    : "text-rose-500"
-                                }`}
+                                className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold transition cursor-pointer hover:bg-white/10"
                               >
-                                <Zap className={`w-3 h-3 ${isTesting ? "animate-bounce text-indigo-500" : delay === null ? "text-slate-400" : "text-amber-500"}`} />
-                                <span>{isTesting ? "测速中" : delay === null ? "未测速" : delay <= 0 ? "超时" : `${delay}ms`}</span>
+                                {isTesting ? (
+                                  <span className="text-sky-400 animate-pulse flex items-center gap-0.5">
+                                    <Zap className="w-3 h-3 animate-bounce" />
+                                    <span>测速中</span>
+                                  </span>
+                                ) : delay === null ? (
+                                  <span className="text-zinc-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 inline-block" />
+                                    <span>未测速</span>
+                                  </span>
+                                ) : delay <= 0 ? (
+                                  <span className="text-rose-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 inline-block" />
+                                    <span>超时</span>
+                                  </span>
+                                ) : delay < 100 ? (
+                                  <span className="text-emerald-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block animate-pulse" />
+                                    <span>{delay}ms</span>
+                                  </span>
+                                ) : delay < 200 ? (
+                                  <span className="text-amber-500 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
+                                    <span>{delay}ms</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-rose-400 flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400 inline-block" />
+                                    <span>{delay}ms</span>
+                                  </span>
+                                )}
                               </button>
 
                               {/* 单节点 IP 体检入口 */}
@@ -1925,9 +2306,22 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                                 onClick={(e) => handleProbeHealth(node.name, e)}
                                 disabled={healthUnavailable || isProbing || probingAll || anySingleProbe}
                                 title={healthUnavailable ? "启动核心后可进行 IP 体检" : "单节点 IP 深度体检并锁定真实出口国家"}
-                                className="p-1 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-950/40 transition cursor-pointer"
+                                className="p-1 rounded-md text-zinc-400 hover:text-purple-400 hover:bg-white/10 transition cursor-pointer"
                               >
-                                <Shield className={`w-3.5 h-3.5 ${isProbing ? "animate-spin text-purple-600" : ""}`} />
+                                <Shield className={`w-3.5 h-3.5 ${isProbing ? "animate-spin text-purple-400" : ""}`} />
+                              </button>
+
+                              {/* 全息详情抽屉按键 */}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openInspector(node);
+                                }}
+                                title="查看全息解锁探针与风控详情"
+                                className="p-1 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition cursor-pointer"
+                              >
+                                <Info className="w-3.5 h-3.5" />
                               </button>
 
                               {/* 忽略节点按钮 */}
@@ -1935,7 +2329,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                                 type="button"
                                 onClick={(e) => handleIgnoreNode(node.name, e)}
                                 title="忽略此节点（大盘隐藏且不再警告）"
-                                className="p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer opacity-30 group-hover:opacity-100"
+                                className="p-1 rounded-md text-zinc-400 hover:text-rose-400 hover:bg-white/10 transition cursor-pointer opacity-30 group-hover:opacity-100"
                               >
                                 <EyeOff className="w-3.5 h-3.5" />
                               </button>
@@ -2105,115 +2499,298 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
       )}
       </dialog>
 
-      {/* 侧边订阅管理抽屉 (Slide-over Drawer) */}
+      {/* 节点与源管理抽屉 (Resource & Sources Drawer: Linear / Raycast 极简冷黑悬浮质感) */}
         <dialog
           ref={subDrawer}
-          aria-labelledby="subscription-drawer-title"
+          aria-labelledby="resource-drawer-title"
           aria-busy={subLoading}
           data-no-drag
           onCancel={event => { event.preventDefault(); closeSubscriptionDialog(false); }}
           onPointerDown={event => { backdropPressed.current = event.target; }}
           onClick={event => closeSubscriptionBackdrop(event, false)}
-          className="fixed inset-0 z-[9999] m-0 ml-auto h-[100dvh] max-h-none w-full max-w-md p-0 overflow-hidden bg-transparent text-slate-800 dark:text-slate-100 backdrop:bg-slate-900/50 font-sans"
+          className="fixed inset-0 z-[9999] m-0 ml-auto h-[100dvh] max-h-none w-full max-w-[480px] p-0 overflow-hidden bg-transparent text-slate-800 dark:text-zinc-100 backdrop:bg-black/60 backdrop:backdrop-blur-xs font-sans"
         >
-          <div className="w-full max-w-md bg-white dark:bg-slate-900 h-full shadow-2xl flex flex-col justify-between border-l border-slate-200 dark:border-slate-800 animate-in slide-in-from-right duration-200">
-            {/* 抽屉顶部 */}
-            <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+          <div className="w-full max-w-[480px] bg-white/95 dark:bg-[#08090a]/95 backdrop-blur-2xl h-full shadow-[-30px_0_60px_-15px_rgba(0,0,0,0.85),inset_0_1px_0_0_rgba(255,255,255,0.08)] flex flex-col justify-between border-l border-slate-200/80 dark:border-white/10 animate-in slide-in-from-right duration-200">
+            {/* 抽屉顶部标题栏 */}
+            <div className="p-4 border-b border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between shrink-0">
               <div className="flex items-center space-x-2.5">
-                <Radio className="w-4 h-4 text-indigo-500" />
-                <h3 id="subscription-drawer-title" className="text-sm font-bold text-slate-900 dark:text-white">订阅源管理</h3>
+                <Layers className="w-4 h-4 text-indigo-400" />
+                <div>
+                  <h3 id="resource-drawer-title" className="text-sm font-bold text-slate-900 dark:text-white">
+                    节点与源管理
+                  </h3>
+                  <p className="text-[10px] text-zinc-400 font-sans">
+                    统一调度外部订阅配置与本机自建节点
+                  </p>
+                </div>
               </div>
-              <button
-                type="button"
-                aria-label="关闭订阅管理"
-                autoFocus
-                disabled={subLoading}
-                onClick={() => closeSubscriptionDialog(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <kbd className="hidden sm:inline-flex px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 bg-black/5 dark:bg-white/5 border border-slate-200/80 dark:border-white/10 rounded">
+                  ESC
+                </kbd>
+                <button
+                  type="button"
+                  aria-label="关闭节点源管理"
+                  autoFocus
+                  disabled={subLoading}
+                  onClick={() => closeSubscriptionDialog(false)}
+                  className="p-1 rounded-lg text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-white/10 transition disabled:opacity-40 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            {/* 抽屉主体：订阅卡片列表 */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-3">
-              <p className="text-xs text-slate-500 dark:text-slate-400">{mobile ? "切换当前订阅，节点列表会立即更新。" : "切换会应用该订阅的节点与规则；业务包出口不可用时会保留原订阅并提示重新绑定。"}</p>
-              {subError && <p role="alert" className="text-xs text-red-700 dark:text-red-300 break-words">{subError}</p>}
-              {subNotice && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300 break-words">{subNotice}</p>}
-              {profiles.length === 0 ? (
-                <div className="text-center py-12 text-xs text-slate-400 space-y-2">
-                  <p>您尚未添加任何订阅源。</p>
-                </div>
-              ) : (
-                profiles.map((prof) => (
-                  <div
-                    key={prof.id}
-                    className={`relative p-4 rounded-xl border flex flex-col gap-2.5 ${prof.isSelected ? "border-indigo-300 dark:border-indigo-600 bg-indigo-50/60 dark:bg-indigo-950/30" : "border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/40 hover:border-indigo-300 dark:hover:border-indigo-600"}`}
-                  >
-                    <button
-                      type="button"
-                      aria-label={`使用订阅：${prof.name}`}
-                      aria-pressed={prof.isSelected}
-                      aria-busy={switchingProfileId === prof.id}
-                      disabled={subLoading}
-                      onClick={() => void handleSelectSubscription(prof.id)}
-                      className="absolute inset-0 rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-wait"
-                    />
-                    <div className="relative pointer-events-none flex items-center justify-between">
-                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate max-w-[200px]">
-                        {prof.name}
-                      </span>
-                      <div className="pointer-events-auto flex items-center space-x-1">
-                        <button
-                          type="button"
-                          onClick={() => handleUpdateSubscription(prof.id)}
-                          disabled={subLoading}
-                          aria-label={`更新订阅：${prof.name}`}
-                          title="一键更新该订阅"
-                          className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/30"
-                        >
-                          <RefreshCw className={`w-3.5 h-3.5 ${subLoading ? "animate-spin" : ""}`} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteSubscription(prof.id)}
-                          disabled={subLoading}
-                          aria-label={`删除订阅：${prof.name}`}
-                          title="删除订阅"
-                          className="p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/30"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="relative pointer-events-none flex justify-end">
-                      <span role="status" className="text-xs text-indigo-600 dark:text-indigo-400">
-                        {switchingProfileId === prof.id ? "正在切换…" : prof.isSelected ? "✓ 使用中" : "点击卡片使用"}
-                      </span>
-                    </div>
+            {/* Linear 级无缝分段切换 (Segmented Control) */}
+            <div className="px-4 py-2.5 border-b border-slate-200/60 dark:border-white/[0.06] shrink-0">
+              <div className="flex items-center p-0.5 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)]">
+                <button
+                  type="button"
+                  onClick={() => setSubDrawerTab("subscriptions")}
+                  className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 cursor-pointer select-none ${
+                    subDrawerTab === "subscriptions"
+                      ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                      : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                  }`}
+                >
+                  <Radio className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>订阅源</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-zinc-500 dark:text-zinc-400 font-bold">
+                    {profiles.length}
+                  </span>
+                </button>
 
-                    <div className="relative pointer-events-none text-[11px] text-slate-400 flex justify-between">
-                      <span>节点数量: {prof.nodeCount || 0} 个</span>
-                      {prof.upload !== undefined && (
-                        <span>已用: {formatBytes((prof.upload || 0) + (prof.download || 0))}</span>
-                      )}
+                <button
+                  type="button"
+                  onClick={() => setSubDrawerTab("custom")}
+                  className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 cursor-pointer select-none ${
+                    subDrawerTab === "custom"
+                      ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                      : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                  }`}
+                >
+                  <Cpu className="w-3.5 h-3.5 text-sky-400" />
+                  <span>本地自建节点</span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-zinc-500 dark:text-zinc-400 font-bold">
+                    {localNodes.view?.nodes.length || 0}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* 抽屉可滚动内容区 */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {copyNotice && (
+                <div role="status" className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2 animate-in fade-in duration-150">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{copyNotice}</span>
+                </div>
+              )}
+
+              {subDrawerTab === "subscriptions" ? (
+                <>
+                  <p className="text-xs text-slate-500 dark:text-zinc-400 font-sans leading-relaxed">
+                    {mobile ? "切换当前订阅，节点大盘会立即同步更新。" : "切换订阅将热重载底层节点池与规则集；业务包若指定了专属出口将自动平滑迁移。"}
+                  </p>
+                  {subError && <p role="alert" className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl break-words">{subError}</p>}
+                  {subNotice && <p role="status" className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-xl break-words">{subNotice}</p>}
+
+                  {profiles.length === 0 ? (
+                    <div className="text-center py-12 text-xs text-zinc-500 space-y-2 border border-dashed border-slate-200 dark:border-white/10 rounded-2xl p-6">
+                      <Radio className="w-8 h-8 text-zinc-600 mx-auto" />
+                      <p>您尚未添加任何订阅源。</p>
+                      <p className="text-[11px] text-zinc-600">点击下方按钮录入订阅链接或批量导入。</p>
                     </div>
-                  </div>
-                ))
+                  ) : (
+                    profiles.map((prof) => (
+                      <div
+                        key={prof.id}
+                        className={`relative p-3.5 rounded-xl border transition-all flex flex-col gap-2.5 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] ${
+                          prof.isSelected
+                            ? "border-emerald-500/40 bg-emerald-500/[0.04] shadow-[inset_0_1px_0_0_rgba(16,185,129,0.15)]"
+                            : "border-slate-200/80 dark:border-white/10 bg-slate-50/70 dark:bg-[#121316]/60 hover:bg-slate-100/80 dark:hover:bg-[#18191e]/80"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          aria-label={`使用订阅：${prof.name}`}
+                          aria-pressed={prof.isSelected}
+                          aria-busy={switchingProfileId === prof.id}
+                          disabled={subLoading}
+                          onClick={() => void handleSelectSubscription(prof.id)}
+                          className="absolute inset-0 rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-wait"
+                        />
+                        <div className="relative pointer-events-none flex items-center justify-between">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-xs font-bold text-slate-800 dark:text-zinc-100 truncate max-w-[200px]">
+                              {prof.name}
+                            </span>
+                            {prof.isSelected && (
+                              <span className="shrink-0 flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 text-[10px] font-mono font-bold">
+                                <Check className="w-2.5 h-2.5" />
+                                <span>使用中</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="pointer-events-auto flex items-center space-x-1">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateSubscription(prof.id)}
+                              disabled={subLoading}
+                              aria-label={`更新订阅：${prof.name}`}
+                              title="一键更新该订阅"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition cursor-pointer"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${subLoading && switchingProfileId === prof.id ? "animate-spin text-sky-400" : ""}`} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteSubscription(prof.id)}
+                              disabled={subLoading}
+                              aria-label={`删除订阅：${prof.name}`}
+                              title="删除订阅"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="relative pointer-events-none flex items-center justify-between text-[11px] text-zinc-400 font-mono">
+                          <span>节点数: <b className="text-slate-700 dark:text-zinc-200 font-semibold">{prof.nodeCount || 0}</b></span>
+                          {prof.upload !== undefined && (
+                            <span>已用: <b className="text-slate-700 dark:text-zinc-300">{formatBytes((prof.upload || 0) + (prof.download || 0))}</b></span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-500 dark:text-zinc-400 font-sans leading-relaxed">
+                    本地手动维护的单节点或私有协议服务，不随订阅拉取被覆盖，持久安全固化于本机。
+                  </p>
+                  {localNodes.error && <p role="alert" className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl break-words">{localNodes.error}</p>}
+                  {localNodes.notice && <p role="status" className="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-xl break-words">{localNodes.notice}</p>}
+
+                  {(!localNodes.view?.nodes || localNodes.view.nodes.length === 0) ? (
+                    <div className="text-center py-12 text-xs text-zinc-500 space-y-2 border border-dashed border-slate-200 dark:border-white/10 rounded-2xl p-6">
+                      <Cpu className="w-8 h-8 text-zinc-600 mx-auto" />
+                      <p>尚未添加任何自建节点。</p>
+                      <p className="text-[11px] text-zinc-600">支持 AnyTLS, Reality, Hysteria2, VLESS, SS 等各类协议单节点。</p>
+                    </div>
+                  ) : (
+                    localNodes.view.nodes.map((node) => (
+                      <div
+                        key={node.id}
+                        className="relative p-3.5 rounded-xl border border-slate-200/80 dark:border-white/10 bg-slate-50/70 dark:bg-[#121316]/60 hover:bg-slate-100/80 dark:hover:bg-[#18191e]/80 transition-all flex flex-col gap-2 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] group"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-xs text-slate-900 dark:text-zinc-100 truncate" title={node.name}>
+                                {node.name}
+                              </span>
+                              <span className="shrink-0 px-1.5 py-0.2 rounded text-[10px] font-mono uppercase font-bold bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/20">
+                                {node.protocol}
+                              </span>
+                            </div>
+                            <div className="text-[11px] font-mono text-zinc-500 truncate mt-1">
+                              {node.server}:{node.port}
+                            </div>
+                          </div>
+
+                          {/* 快速操作组 */}
+                          <div className="flex items-center space-x-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => void handleCopyNodeInfo(node)}
+                              title="复制节点连接配置/地址"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void localNodes.edit(node.id)}
+                              disabled={localNodes.busy}
+                              title="编辑此自建节点"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition cursor-pointer disabled:opacity-50"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => localNodes.remove(node)}
+                              disabled={localNodes.busy}
+                              title="删除此自建节点"
+                              className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer disabled:opacity-50"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </>
               )}
             </div>
 
-            {/* 抽屉底部按钮 */}
-            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
-              <button
-                type="button"
-                onClick={() => { setAddSubError(""); setShowAddSubModal(true); }}
-                disabled={subLoading}
-                className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow transition flex items-center justify-center space-x-2 disabled:opacity-40"
-              >
-                <Plus className="w-4 h-4" />
-                <span>添加新订阅源</span>
-              </button>
+            {/* 抽屉底部操作栏 (根据当前 Tab 呈现对应操作) */}
+            <div className="p-4 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50/90 dark:bg-black/45 backdrop-blur-md shrink-0">
+              {subDrawerTab === "subscriptions" ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setAddSubError(""); setShowAddSubModal(true); }}
+                    disabled={subLoading}
+                    className="flex-1 py-2 px-3.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] transition-all flex items-center justify-center space-x-1.5 disabled:opacity-40 cursor-pointer active:scale-[0.98]"
+                  >
+                    <Plus className="w-4 h-4 text-zinc-950" />
+                    <span>添加新订阅源</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={localNodes.busy || !localNodes.view}
+                      onClick={() => localNodes.openNew()}
+                      className="flex-1 py-2 px-3.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] transition-all flex items-center justify-center space-x-1.5 disabled:opacity-40 cursor-pointer active:scale-[0.98]"
+                    >
+                      <Plus className="w-4 h-4 text-zinc-950" />
+                      <span>新建自建节点</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={localNodes.busy || !localNodes.view}
+                      onClick={() => localNodes.openImport()}
+                      className="py-2 px-3.5 rounded-xl bg-slate-200/80 dark:bg-white/[0.06] hover:bg-slate-300 dark:hover:bg-white/10 text-slate-800 dark:text-zinc-200 border border-slate-300 dark:border-white/10 text-xs font-medium transition flex items-center justify-center space-x-1.5 disabled:opacity-40 cursor-pointer"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>导入配置链接</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      setSubDrawerOpen(false);
+                      smartTrigger.current = event.currentTarget;
+                      setEditingRule(null);
+                      setSmartModalOpen(true);
+                    }}
+                    className="w-full py-1.5 px-3 rounded-lg text-center text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition flex items-center justify-center gap-1.5 cursor-pointer font-sans"
+                  >
+                    <Zap className="w-3 h-3 text-amber-400" />
+                    <span>组建智能线路 (轮询 / 负载均衡) ➔</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </dialog>
@@ -2226,14 +2803,17 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
           onCancel={event => { event.preventDefault(); closeSubscriptionDialog(true); }}
           onPointerDown={event => { backdropPressed.current = event.target; }}
           onClick={event => closeSubscriptionBackdrop(event, true)}
-          className="w-[min(384px,calc(100vw-32px))] max-h-[85dvh] overflow-y-auto p-0 rounded-2xl bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 shadow-2xl backdrop:bg-slate-900/60"
+          className="w-[min(420px,calc(100vw-32px))] max-h-[85dvh] overflow-y-auto p-0 rounded-2xl bg-white/95 dark:bg-[#0d1015]/95 text-slate-800 dark:text-zinc-100 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.85),inset_0_1px_0_0_rgba(255,255,255,0.06)] border border-slate-200/80 dark:border-white/10 backdrop:bg-black/60 backdrop:backdrop-blur-xs font-sans"
         >
-          <form onSubmit={event => { event.preventDefault(); void handleAddSubscription(); }} className="w-full border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-4">
-            <h4 id="add-subscription-title" className="text-sm font-bold text-slate-900 dark:text-white">添加订阅链接</h4>
-            {addSubError && <p role="alert" className="text-xs text-red-700 dark:text-red-300 break-words">{addSubError}</p>}
+          <form onSubmit={event => { event.preventDefault(); void handleAddSubscription(); }} className="w-full p-5 space-y-4">
+            <h4 id="add-subscription-title" className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Radio className="w-4 h-4 text-indigo-400" />
+              <span>添加订阅链接</span>
+            </h4>
+            {addSubError && <p role="alert" className="text-xs text-rose-500 bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl break-words">{addSubError}</p>}
             <div className="space-y-3">
               <div>
-                <label htmlFor="add-subscription-name" className="text-xs text-slate-500 block mb-1">订阅名称 (选填):</label>
+                <label htmlFor="add-subscription-name" className="text-xs text-zinc-400 block mb-1">订阅名称 (选填):</label>
                 <input
                   id="add-subscription-name"
                   autoFocus
@@ -2242,11 +2822,11 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                   placeholder="例如：极速专线"
                   value={newSubName}
                   onChange={(e) => setNewSubName(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                  className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-100 dark:bg-black/40 border border-slate-300 dark:border-white/10 text-slate-900 dark:text-zinc-100 placeholder:text-zinc-500 focus:outline-hidden focus:border-indigo-500"
                 />
               </div>
               <div>
-                <label htmlFor="add-subscription-url" className="text-xs text-slate-500 block mb-1">订阅链接 (URL):</label>
+                <label htmlFor="add-subscription-url" className="text-xs text-zinc-400 block mb-1">订阅链接 (URL):</label>
                 <input
                   id="add-subscription-url"
                   disabled={subLoading}
@@ -2254,7 +2834,7 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                   placeholder="https://..."
                   value={newSubUrl}
                   onChange={(e) => setNewSubUrl(e.target.value)}
-                  className="w-full px-3 py-2 text-xs rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700"
+                  className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-100 dark:bg-black/40 border border-slate-300 dark:border-white/10 text-slate-900 dark:text-zinc-100 placeholder:text-zinc-500 focus:outline-hidden focus:border-indigo-500"
                 />
               </div>
             </div>
@@ -2263,14 +2843,14 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
                 type="button"
                 disabled={subLoading}
                 onClick={() => closeSubscriptionDialog(true)}
-                className="px-3.5 py-1.5 rounded-xl text-xs text-slate-500"
+                className="px-3.5 py-1.5 rounded-xl text-xs text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
               >
                 取消
               </button>
               <button
                 type="submit"
                 disabled={subLoading || !newSubUrl.trim()}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold disabled:opacity-50"
+                className="px-4 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold shadow transition disabled:opacity-50 cursor-pointer"
               >
                 {subLoading ? "下载中..." : "保存并导入"}
               </button>
@@ -2301,6 +2881,332 @@ export const LinesManagementView: React.FC<{ coreMode?: MobileCoreMode }> = Reac
       <LocalNodeDialog dialog={localNodes.dialog} busy={localNodes.busy} error={localNodes.error} preview={localNodes.preview}
         onClose={localNodes.close} onSave={localNodes.save} onDelete={localNodes.confirmDelete} onPreview={localNodes.previewText} onImport={localNodes.importPreview} onClearPreview={localNodes.clearPreview} />
       {!localNodes.dialog && (localNodes.error || localNodes.notice) && <div role="status" className="absolute bottom-4 left-4 right-4 rounded-xl border border-slate-200 dark:border-slate-700 p-3 bg-white dark:bg-slate-900 text-xs text-slate-700 dark:text-slate-300 shadow-md flex items-center justify-between gap-2"><span>{localNodes.error || localNodes.notice}</span>{localNodes.error ? <button type="button" className="text-indigo-600 shrink-0" onClick={() => void localNodes.refresh()}>重新读取</button> : <button type="button" aria-label="关闭节点提示" onClick={localNodes.dismissNotice} className="shrink-0 p-1"><X size={14} /></button>}</div>}
+
+      {/* 浮动右侧：全息详情与解锁风控抽屉 (Inspector Drawer) */}
+      {inspectorNode && (
+        <div
+          className="absolute top-0 right-0 bottom-0 w-[360px] sm:w-[390px] bg-white/95 dark:bg-[#08090a]/95 backdrop-blur-2xl border-l hairline-divider shadow-[-25px_0_50px_-15px_rgba(0,0,0,0.8)] z-40 flex flex-col justify-between animate-in slide-in-from-right duration-200"
+          data-no-drag
+        >
+          {/* 抽屉头部 */}
+          <div className="p-4 border-b hairline-divider flex items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="text-xl shrink-0">
+                {(persistedNodeRegions[inspectorNode.name] || healthCache[inspectorNode.name]?.countryCode)
+                  ? (persistedNodeRegions[inspectorNode.name] || formatCountryRegionTitle(healthCache[inspectorNode.name]?.countryCode || "", healthCache[inspectorNode.name]?.country)).split(" ")[0]
+                  : "🌐"}
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate" title={nodeLabel(inspectorNode.name)}>
+                  {nodeLabel(inspectorNode.name)}
+                </h3>
+                <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-zinc-400">
+                  <span className="font-mono uppercase px-1.5 py-0.2 rounded bg-white/[0.04] border hairline-divider text-zinc-400">
+                    {inspectorNode.type}
+                  </span>
+                  {activeNodeName === inspectorNode.name && (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-500/15 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono">
+                      ✓ 当前活动出口
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={closeInspector}
+              className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/10 transition cursor-pointer"
+              title="关闭详情 (Esc)"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* 抽屉可滚动主体 */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3.5 text-xs">
+            {/* 卡片 1：链路质量与往返握手 */}
+            <div className="p-3.5 rounded-xl bg-white/60 dark:bg-[#121316]/60 border hairline-divider shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-amber-500" />
+                  <span>链路往返握手延迟</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => handleTestNode(inspectorNode.name, e)}
+                  disabled={catalogOffline || testingNodes[inspectorNode.name]}
+                  className="text-[10px] text-sky-400 hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50 font-mono"
+                >
+                  <RefreshCw className={`w-3 h-3 ${testingNodes[inspectorNode.name] ? "animate-spin" : ""}`} />
+                  <span>{testingNodes[inspectorNode.name] ? "测速中" : "重新测速"}</span>
+                </button>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono text-zinc-900 dark:text-zinc-100">
+                  {testingNodes[inspectorNode.name]
+                    ? "测速中..."
+                    : (delayMap[inspectorNode.name] ?? inspectorNode.history?.[inspectorNode.history.length - 1]?.delay ?? null) === null
+                    ? "未测速"
+                    : (delayMap[inspectorNode.name] ?? inspectorNode.history?.[inspectorNode.history.length - 1]?.delay ?? 0) <= 0
+                    ? "超时"
+                    : `${delayMap[inspectorNode.name] ?? inspectorNode.history?.[inspectorNode.history.length - 1]?.delay} ms`}
+                </span>
+                <span className="text-[10px] text-zinc-400">
+                  {(delayMap[inspectorNode.name] ?? inspectorNode.history?.[inspectorNode.history.length - 1]?.delay ?? 999) < 100
+                    ? "⚡ 极速响应 · 游戏与语音极佳"
+                    : (delayMap[inspectorNode.name] ?? inspectorNode.history?.[inspectorNode.history.length - 1]?.delay ?? 999) < 200
+                    ? "✓ 表现良好 · 网页流媒体流畅"
+                    : "高延迟链路"}
+                </span>
+              </div>
+            </div>
+
+            {/* 卡片 2：Scamalytics 真实风控雷达与网络属性 */}
+            <div className="p-3.5 rounded-xl bg-white/60 dark:bg-[#121316]/60 border hairline-divider shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Scamalytics 欺诈风控雷达</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => handleProbeHealth(inspectorNode.name, e)}
+                  disabled={healthUnavailable || probingNodes[inspectorNode.name] || probingAll}
+                  className="text-[10px] text-purple-400 hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50 font-mono"
+                >
+                  <RefreshCw className={`w-3 h-3 ${probingNodes[inspectorNode.name] ? "animate-spin" : ""}`} />
+                  <span>{probingNodes[inspectorNode.name] ? "体检中" : "深度体检"}</span>
+                </button>
+              </div>
+
+              {healthCache[inspectorNode.name]?.fraudScore != null ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                      风险评分: <span className="font-mono">{healthCache[inspectorNode.name].fraudScore} / 100</span>
+                    </span>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold border ${
+                        healthCache[inspectorNode.name].fraudScore! <= 25
+                          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                          : healthCache[inspectorNode.name].fraudScore! <= 60
+                          ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                          : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                      }`}
+                    >
+                      {healthCache[inspectorNode.name].fraudScore! <= 25
+                        ? "极佳 · 低风控纯净 IP"
+                        : healthCache[inspectorNode.name].fraudScore! <= 60
+                        ? "中度风控 · 存在拦截风险"
+                        : "高危节点 · 机房封禁高发"}
+                    </span>
+                  </div>
+                  {/* 风险条 */}
+                  <div className="w-full h-1.5 rounded-full bg-white/10 dark:bg-white/[0.08] overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        healthCache[inspectorNode.name].fraudScore! <= 25
+                          ? "bg-emerald-500"
+                          : healthCache[inspectorNode.name].fraudScore! <= 60
+                          ? "bg-amber-500"
+                          : "bg-rose-500"
+                      }`}
+                      style={{ width: `${Math.min(100, Math.max(5, healthCache[inspectorNode.name].fraudScore!))}%` }}
+                    />
+                  </div>
+                  {/* 属性微标 */}
+                  <div className="flex items-center gap-1.5 pt-1 text-[10px] font-mono">
+                    <span className="px-2 py-0.5 rounded bg-white/[0.04] border hairline-divider text-zinc-400">
+                      {healthCache[inspectorNode.name].isResidential ? "🏡 原生家庭住宅宽带" : "🏢 机房数据中心 (DC)"}
+                    </span>
+                    {healthCache[inspectorNode.name].isBroadcast && (
+                      <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        广播 IP
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-3 space-y-1.5">
+                  <p className="text-[11px] text-zinc-400">尚未为此节点检测出口 IP 纯净度与欺诈风险评分</p>
+                  <button
+                    type="button"
+                    onClick={(e) => handleProbeHealth(inspectorNode.name, e)}
+                    disabled={healthUnavailable || probingNodes[inspectorNode.name] || probingAll}
+                    className="px-3 py-1 text-xs rounded-lg bg-purple-500/15 text-purple-400 border border-purple-500/30 font-semibold hover:bg-purple-500/25 transition cursor-pointer"
+                  >
+                    即刻体检此节点
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 卡片 3：落地真实公网 IP 与 ASN 运营商 */}
+            <div className="p-3.5 rounded-xl bg-white/60 dark:bg-[#121316]/60 border hairline-divider shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-2">
+              <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5 text-sky-400" />
+                <span>落地真实公网 IP 与运营商</span>
+              </span>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between bg-black/5 dark:bg-white/[0.02] p-2 rounded-lg border hairline-divider">
+                  <span className="font-mono text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                    {healthCache[inspectorNode.name]?.ip || "未探测到出口 IP"}
+                  </span>
+                  {healthCache[inspectorNode.name]?.ip && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(healthCache[inspectorNode.name].ip)}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-zinc-400 hover:text-zinc-100 hover:bg-white/10 transition cursor-pointer"
+                      title="复制 IP 地址"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{copiedIp ? "已复制" : "复制"}</span>
+                    </button>
+                  )}
+                </div>
+                {healthCache[inspectorNode.name]?.asOrganization && (
+                  <div className="text-[11px] text-zinc-400 flex items-center justify-between font-mono">
+                    <span>运营商 / ASN:</span>
+                    <span className="text-zinc-300 truncate max-w-[200px]" title={healthCache[inspectorNode.name].asOrganization}>
+                      {healthCache[inspectorNode.name].asOrganization}
+                      {healthCache[inspectorNode.name].asn ? ` (AS${healthCache[inspectorNode.name].asn})` : ""}
+                    </span>
+                  </div>
+                )}
+                {(healthCache[inspectorNode.name]?.city || healthCache[inspectorNode.name]?.country) && (
+                  <div className="text-[11px] text-zinc-400 flex items-center justify-between font-mono">
+                    <span>物理定位:</span>
+                    <span className="text-zinc-300">
+                      {[healthCache[inspectorNode.name].city, healthCache[inspectorNode.name].region, healthCache[inspectorNode.name].country].filter(Boolean).join(", ")}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 卡片 4：AI 与流媒体全息解锁探针矩阵 */}
+            <div className="p-3.5 rounded-xl bg-white/60 dark:bg-[#121316]/60 border hairline-divider shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-sky-400" />
+                  <span>AI 与流媒体全息解锁探针</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRetestUnlocks}
+                  disabled={testingUnlocks}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-sky-400 text-[10px] font-semibold border hairline-divider transition cursor-pointer disabled:opacity-50"
+                  title="实时穿透检测当前节点对主流 AI 和流媒体服务的解锁能力"
+                >
+                  <RefreshCw className={`w-3 h-3 ${testingUnlocks ? "animate-spin" : ""}`} />
+                  <span>{testingUnlocks ? "探测中..." : "重测探针"}</span>
+                </button>
+              </div>
+
+              {testingUnlocks ? (
+                <div className="py-6 text-center space-y-2">
+                  <RefreshCw className="w-6 h-6 animate-spin text-sky-400 mx-auto" />
+                  <p className="text-[11px] text-zinc-400">
+                    正在穿透测试 OpenAI、Claude、YouTube、Netflix、Disney+ 等服务…
+                  </p>
+                </div>
+              ) : inspectorUnlocks.length > 0 ? (
+                <div className="grid grid-cols-1 gap-2">
+                  {inspectorUnlocks.map((item) => {
+                    const isUnlocked = item.status === "unlocked";
+                    const isRestricted = item.status === "restricted";
+                    const isBlocked = item.status === "blocked";
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="p-2 rounded-lg bg-black/5 dark:bg-white/[0.02] border hairline-divider flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-zinc-900 dark:text-zinc-100 text-[11px]">
+                              {item.name}
+                            </span>
+                            <span className="text-[9px] px-1 py-0.2 rounded font-mono text-zinc-400 bg-white/[0.04] border hairline-divider">
+                              {item.category}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 truncate mt-0.5" title={item.info}>
+                            {item.info}
+                          </p>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <span
+                            className={`text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border ${
+                              isUnlocked
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                : isRestricted
+                                ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                : isBlocked
+                                ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                                : "bg-white/[0.04] text-zinc-400 border hairline-divider"
+                            }`}
+                          >
+                            {isUnlocked ? "✓ 已解锁" : isRestricted ? "⚠ 受限" : isBlocked ? "✕ 阻断" : "失败"}
+                          </span>
+                          {item.latency_ms && (
+                            <div className="text-[9px] font-mono text-zinc-400 mt-0.5">
+                              {item.latency_ms}ms
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-4 rounded-xl border border-dashed hairline-divider space-y-2">
+                  <p className="text-[11px] text-zinc-400">
+                    点击右上角“重测探针”测试本节点对 OpenAI、Claude、YouTube、Netflix 等服务的真实解锁状态
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleRetestUnlocks}
+                    className="px-3 py-1 text-xs rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold shadow-[inset_0_1px_0_0_rgba(255,255,255,0.2)] transition cursor-pointer"
+                  >
+                    立即测试解锁能力
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 抽屉底部固定操作栏 */}
+          <div className="p-4 border-t hairline-divider bg-white/80 dark:bg-[#08090a]/90 backdrop-blur-xl flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={activeNodeName === inspectorNode.name}
+              onClick={() => {
+                void handleSelectProxy(inspectorNode.name);
+              }}
+              className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer shadow-[inset_0_1px_0_0_rgba(255,255,255,0.2)] ${
+                activeNodeName === inspectorNode.name
+                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 cursor-default"
+                  : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/20"
+              }`}
+            >
+              <Check className="w-4 h-4" />
+              <span>{activeNodeName === inspectorNode.name ? "当前已是出站出口" : "设为当前活动出口"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                handleIgnoreNode(inspectorNode.name, e);
+                closeInspector();
+              }}
+              className="p-2.5 rounded-xl border hairline-divider bg-white/[0.04] hover:bg-rose-500/10 text-zinc-400 hover:text-rose-400 transition cursor-pointer"
+              title="忽略该节点并从大盘隐藏"
+            >
+              <EyeOff className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

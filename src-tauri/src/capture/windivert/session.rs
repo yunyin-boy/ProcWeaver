@@ -140,7 +140,10 @@ fn confirm_blocking(plan: Plan, core_pid: u32) -> Result<(), String> {
     let mut holder = SESSION.lock().unwrap();
     if let Some(session) = holder.as_mut() {
         if session.core != core {
-            return Err("接管核心实例已改变，请重新启用模式".into());
+            // 接管核心实例已改变（核心发生热重启），释放旧会话并重新建立绑定
+            drop(holder);
+            stop();
+            return confirm_blocking(plan, core_pid);
         }
         if let Some(error) = error() {
             return Err(error);
@@ -155,6 +158,8 @@ fn confirm_blocking(plan: Plan, core_pid: u32) -> Result<(), String> {
             && session.plan.dns_port == plan.dns_port
             && session.plan.dns_domains == plan.dns_domains
             && session.plan.dns_all == plan.dns_all
+            && session.plan.mixed_port == plan.mixed_port
+            && session.plan.managed_endpoints == plan.managed_endpoints
         {
             Operation::Instances { instances: plan.instances.clone() }
         } else { Operation::Update { plan: plan.clone() } };
@@ -278,7 +283,7 @@ async fn exchange(
     sequence: &mut u64,
     operation: Operation,
 ) -> Result<Stats, String> {
-    let active_required = !matches!(operation, Operation::Stop {});
+    let active_required = matches!(operation, Operation::Start { .. } | Operation::Update { .. });
     *sequence = sequence.checked_add(1).ok_or("控制会话已耗尽")?;
     write(
         pipe,

@@ -85,59 +85,64 @@ export const BundleDetailModal: React.FC<Props> = ({
   );
 
   return createPortal(
-    <div className={`fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex font-sans ${drawer ? "justify-end" : "items-center justify-center p-4"}`} onMouseDown={e => { if (drawer && e.target === e.currentTarget) onClose(); }} data-no-drag>
-      <div ref={panel} tabIndex={-1} data-bundle-detail role="dialog" aria-modal="true" aria-label="业务包详情" className={`w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col outline-none ${drawer ? "h-full" : "rounded-2xl max-h-[90vh]"} animate-in fade-in duration-150`}>
+    <div className={`fixed inset-0 z-[9999] bg-black/60 backdrop-blur-md flex font-sans ${drawer ? "justify-end" : "items-center justify-center p-4"}`} onMouseDown={e => { if (drawer && e.target === e.currentTarget) onClose(); }} data-no-drag>
+      <div ref={panel} tabIndex={-1} data-bundle-detail role="dialog" aria-modal="true" aria-label="业务包详情" className={`w-full max-w-2xl bg-white/95 dark:bg-[#0d1015]/95 backdrop-blur-2xl border border-slate-200 dark:border-white/10 shadow-[-25px_25px_60px_-10px_rgba(0,0,0,0.85),inset_0_1px_0_0_rgba(255,255,255,0.06)] overflow-hidden flex flex-col outline-none ${drawer ? "h-full" : "rounded-2xl max-h-[90vh]"} animate-in fade-in zoom-in-95 duration-150`}>
         
-        {/* 头部 */}
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/80 dark:bg-slate-950/60">
+        {/* 头部 (Raycast 风格) */}
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between bg-slate-50/80 dark:bg-black/30">
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 flex items-center justify-center text-2xl shadow-inner">
+            <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-2xl shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
               {def.icon || "📦"}
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">
                   {def.packageName}
                 </h3>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-zinc-400 border border-slate-200/80 dark:border-white/[0.08]">
                   {def.packageVersion}
                 </span>
                 {instance.isModified && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-mono">
                     已自定义
                   </span>
                 )}
                 <span
-                  className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
                     instance.enabled
                       ? "bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/30"
-                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700"
+                      : "bg-slate-100 dark:bg-white/[0.04] text-slate-500 dark:text-zinc-400 border-slate-200 dark:border-white/[0.06]"
                   }`}
                 >
                   {def.mode === "sandbox" ? "🌱 智能沙盒" : "🔒 强锁模式"}
                 </span>
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5">
                 {def.description || "业务规则包运行状态审计、协同进程与域名清单"}
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1.5 rounded-lg hover:bg-slate-200/60 dark:hover:bg-slate-800 transition cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center space-x-2">
+            <kbd className="px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 bg-white/5 border border-white/10 rounded">
+              ESC
+            </kbd>
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white p-1.5 rounded-lg hover:bg-slate-200/60 dark:hover:bg-white/[0.08] transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* 滚动内容区 */}
         <div className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
           
-          {/* 1. 核心状态与实时连接核验面板 (图 2 重点) */}
-          <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-200/60 dark:border-slate-800 pb-2">
+          {/* 1. 核心状态与实时连接核验面板 */}
+          <div className="p-4 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-3">
+            <div className="flex items-center justify-between border-b border-slate-200/60 dark:border-white/[0.06] pb-2">
               <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center space-x-1.5 text-xs">
                 <Activity className="w-4 h-4 text-emerald-500" />
                 <span>{independent ? "独立代理与连接核验" : "核心运行与连接核验"}</span>
@@ -450,7 +455,7 @@ export const BundleDetailModal: React.FC<Props> = ({
         </div>
 
         {/* 底部按钮栏 */}
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900">
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-white/[0.08] flex items-center justify-between bg-white dark:bg-black/40">
           <div className="flex items-center space-x-2">
             {onEdit && (
               <button
@@ -459,9 +464,9 @@ export const BundleDetailModal: React.FC<Props> = ({
                   onClose();
                   onEdit(instance);
                 }}
-                className="px-3 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer flex items-center space-x-1.5 border border-slate-200 dark:border-slate-700"
+                className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-zinc-300 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition cursor-pointer flex items-center space-x-1.5 border border-slate-200/80 dark:border-white/[0.08]"
               >
-                <Pencil className="w-3.5 h-3.5" />
+                <Pencil className="w-3.5 h-3.5 text-zinc-400" />
                 <span>编辑规则定义</span>
               </button>
             )}
@@ -474,9 +479,9 @@ export const BundleDetailModal: React.FC<Props> = ({
                 onClick={() => {
                   onLaunch(instance.instanceId);
                 }}
-                className="px-4 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition cursor-pointer flex items-center space-x-1.5"
+                className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-zinc-100 hover:bg-white text-zinc-950 shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] active:scale-95 transition cursor-pointer flex items-center space-x-1.5"
               >
-                <Play className="w-3.5 h-3.5 fill-current" />
+                <Play className="w-3.5 h-3.5 fill-current text-zinc-950" />
                 <span>检测并启动应用</span>
               </button>
             )}
@@ -484,7 +489,7 @@ export const BundleDetailModal: React.FC<Props> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              className="px-4 py-1.5 rounded-xl text-xs font-medium text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition cursor-pointer"
             >
               关闭
             </button>

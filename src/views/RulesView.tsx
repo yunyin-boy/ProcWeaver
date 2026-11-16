@@ -236,6 +236,14 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
   // 自定义添加规则集弹窗状态
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   useMobileBack(() => { if (!isAddModalOpen) return false; setIsAddModalOpen(false); return true; }, 30);
+  useEffect(() => {
+    if (!isAddModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsAddModalOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isAddModalOpen]);
   const { plan: localPlan, saving: savingPlan, error: planError, reload: reloadLocalPlan, toggle: toggleLocalPlan } = useLocalRulePlan();
   const handlePlanToggle = async () => {
     if (await toggleLocalPlan()) await loadData();
@@ -731,12 +739,12 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
   const getTargetBadge = (target: string) => {
     const type = getTargetType(target);
     if (type === "DIRECT") {
-      return "text-emerald-400 bg-emerald-500/10 border-emerald-500/30";
+      return "text-emerald-500 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)]";
     }
     if (type === "REJECT") {
-      return "text-rose-400 bg-rose-500/10 border-rose-500/30";
+      return "text-rose-500 dark:text-rose-400 bg-rose-500/10 border border-rose-500/20 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)]";
     }
-    return "text-indigo-400 bg-indigo-500/10 border-indigo-500/30";
+    return "text-slate-800 dark:text-zinc-200 bg-black/5 dark:bg-white/[0.06] border border-slate-200/80 dark:border-white/10 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]";
   };
 
   const copyText = (txt: string) => {
@@ -904,163 +912,123 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
         </div>
       )}
 
-      {/* 规则统计看板 */}
-      <div hidden={mobile} className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
-        <div className="bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl p-4 flex items-center gap-3.5 shadow-sm transition-colors">
-          <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-600 dark:bg-indigo-500/10 dark:border-indigo-500/20 dark:text-indigo-400 flex items-center justify-center">
-            <Layers className="w-5 h-5" />
+      {/* 顶层极简微指标与安全防护控制带 (Linear Obsidian 风格：单行无缝黑曜石发丝分段胶囊，极致释放垂直视野) */}
+      <div hidden={mobile} className="flex flex-wrap items-center justify-between gap-2 p-1.5 rounded-2xl bg-white/60 dark:bg-[#121316]/50 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.03)] text-xs">
+        {/* 左侧：4项指标发丝胶囊组 */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-black/40 border border-slate-200/60 dark:border-white/[0.06] text-slate-700 dark:text-zinc-300 font-mono shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
+            <Layers className="w-3.5 h-3.5 text-zinc-400" />
+            <span className="text-[11px] font-sans text-slate-500 dark:text-zinc-400">总规则</span>
+            <span className="font-bold text-slate-900 dark:text-zinc-100">{metrics.total}</span>
           </div>
-          <div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">总规则条数</div>
-            <div className="text-lg font-bold text-slate-900 dark:text-white tracking-wide">{metrics.total}</div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-black/40 border border-slate-200/60 dark:border-white/[0.06] text-slate-700 dark:text-zinc-300 font-mono shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
+            <Globe className="w-3.5 h-3.5 text-zinc-400" />
+            <span className="text-[11px] font-sans text-slate-500 dark:text-zinc-400">域名规则</span>
+            <span className="font-bold text-slate-900 dark:text-zinc-100">
+              {metrics.directDomainCount > 0 ? metrics.directDomainCount : `${metrics.domainProviderCount} 规则集`}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-black/40 border border-slate-200/60 dark:border-white/[0.06] text-slate-700 dark:text-zinc-300 font-mono shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
+            <Server className="w-3.5 h-3.5 text-zinc-400" />
+            <span className="text-[11px] font-sans text-slate-500 dark:text-zinc-400">IP / Geo</span>
+            <span className="font-bold text-slate-900 dark:text-zinc-100">{metrics.ipCount + metrics.geoCount}</span>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-black/40 border border-slate-200/60 dark:border-white/[0.06] text-slate-700 dark:text-zinc-300 font-mono shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
+            <Database className="w-3.5 h-3.5 text-zinc-400" />
+            <span className="text-[11px] font-sans text-slate-500 dark:text-zinc-400">外部规则集</span>
+            <span className="font-bold text-slate-900 dark:text-zinc-100">{providers.length}</span>
           </div>
         </div>
 
-        <div className="bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl p-4 flex items-center gap-3.5 shadow-sm transition-colors">
-          <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 text-blue-600 dark:bg-blue-500/10 dark:border-blue-500/20 dark:text-blue-400 flex items-center justify-center">
-            <Globe className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">域名分流规则 (Domain)</div>
-            <div className="flex items-baseline gap-1.5 mt-0.5">
-              <span className="text-lg font-bold text-slate-900 dark:text-white tracking-wide">
-                {metrics.directDomainCount > 0
-                  ? `${metrics.directDomainCount} 条`
-                  : metrics.domainProviderCount > 0
-                  ? `${metrics.domainProviderCount} 个规则集`
-                  : "0"}
-              </span>
-              {metrics.directDomainCount === 0 && metrics.domainProviderCount > 0 && (
-                <span className="text-[11px] text-blue-600 dark:text-blue-400/90 font-medium">
-                  ({metrics.providerDomainRules > 0 ? `${metrics.providerDomainRules.toLocaleString()} 条` : "涵盖海量域名"})
-                </span>
+        {/* 右侧：广告与恶意网站防护单键快捷切换 */}
+        {adBlockGroup && (
+          <div className="flex items-center gap-2 pl-2">
+            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-zinc-400">
+              <Shield className="w-3.5 h-3.5 text-zinc-400" />
+              <span>广告防护:</span>
+            </div>
+            <button
+              onClick={handleToggleAdBlock}
+              disabled={togglingAdBlock}
+              className={`px-2.5 py-1 rounded-xl text-xs font-medium transition flex items-center gap-1.5 cursor-pointer ${
+                adBlockGroup.now === "REJECT"
+                  ? "bg-rose-500/10 text-rose-500 dark:text-rose-400 border border-rose-500/25 hover:bg-rose-500/20"
+                  : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20"
+              }`}
+              title={adBlockGroup.now === "REJECT" ? "当前强制拦截广告与追踪，点击恢复默认放行直连" : "当前默认直连放行，点击开启强制拦截广告"}
+            >
+              {togglingAdBlock ? (
+                <RotateCw className="w-3 h-3 animate-spin" />
+              ) : (
+                <span className={`w-1.5 h-1.5 rounded-full ${adBlockGroup.now === "REJECT" ? "bg-rose-400 animate-pulse" : "bg-emerald-400"}`} />
               )}
-            </div>
+              <span>{adBlockGroup.now === "REJECT" ? "已开启拦截 (REJECT)" : "直连放行 (默认)"}</span>
+            </button>
           </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl p-4 flex items-center gap-3.5 shadow-sm transition-colors">
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600 dark:bg-emerald-500/10 dark:border-emerald-500/20 dark:text-emerald-400 flex items-center justify-center">
-            <Server className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">网段 / 地理 (IP / Geo)</div>
-            <div className="text-lg font-bold text-slate-900 dark:text-white tracking-wide">
-              {metrics.ipCount + metrics.geoCount}
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl p-4 flex items-center gap-3.5 shadow-sm transition-colors">
-          <div className="w-10 h-10 rounded-xl bg-purple-50 border border-purple-200 text-purple-600 dark:bg-purple-500/10 dark:border-purple-500/20 dark:text-purple-400 flex items-center justify-center">
-            <Database className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">外部规则集 (Providers)</div>
-            <div className="text-lg font-bold text-slate-900 dark:text-white tracking-wide">{providers.length} 个</div>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* 广告与恶意网站防护状态横幅 */}
-      {adBlockGroup && (
-        <div className="p-4 rounded-2xl bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-4 text-xs shadow-sm transition-colors">
-          <div className="flex items-center gap-3">
-            <div
-              className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                adBlockGroup.now === "REJECT"
-                  ? "bg-rose-500/15 text-rose-500 dark:text-rose-400 border border-rose-500/30"
-                  : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30"
-              }`}
-            >
-              <Shield className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <span>广告与恶意网站防护:</span>
-                {adBlockGroup.now === "REJECT" ? (
-                  <span className="text-rose-600 dark:text-rose-400 font-semibold flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5" />
-                    已开启 (强制拦截 REJECT)
-                  </span>
-                ) : (
-                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" />
-                    默认已停用 (直连放行)
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {adBlockGroup.now === "REJECT"
-                  ? "当前策略强制丢弃广告与分析追踪；若遇网页加载异常或频繁触发 Cloudflare 5秒盾，建议切换为停用。"
-                  : "已默认放行广告与追踪请求直连出站，彻底避免误杀正常网页脚本与频繁触发 Cloudflare 5秒盾人机验证。"}
-              </p>
-            </div>
-          </div>
-
-          <button
-            onClick={handleToggleAdBlock}
-            disabled={togglingAdBlock}
-            className={`px-3.5 py-1.5 rounded-xl font-medium transition flex items-center gap-1.5 shrink-0 ${
-              adBlockGroup.now === "REJECT"
-                ? "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 dark:border-slate-700"
-                : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/20"
-            }`}
-          >
-            {togglingAdBlock ? (
-              <RotateCw className="w-3 h-3 animate-spin" />
-            ) : (
-              <Shield className="w-3 h-3" />
-            )}
-            <span>
-              {adBlockGroup.now === "REJECT" ? "恢复默认停用 (直连)" : "开启广告拦截 (REJECT)"}
-            </span>
-          </button>
-        </div>
-      )}
-
-      {/* 分流命中测试模拟器 */}
-      <div hidden={mobile} className="bg-gradient-to-r from-indigo-50/70 via-white to-purple-50/40 dark:from-slate-900/90 dark:via-slate-900/60 dark:to-indigo-950/30 border border-indigo-200/80 hover:border-indigo-300 dark:border-indigo-500/20 dark:hover:border-indigo-500/35 transition rounded-2xl p-4 shadow-sm dark:shadow-lg dark:shadow-black/20">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
-            <div className="p-1 rounded-lg bg-indigo-100 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-400">
-              <Play className="w-3.5 h-3.5 fill-current" />
-            </div>
-            <span className="text-xs font-bold text-slate-900 dark:text-white tracking-wide">分流匹配实时测试模拟器</span>
-            <span className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:inline">
-              (输入域名或 IP，模拟内核匹配顺序测算最终出站)
-            </span>
-          </div>
-
-          <div className="flex items-center space-x-2">
-            {/* 快捷测试小胶囊 */}
-            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-              <span className="hidden md:inline text-slate-400 dark:text-slate-500">快捷测试:</span>
-              {[
-                { label: "Google", host: "google.com" },
-                { label: "B站", host: "bilibili.com" },
-                { label: "GitHub", host: "github.com" },
-                { label: "ChatGPT", host: "chatgpt.com" },
-                { label: "114 DNS", host: "114.114.114.114" },
-              ].map((item) => (
+      {/* 瞬时测路 Command Bar (Raycast 级轻量无框嵌入槽：输入域名或 IP 回车瞬时测算出口) */}
+      <div hidden={mobile} className="space-y-2 py-0.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <form onSubmit={handleSimulate} className="flex-1 min-w-[280px] flex items-center gap-2">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                placeholder="输入域名或 IP 测算出口路由，如 google.com、api.github.com、114.114.114.114 (按回车测试)..."
+                value={testInput}
+                onChange={(e) => setTestInput(e.target.value)}
+                className="w-full pl-8 pr-8 py-1.5 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] text-xs text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-white/20 font-mono transition"
+              />
+              <Play className="w-3.5 h-3.5 text-zinc-400 absolute left-2.5 top-1/2 -translate-y-1/2 fill-current opacity-60" />
+              {testInput && (
                 <button
-                  key={item.host}
                   type="button"
-                  onClick={() => {
-                    setTestInput(item.host);
-                    setTimeout(() => handleSimulate(), 50);
-                  }}
-                  className="px-2 py-0.5 rounded-lg bg-white hover:bg-indigo-50 hover:text-indigo-600 border border-slate-200 text-[10px] text-slate-600 font-mono transition dark:bg-slate-800/80 dark:hover:bg-indigo-600/30 dark:hover:text-indigo-200 dark:border-slate-700/60 dark:text-slate-300"
+                  onClick={() => setTestInput("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-zinc-500 dark:hover:text-zinc-300 p-0.5"
                 >
-                  {item.label}
+                  <X className="w-3.5 h-3.5" />
                 </button>
-              ))}
+              )}
             </div>
+            <button
+              type="submit"
+              className="px-3.5 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] transition flex items-center gap-1.5 shrink-0 active:scale-95 cursor-pointer"
+            >
+              <span>测算路由</span>
+            </button>
+          </form>
 
+          {/* 快捷测试小胶囊 (去粗框微胶囊) */}
+          <div className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-zinc-400 shrink-0">
+            <span className="hidden md:inline text-slate-400 dark:text-zinc-500 mr-1">快捷测试:</span>
+            {[
+              { label: "Google", host: "google.com" },
+              { label: "B站", host: "bilibili.com" },
+              { label: "GitHub", host: "github.com" },
+              { label: "ChatGPT", host: "chatgpt.com" },
+              { label: "114 DNS", host: "114.114.114.114" },
+            ].map((item) => (
+              <button
+                key={item.host}
+                type="button"
+                onClick={() => {
+                  setTestInput(item.host);
+                  setTimeout(() => handleSimulate(), 50);
+                }}
+                className="px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] text-[10.5px] text-slate-700 dark:text-zinc-300 font-mono transition cursor-pointer"
+              >
+                {item.label}
+              </button>
+            ))}
             {testResult && (
               <button
+                type="button"
                 onClick={() => setTestResult(null)}
-                className="text-[11px] px-2 py-0.5 rounded-lg bg-white hover:bg-slate-100 text-slate-500 hover:text-slate-800 border border-slate-200 transition dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-400 dark:hover:text-white dark:border-transparent"
+                className="text-[10.5px] px-2 py-0.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 transition cursor-pointer ml-1"
               >
                 清空
               </button>
@@ -1068,138 +1036,105 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
           </div>
         </div>
 
-        <form onSubmit={handleSimulate} className="flex gap-2.5">
-          <div className="relative flex-1">
-            <input
-              type="text"
-              placeholder="输入待检测目标，如 google.com、api.github.com、114.114.114.114..."
-              value={testInput}
-              onChange={(e) => setTestInput(e.target.value)}
-              className="w-full pl-3.5 pr-8 py-2 rounded-xl bg-white dark:bg-slate-950/70 border border-slate-300 dark:border-slate-800 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 font-mono transition shadow-sm"
-            />
-            {testInput && (
+        {/* 测路链路结果胶囊 (单行微高亮展开，不占纵向篇幅) */}
+        {testResult && (
+          <div className="p-2.5 rounded-xl bg-black/5 dark:bg-black/40 border border-slate-200/80 dark:border-white/[0.06] flex flex-wrap items-center justify-between gap-2.5 text-xs animate-in fade-in duration-150">
+            <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400 shrink-0" />
+              <span className="text-zinc-400 text-[11px]">命中:</span>
+              <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                {testResult.matchedIndex > 0
+                  ? `第 #${testResult.matchedIndex} 条`
+                  : testResult.rule.type === "GLOBAL"
+                  ? "全局代理接管"
+                  : testResult.rule.type === "DIRECT"
+                  ? "直连接管"
+                  : "兜底规则"}
+              </span>
+              <span className="px-1.5 py-0.2 rounded bg-white/[0.06] text-zinc-300 font-mono text-[10px] border hairline-divider">
+                {testResult.rule.type}
+              </span>
+              <span className="text-zinc-400 font-mono text-[11px] truncate max-w-[240px]" title={testResult.rule.payload}>
+                {testResult.rule.payload || "<默认全匹配>"}
+              </span>
+              <ArrowRight className="w-3 h-3 text-zinc-500 shrink-0" />
+              <span className="text-zinc-400 text-[11px]">最终出站:</span>
+              <span
+                className={`px-2 py-0.2 rounded text-[11px] font-bold border font-mono ${getTargetBadge(
+                  testResult.rule.proxy
+                )}`}
+              >
+                {testResult.rule.proxy}
+              </span>
+            </div>
+
+            {testResult.matchedIndex > 0 && (
               <button
                 type="button"
-                onClick={() => setTestInput("")}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 p-0.5"
+                onClick={() => {
+                  const el = document.getElementById(`rule-row-${testResult.matchedIndex}`);
+                  if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                }}
+                className="text-[10.5px] px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/15 text-zinc-200 transition cursor-pointer shrink-0 font-mono flex items-center gap-1"
               >
-                <X className="w-3.5 h-3.5" />
+                <span>在规则表中定位 ➔</span>
               </button>
-            )}
-          </div>
-          <button
-            type="submit"
-            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-1.5 shrink-0 shadow-md shadow-indigo-600/20 active:scale-95"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>测试分流</span>
-          </button>
-        </form>
-
-        {testResult && (
-          <div className="mt-3 pt-3 border-t border-indigo-100 dark:border-slate-800/80 space-y-2 text-xs animate-in fade-in duration-200">
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-white/90 dark:bg-slate-950/40 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800/60 shadow-sm">
-              <div className="flex items-center gap-2 flex-wrap">
-                <CheckCircle2 className="w-4 h-4 text-emerald-500 dark:text-emerald-400 shrink-0" />
-                <span className="text-slate-500 dark:text-slate-400">命中规则:</span>
-                <span className="text-slate-900 dark:text-white font-mono font-semibold">
-                  {testResult.matchedIndex > 0
-                    ? `第 #${testResult.matchedIndex} 条`
-                    : testResult.rule.type === "GLOBAL"
-                    ? "全局接管"
-                    : testResult.rule.type === "DIRECT"
-                    ? "直连接管"
-                    : "默认兜底"}
-                </span>
-                <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 font-mono text-[11px] dark:border-slate-700/50">
-                  {testResult.rule.type}
-                </span>
-                <span className="text-indigo-600 dark:text-indigo-300 font-mono font-medium truncate max-w-[280px]" title={testResult.rule.payload}>
-                  {testResult.rule.payload || "<兜底全匹配>"}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <ArrowRight className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
-                <span className="text-slate-500 dark:text-slate-400">最终出站:</span>
-                <span
-                  className={`px-3 py-0.5 rounded-lg text-xs font-bold border shadow-sm ${getTargetBadge(
-                    testResult.rule.proxy
-                  )}`}
-                >
-                  {testResult.rule.proxy}
-                </span>
-              </div>
-            </div>
-            {testResult.explanation && (
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 pl-3 flex items-center gap-1.5">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-500 dark:bg-indigo-400 shrink-0"></span>
-                <span>{testResult.explanation}</span>
-              </div>
             )}
           </div>
         )}
       </div>
 
       {/* 视图 Tab 切换与过滤检索栏 */}
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800/80 pb-3">
-          {/* Tabs 分段器 */}
-          <div className="bg-slate-100 dark:bg-slate-900/80 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center shadow-inner transition-colors">
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-white/[0.06] pb-3">
+          {/* Tabs 分段器 (Linear 标志性无缝下沉胶囊分段条) */}
+          <div className="flex items-center p-0.5 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] shrink-0">
             <button
               onClick={() => setActiveTab("rules")}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-2 ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2 cursor-pointer select-none ${
                 activeTab === "rules"
-                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                  : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                  ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
               <span>规则列表</span>
-              <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  activeTab === "rules" ? "bg-indigo-500/30 text-white" : "bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
-                }`}
-              >
+              <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-[10px] font-mono font-bold">
                 {filteredRules.length}
               </span>
             </button>
 
             <button
               onClick={() => setActiveTab("providers")}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-2 ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-2 cursor-pointer select-none ${
                 activeTab === "providers"
-                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                  : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                  ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
               <Database className="w-3.5 h-3.5" />
               <span>外部规则集</span>
-              <span
-                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  activeTab === "providers" ? "bg-indigo-500/30 text-white" : "bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
-                }`}
-              >
+              <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-[10px] font-mono font-bold">
                 {providers.length}
               </span>
             </button>
           </div>
 
-          {/* 搜索框 (支持清空) */}
+          {/* 搜索框 (黑曜石微凹槽) */}
           {activeTab === "rules" && (
             <div className="relative">
-              <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <Search className="w-3.5 h-3.5 text-slate-400 dark:text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="搜索规则条件、域名或目标代理..."
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
-                className="pl-8 pr-7 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700/80 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 w-72 transition font-mono shadow-sm"
+                className="pl-8 pr-7 py-1.5 rounded-xl bg-slate-100/80 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] text-xs text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-white/20 w-72 transition font-mono"
               />
               {keyword && (
                 <button
                   onClick={() => setKeyword("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:text-zinc-500 dark:hover:text-zinc-300 cursor-pointer"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -1208,13 +1143,13 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
           )}
         </div>
 
-        {/* 规则过滤条件过滤器 (仅在 rules tab) */}
+        {/* 规则过滤条件过滤器 (仅在 rules tab, 去外围厚框平铺工具行) */}
         {activeTab === "rules" && (
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-100/80 dark:bg-slate-900/40 p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-800/60 shadow-sm transition-colors">
+          <div className="flex flex-wrap items-center justify-between gap-2.5 py-1 transition-colors">
             {/* 类型快速筛选 */}
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-slate-600 dark:text-slate-400 font-medium flex items-center gap-1 mr-1">
-                <Filter className="w-3 h-3 text-indigo-500 dark:text-indigo-400" />
+              <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium flex items-center gap-1 mr-1">
+                <Filter className="w-3 h-3 text-indigo-500 dark:text-sky-400" />
                 规则类型:
               </span>
               {[
@@ -1228,10 +1163,10 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                 <button
                   key={item.id}
                   onClick={() => setTypeFilter(item.id)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition ${
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition cursor-pointer ${
                     typeFilter === item.id
-                      ? "bg-indigo-600 text-white shadow-sm shadow-indigo-600/30 border border-indigo-500"
-                      : "text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-200 shadow-sm dark:text-slate-400 dark:hover:text-white dark:bg-slate-800/60 dark:hover:bg-slate-800 dark:border-slate-700/60 dark:shadow-none"
+                      ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
+                      : "text-slate-600 hover:text-slate-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-slate-100 dark:hover:bg-white/[0.06]"
                   }`}
                 >
                   {item.label}
@@ -1241,11 +1176,11 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
 
             {/* 目标出站过滤下拉 */}
             <div className="flex items-center gap-2">
-              <span className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">出站目标:</span>
+              <span className="text-[11px] text-slate-600 dark:text-zinc-400 font-medium">出站目标:</span>
               <select
                 value={proxyFilter}
                 onChange={(e) => setProxyFilter(e.target.value)}
-                className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-300 focus:outline-none focus:border-indigo-500 shadow-sm"
+                className="px-2.5 py-1 rounded-lg bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-xs text-slate-800 dark:text-zinc-300 focus:outline-none focus:border-white/20 shadow-2xs cursor-pointer"
               >
                 <option value="ALL">全部目标 ({metrics.uniqueProxies.length})</option>
                 {metrics.uniqueProxies.map((p) => (
@@ -1260,16 +1195,16 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
 
         {/* 域名规则托管提示条 (当筛选域名且直属单行为0时) */}
         {activeTab === "rules" && typeFilter === "DOMAIN" && metrics.directDomainCount === 0 && metrics.domainProviderCount > 0 && (
-          <div className="px-4 py-2.5 bg-blue-50 border border-blue-200 text-blue-700 dark:bg-blue-500/10 dark:border-blue-500/25 dark:text-blue-300 rounded-2xl text-xs flex flex-wrap items-center justify-between gap-2 shadow-sm">
+          <div className="px-4 py-2.5 bg-blue-50 border border-blue-200 text-blue-700 dark:bg-sky-500/10 dark:border-sky-500/25 dark:text-sky-300 rounded-2xl text-xs flex flex-wrap items-center justify-between gap-2 shadow-sm">
             <div className="flex items-center gap-2">
-              <Globe className="w-4 h-4 text-blue-500 dark:text-blue-400 shrink-0" />
+              <Globe className="w-4 h-4 text-blue-500 dark:text-sky-400 shrink-0" />
               <span>
                 当前订阅自身无单行静态域名规则，分流已由 <strong>{metrics.domainProviderCount} 个外部规则集</strong>（Google、GitHub、流媒体、AI 等）与 <strong>GEOSITE</strong> 全权托管，涵盖海量云端域名。
               </span>
             </div>
             <button
               onClick={() => setActiveTab("providers")}
-              className="text-[11px] px-2.5 py-1 rounded-lg bg-blue-100 hover:bg-blue-200 text-blue-800 border border-blue-200 font-medium transition shrink-0 dark:bg-blue-500/20 dark:hover:bg-blue-500/30 dark:text-blue-200 dark:border-blue-500/40"
+              className="text-[11px] px-2.5 py-1 rounded-lg bg-blue-100 hover:bg-blue-200 text-blue-800 border border-blue-200 font-medium transition shrink-0 dark:bg-sky-500/20 dark:hover:bg-sky-500/30 dark:text-sky-200 dark:border-sky-500/40 cursor-pointer"
             >
               查看外部规则集详情 →
             </button>
@@ -1279,17 +1214,17 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
 
       {/* 主体内容 */}
       {activeTab === "rules" ? (
-        <div className="bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl overflow-hidden shadow-sm dark:shadow-xl transition-colors">
-          {/* 表头 */}
-          <div className="grid grid-cols-12 px-5 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 text-xs font-semibold text-slate-500 dark:text-slate-400">
+        <div className="bg-white/70 dark:bg-[#121316]/50 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] rounded-2xl overflow-hidden transition-colors">
+          {/* 表头 (Sticky 发丝磨砂锁顶表头) */}
+          <div className="sticky top-0 z-10 grid grid-cols-12 px-5 py-2.5 border-b border-slate-200/80 dark:border-white/[0.08] bg-slate-50/95 dark:bg-[#0a0c10]/95 backdrop-blur-md text-[11px] font-mono font-medium text-slate-500 dark:text-zinc-400 select-none tracking-wider shadow-[0_1px_2px_rgba(0,0,0,0.1)]">
             <div className="col-span-1">#</div>
-            <div className="col-span-3">匹配类型 (Type)</div>
-            <div className="col-span-5">匹配条件 (Payload)</div>
-            <div className="col-span-3 text-right">分流目标 (Target)</div>
+            <div className="col-span-3">匹配类型 (TYPE)</div>
+            <div className="col-span-5">匹配条件 (PAYLOAD)</div>
+            <div className="col-span-3 text-right pr-1">分流走向 (TARGET)</div>
           </div>
 
           {/* 列表条目 */}
-          <div className="divide-y divide-slate-200/60 dark:divide-slate-800/40 min-h-[380px] max-h-[560px] overflow-y-auto">
+          <div className="divide-y divide-slate-200/60 dark:divide-white/[0.04] min-h-[380px] max-h-[640px] overflow-y-auto">
             {paginatedRules.map((item, idx) => {
               const ruleIndex = (currentPage - 1) * pageSize + idx + 1;
               const provider = providers.find((p) => p.name === item.payload);
@@ -1309,43 +1244,43 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                   id={`rule-row-${ruleIndex}`}
                   className={`grid grid-cols-12 px-5 py-2.5 text-xs items-center transition font-mono group ${
                     isMatched
-                      ? "bg-indigo-50 dark:bg-indigo-950/70 border-l-4 border-indigo-600 dark:border-indigo-400 ring-1 ring-indigo-500/30"
-                      : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                      ? "bg-emerald-500/[0.05] dark:bg-emerald-500/[0.08] border-l-2 border-emerald-500 dark:border-emerald-400 shadow-[inset_0_0_12px_rgba(16,185,129,0.06)]"
+                      : "hover:bg-slate-50 dark:hover:bg-white/[0.03]"
                   }`}
                 >
                   <div className="col-span-1 flex items-center gap-1 font-semibold">
                     {isMatched ? (
-                      <span className="text-indigo-600 dark:text-indigo-400 flex items-center gap-1 font-bold">
+                      <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-bold">
                         <span>🎯</span>
                         <span>{ruleIndex}</span>
                       </span>
                     ) : (
-                      <span className="text-slate-400 dark:text-slate-600">{ruleIndex}</span>
+                      <span className="text-slate-400 dark:text-zinc-500">{ruleIndex}</span>
                     )}
                   </div>
                   <div className="col-span-3 flex flex-wrap items-center gap-1.5">
-                    <span className="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-[11px]">
+                    <span className="px-2 py-0.5 rounded-md bg-black/5 dark:bg-white/[0.06] text-slate-700 dark:text-zinc-300 text-[11px]">
                       {item.type}
                     </span>
                     {isDomainSet && (
-                      <span className="px-1.5 py-0.2 rounded text-[10px] bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30 font-sans">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-white/[0.04] text-zinc-500 dark:text-zinc-400 font-sans">
                         🌐 域名集
                       </span>
                     )}
                     {isIpSet && (
-                      <span className="px-1.5 py-0.2 rounded text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/30 font-sans">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-white/[0.04] text-zinc-500 dark:text-zinc-400 font-sans">
                         📌 IP集
                       </span>
                     )}
                     {isGeosite && (
-                      <span className="px-1.5 py-0.2 rounded text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-500/15 dark:text-indigo-300 dark:border-indigo-500/30 font-sans">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-white/[0.04] text-zinc-500 dark:text-zinc-400 font-sans">
                         🌐 域名库
                       </span>
                     )}
                   </div>
                   <div className="col-span-5 flex items-center gap-2 pr-3 min-w-0">
                     <span
-                      className="text-slate-700 dark:text-slate-300 truncate select-all hover:text-slate-950 dark:hover:text-white transition"
+                      className="text-slate-700 dark:text-zinc-300 truncate select-all hover:text-slate-950 dark:hover:text-white transition"
                       title={
                         provider
                           ? `${item.payload} (${provider.ruleCount || 0} 条规则)`
@@ -1355,14 +1290,14 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                       {item.payload || "<默认兜底全匹配>"}
                     </span>
                     {provider && provider.ruleCount !== undefined && provider.ruleCount > 0 && (
-                      <span className="text-[10px] text-slate-400 dark:text-slate-500 font-sans shrink-0">
+                      <span className="text-[10px] text-slate-400 dark:text-zinc-500 font-sans shrink-0 font-mono">
                         ({provider.ruleCount}条)
                       </span>
                     )}
                     {item.payload && (
                       <button
                         onClick={() => copyText(item.payload)}
-                        className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 transition p-0.5"
+                        className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-600 dark:text-zinc-400 dark:hover:text-zinc-200 transition p-1 rounded-md hover:bg-white/10 cursor-pointer"
                         title="复制匹配条件"
                       >
                         {copiedPayload === item.payload ? (
@@ -1392,32 +1327,32 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
             })}
 
             {filteredRules.length === 0 && (
-              <div className="p-16 text-center text-xs text-slate-400 dark:text-slate-500 flex flex-col items-center justify-center gap-3">
-                <Filter className="w-8 h-8 text-slate-300 dark:text-slate-600 stroke-[1.5]" />
-                <div className="text-slate-600 dark:text-slate-400 font-medium">没有找到符合条件的规则</div>
-                <div className="text-[11px] text-slate-400 dark:text-slate-600">请尝试更换筛选条件或关键词</div>
+              <div className="p-16 text-center text-xs text-slate-400 dark:text-zinc-500 flex flex-col items-center justify-center gap-3">
+                <Filter className="w-8 h-8 text-slate-300 dark:text-zinc-600 stroke-[1.5]" />
+                <div className="text-slate-600 dark:text-zinc-400 font-medium">没有找到符合条件的规则</div>
+                <div className="text-[11px] text-slate-400 dark:text-zinc-600">请尝试更换筛选条件或关键词</div>
               </div>
             )}
           </div>
 
           {/* 分页控制栏 */}
           {filteredRules.length > 0 && (
-            <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/40 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="text-slate-500 dark:text-slate-400 text-[11px]">
-                显示第 <span className="text-slate-800 dark:text-white font-semibold">{(currentPage - 1) * pageSize + 1}</span> 至{" "}
-                <span className="text-slate-800 dark:text-white font-semibold">
+            <div className="px-5 py-3 border-t border-slate-200/80 dark:border-white/[0.08] bg-slate-50 dark:bg-black/30 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="text-slate-500 dark:text-zinc-400 text-[11px] font-mono">
+                显示第 <span className="text-slate-800 dark:text-zinc-100 font-semibold">{(currentPage - 1) * pageSize + 1}</span> 至{" "}
+                <span className="text-slate-800 dark:text-zinc-100 font-semibold">
                   {Math.min(currentPage * pageSize, filteredRules.length)}
                 </span>{" "}
-                条，共 <span className="text-slate-800 dark:text-white font-semibold">{filteredRules.length}</span> 条
+                条，共 <span className="text-slate-800 dark:text-zinc-100 font-semibold">{filteredRules.length}</span> 条
               </div>
 
               <div className="flex items-center space-x-3">
                 <div className="flex items-center space-x-1.5">
-                  <span className="text-slate-400 dark:text-slate-500 text-[11px]">每页:</span>
+                  <span className="text-slate-400 dark:text-zinc-500 text-[11px]">每页:</span>
                   <select
                     value={pageSize}
                     onChange={(e) => setPageSize(Number(e.target.value))}
-                    className="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-300 focus:outline-none shadow-sm"
+                    className="px-2 py-0.5 rounded bg-slate-100 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-xs text-slate-800 dark:text-zinc-300 focus:outline-none shadow-sm"
                   >
                     <option value={50}>50 条</option>
                     <option value={100}>100 条</option>
@@ -1429,19 +1364,19 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                   <button
                     onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                     disabled={currentPage === 1}
-                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:border-transparent disabled:opacity-30 disabled:cursor-not-allowed transition shadow-sm"
+                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/80 dark:bg-white/[0.06] dark:text-zinc-300 dark:hover:bg-white/[0.12] dark:border-white/[0.08] disabled:opacity-30 disabled:cursor-not-allowed transition shadow-sm cursor-pointer"
                   >
                     <ChevronLeft className="w-3.5 h-3.5" />
                   </button>
 
-                  <span className="px-2 text-slate-500 dark:text-slate-400 font-mono text-[11px]">
+                  <span className="px-2 text-slate-500 dark:text-zinc-400 font-mono text-[11px]">
                     {currentPage} / {totalPages}
                   </span>
 
                   <button
                     onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                     disabled={currentPage === totalPages}
-                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:border-transparent disabled:opacity-30 disabled:cursor-not-allowed transition shadow-sm"
+                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/80 dark:bg-white/[0.06] dark:text-zinc-300 dark:hover:bg-white/[0.12] dark:border-white/[0.08] disabled:opacity-30 disabled:cursor-not-allowed transition shadow-sm cursor-pointer"
                   >
                     <ChevronRight className="w-3.5 h-3.5" />
                   </button>
@@ -1471,14 +1406,14 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
             </div>
           )}
 
-          {/* 顶部操作条 */}
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-white dark:bg-slate-900/40 p-4 rounded-2xl border border-slate-200 dark:border-slate-800/80 shadow-sm">
+          {/* 顶部操作条 (去粗框平铺顶栏) */}
+          <div className="flex flex-wrap items-center justify-between gap-3 py-1">
             <div>
-              <h3 className="text-sm font-semibold text-slate-800 dark:text-white flex items-center gap-2">
-                <Database className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-zinc-100 flex items-center gap-2">
+                <Database className="w-4 h-4 text-indigo-500 dark:text-sky-400" />
                 外部规则集管理与集成
               </h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5">
                 支持一键接入开源高质量分流规则集，由内核定时从云端自动同步
               </p>
             </div>
@@ -1486,9 +1421,9 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
             <div className="flex items-center space-x-2">
               <button
                 onClick={() => setIsAddModalOpen(true)}
-                className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-indigo-600/20 transition"
+                className="px-3.5 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold flex items-center gap-1.5 shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] transition cursor-pointer active:scale-95"
               >
-                <Plus className="w-3.5 h-3.5" />
+                <Plus className="w-3.5 h-3.5 text-zinc-950" />
                 <span>添加规则集</span>
               </button>
 
@@ -1496,7 +1431,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                 onClick={loadData}
                 disabled={loading}
                 title="刷新状态"
-                className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 transition"
+                className="p-2 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] text-slate-700 dark:text-zinc-300 transition cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
               </button>
@@ -1506,7 +1441,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
           {/* 已加载的外部规则集列表 */}
           {providers.length > 0 && (
             <div className="space-y-3">
-              <div className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+              <div className="text-xs font-semibold text-slate-700 dark:text-zinc-300 flex items-center gap-2">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                 <span>当前已生效的外部规则集 ({providers.length})</span>
               </div>
@@ -1517,18 +1452,18 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                   return (
                     <div
                       key={p.name}
-                      className="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800/90 hover:border-indigo-400 dark:hover:border-indigo-500/40 rounded-2xl p-4 space-y-3 shadow-sm hover:shadow-md dark:hover:shadow-black/20 transition group"
+                      className="bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] hover:border-slate-300 dark:hover:border-white/[0.18] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] rounded-2xl p-4 space-y-3 transition group"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-2.5">
-                          <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 dark:border-purple-500/25 flex items-center justify-center text-purple-600 dark:text-purple-400 group-hover:scale-105 transition">
+                          <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-purple-600 dark:text-purple-400 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
                             <Database className="w-4 h-4" />
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
-                              <h4 className="text-sm font-bold text-slate-800 dark:text-white font-mono">{p.name}</h4>
+                              <h4 className="text-sm font-bold text-slate-800 dark:text-zinc-100 font-mono">{p.name}</h4>
                               {behaviorLower === "domain" ? (
-                                <span className="px-1.5 py-0.2 rounded text-[10px] bg-blue-500/10 dark:bg-blue-500/15 text-blue-600 dark:text-blue-300 border border-blue-500/25 dark:border-blue-500/30">
+                                <span className="px-1.5 py-0.2 rounded text-[10px] bg-blue-500/10 dark:bg-sky-500/15 text-blue-600 dark:text-sky-300 border border-blue-500/25 dark:border-sky-500/30">
                                   🌐 域名集
                                 </span>
                               ) : behaviorLower === "ipcidr" ? (
@@ -1541,7 +1476,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                                 </span>
                               )}
                             </div>
-                            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            <span className="text-[11px] text-slate-500 dark:text-zinc-400">
                               传输: {p.vehicleType} · 模式: {p.behavior}
                             </span>
                           </div>
@@ -1551,11 +1486,11 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                           <button
                             onClick={() => handleUpdateProvider(p.name)}
                             disabled={updatingProvider === p.name}
-                            className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium border border-slate-300 dark:border-slate-700 transition flex items-center gap-1 shadow-sm"
+                            className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.12] text-slate-700 dark:text-zinc-300 text-xs font-medium border border-slate-200/80 dark:border-white/[0.08] transition flex items-center gap-1 shadow-sm cursor-pointer"
                           >
                             <RotateCw
                               className={`w-3 h-3 ${
-                                updatingProvider === p.name ? "animate-spin text-indigo-500 dark:text-indigo-400" : ""
+                                updatingProvider === p.name ? "animate-spin text-indigo-500 dark:text-sky-400" : ""
                               }`}
                             />
                             <span>更新</span>
@@ -1567,7 +1502,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                               operatingProvider === p.name ||
                               !localPlan?.providers.some((local) => local.name === p.name)
                             }
-                            className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800/80 hover:bg-rose-500/10 dark:hover:bg-rose-500/20 text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-300 border border-slate-300 dark:border-slate-700 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                            className="p-1.5 rounded-lg bg-slate-100 dark:bg-white/[0.06] hover:bg-rose-500/10 dark:hover:bg-rose-500/20 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-300 border border-slate-200/80 dark:border-white/[0.08] transition disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                             title="仅移除本地方案规则集；订阅自带规则由订阅管理"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1575,17 +1510,17 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                         </div>
                       </div>
 
-                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800/70 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                      <div className="pt-2 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-between text-xs text-slate-500 dark:text-zinc-400">
                         <div>
                           规则容量:{" "}
-                          <span className="text-slate-800 dark:text-white font-bold font-mono">
+                          <span className="text-slate-800 dark:text-zinc-100 font-bold font-mono">
                             {p.ruleCount ? p.ruleCount.toLocaleString() : 0}
                           </span>{" "}
                           条
                         </div>
                         <div>
                           更新:{" "}
-                          <span className="text-slate-600 dark:text-slate-300 font-mono text-[11px]">
+                          <span className="text-slate-600 dark:text-zinc-400 font-mono text-[11px]">
                             {p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "本地加载"}
                           </span>
                         </div>
@@ -1598,13 +1533,13 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
           )}
 
           {/* 开箱即用：精选开源规则集市场（一键启用） */}
-          <div className="bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800/80 rounded-2xl p-5 space-y-4 shadow-sm">
+          <div className="bg-white/80 dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] rounded-2xl p-5 space-y-4">
             <div>
-              <h4 className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-zinc-100 flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-amber-500 dark:text-amber-400" />
                 <span>精选开源规则集一键集成（点击直接生效）</span>
               </h4>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+              <p className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
                 保存到本地方案；订阅缺少分流规则时自动生效，不修改订阅文件
               </p>
             </div>
@@ -1617,39 +1552,39 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                 return (
                   <div
                     key={preset.id}
-                    className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700/80 space-y-2.5 transition flex flex-col justify-between"
+                    className="p-4 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200/80 dark:border-white/[0.06] hover:border-slate-300 dark:hover:border-white/[0.12] space-y-2.5 transition flex flex-col justify-between"
                   >
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between">
-                        <div className="font-semibold text-slate-800 dark:text-white flex items-center gap-1.5">
+                        <div className="font-semibold text-slate-800 dark:text-zinc-100 flex items-center gap-1.5">
                           {preset.id === "reject" && <Shield className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />}
-                          {preset.id === "openai" && <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />}
+                          {preset.id === "openai" && <Sparkles className="w-3.5 h-3.5 text-indigo-500 dark:text-sky-400" />}
                           {preset.id === "youtube" && <Tv className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />}
                           {preset.id === "direct" && <Globe className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />}
                           <span>{preset.title}</span>
                         </div>
-                        <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-[10px] text-slate-700 dark:text-slate-300 font-mono">
+                        <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-white/[0.08] text-[10px] text-slate-700 dark:text-zinc-300 font-mono">
                           {preset.category} · {preset.source}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-400">{preset.description}</p>
-                      <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate" title={preset.url}>
+                      <p className="text-[11px] text-slate-600 dark:text-zinc-400">{preset.description}</p>
+                      <div className="text-[10px] text-slate-400 dark:text-zinc-500 font-mono truncate" title={preset.url}>
                         {preset.url}
                       </div>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-200 dark:border-slate-800/60 flex items-center justify-between">
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                        默认分流: <strong className="text-slate-700 dark:text-slate-300">{preset.target_proxy}</strong>
+                    <div className="pt-2 border-t border-slate-200/80 dark:border-white/[0.06] flex items-center justify-between">
+                      <span className="text-[11px] text-slate-500 dark:text-zinc-400">
+                        默认分流: <strong className="text-slate-700 dark:text-zinc-200">{preset.target_proxy}</strong>
                       </span>
 
                       <button
                         onClick={() => handleTogglePreset(preset)}
                         disabled={isOperating}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 ${
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer ${
                           isInstalled
                             ? "bg-rose-500/10 dark:bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/25 dark:border-rose-500/30 hover:bg-rose-500/20"
-                            : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/20"
+                            : "bg-zinc-100 hover:bg-white text-zinc-950 font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)]"
                         }`}
                       >
                         {isOperating ? (
@@ -1657,7 +1592,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                         ) : isInstalled ? (
                           <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                         ) : (
-                          <Plus className="w-3 h-3" />
+                          <Plus className="w-3 h-3 text-zinc-950" />
                         )}
                         <span>
                           {isOperating ? "正在处理..." : isInstalled ? "已启用 (点击停用)" : "一键启用"}
@@ -1672,7 +1607,7 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
         </div>
       )}
 
-      {/* 自定义添加规则集弹窗 Modal (通过 Portal 挂载至 document.body) */}
+      {/* 自定义添加规则集弹窗 Modal (Raycast 级悬浮磨砂视窗，挂载至 document.body) */}
       {isAddModalOpen &&
         createPortal(
           <div
@@ -1680,58 +1615,64 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
             aria-modal="true"
             aria-label="添加自定义外部规则集"
             data-no-drag
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex items-center justify-center p-4 font-sans animate-in fade-in duration-150"
+            className="fixed inset-0 bg-black/70 backdrop-blur-md z-[9999] flex items-center justify-center p-4 font-sans animate-in fade-in duration-150 select-none"
           >
             <form
               onSubmit={handleAddCustom}
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150"
+              className="bg-white/95 dark:bg-[#0d1015]/95 backdrop-blur-2xl border border-slate-200 dark:border-white/10 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-[-25px_25px_60px_-10px_rgba(0,0,0,0.85),inset_0_1px_0_0_rgba(255,255,255,0.06)] animate-in zoom-in-95 duration-150"
             >
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
-                  添加自定义外部规则集
+              <div className="flex items-center justify-between pb-1 border-b border-slate-200/80 dark:border-white/[0.06]">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-indigo-500 dark:text-sky-400" />
+                  <span>添加自定义外部规则集</span>
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="text-slate-400 hover:text-slate-600 dark:hover:text-white p-1 transition cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  <kbd className="hidden sm:inline-flex px-1.5 py-0.5 text-[10px] font-mono text-zinc-400 bg-white/5 border border-white/10 rounded shadow-2xs">
+                    ESC
+                  </kbd>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddModalOpen(false)}
+                    aria-label="关闭窗口"
+                    className="text-slate-400 hover:text-slate-600 dark:text-zinc-500 dark:hover:text-zinc-200 p-1 rounded-lg hover:bg-white/10 transition cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">规则集唯一名称 (英文标识)</label>
+                  <label className="block text-slate-600 dark:text-zinc-400 mb-1 font-medium">规则集唯一名称 (英文标识)</label>
                   <input
                     type="text"
                     required
                     placeholder="如 my-custom-rules"
                     value={customName}
                     onChange={(e) => setCustomName(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-white/20 font-mono transition"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">规则订阅源地址 (URL)</label>
+                  <label className="block text-slate-600 dark:text-zinc-400 mb-1 font-medium">规则订阅源地址 (URL)</label>
                   <input
                     type="url"
                     required
                     placeholder="https://..."
                     value={customUrl}
                     onChange={(e) => setCustomUrl(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] text-slate-900 dark:text-zinc-100 placeholder:text-slate-400 dark:placeholder:text-zinc-600 focus:outline-none focus:border-white/20 font-mono transition"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">匹配类型 (Behavior)</label>
+                    <label className="block text-slate-600 dark:text-zinc-400 mb-1 font-medium">匹配类型 (Behavior)</label>
                     <select
                       value={customBehavior}
                       onChange={(e) => setCustomBehavior(e.target.value as any)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-white/20"
                     >
                       <option value="domain">domain (纯域名)</option>
                       <option value="classical">classical (综合规则)</option>
@@ -1740,23 +1681,23 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                   </div>
 
                   <div>
-                    <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">文件格式</label>
+                    <label className="block text-slate-600 dark:text-zinc-400 mb-1 font-medium">文件格式</label>
                     <select
                       aria-label="规则文件格式"
                       value={customFormat}
                       onChange={e => setCustomFormat(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white mb-3 focus:outline-none focus:border-indigo-500"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-slate-900 dark:text-zinc-100 mb-3 focus:outline-none focus:border-white/20"
                     >
                       <option value="auto">自动识别</option>
                       <option value="yaml">YAML（payload 列表）</option>
                       <option value="text">Text（每行一条）</option>
                       <option value="mrs">MRS（二进制）</option>
                     </select>
-                    <label className="block text-slate-600 dark:text-slate-400 mb-1 font-medium">分流目标 (Target)</label>
+                    <label className="block text-slate-600 dark:text-zinc-400 mb-1 font-medium">分流目标 (Target)</label>
                     <select
                       value={customTarget}
                       onChange={(e) => setCustomTarget(e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                      className="w-full px-3 py-2 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] text-slate-900 dark:text-zinc-100 focus:outline-none focus:border-white/20"
                     >
                       <option value="🔰 节点选择">本地方案·节点选择</option>
                       <option value="DIRECT">DIRECT (直连)</option>
@@ -1767,20 +1708,20 @@ export const RulesView: React.FC<{ coreMode: CoreModeState & { refresh: () => Pr
                 </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+              <div className="flex items-center justify-end space-x-2 pt-3 border-t border-slate-200/80 dark:border-white/[0.06]">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs transition cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-zinc-400 hover:text-zinc-200 border hairline-divider text-xs transition cursor-pointer"
                 >
                   取消
                 </button>
                 <button
                   type="submit"
                   disabled={operatingProvider !== null}
-                  className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition flex items-center gap-1 cursor-pointer"
+                  className="px-4 py-1.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-semibold shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] transition flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-40"
                 >
-                  {operatingProvider ? <RotateCw className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                  {operatingProvider ? <RotateCw className="w-3 h-3 animate-spin text-zinc-950" /> : <Plus className="w-3.5 h-3.5 text-zinc-950" />}
                   <span>{operatingProvider ? "正在添加..." : "保存并启用"}</span>
                 </button>
               </div>

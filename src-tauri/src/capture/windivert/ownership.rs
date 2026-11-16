@@ -76,6 +76,10 @@ impl Default for Index {
 }
 impl Index {
     pub fn current(&self, owner: &Owner) -> bool {
+        if owner.endpoint == 0 {
+            // 系统连接表兜底证据：核验目标进程实例是否仍存活且身份未发生复用
+            return Identity::inspect(owner.identity.pid).as_ref() == Some(&owner.identity);
+        }
         self.healthy && self.entries.get(&owner.endpoint).is_some_and(|e|e.event.timestamp==owner.observed_at&&e.identity.as_ref()==Some(&owner.identity))
     }
     pub fn len(&self) -> usize { self.entries.len() }

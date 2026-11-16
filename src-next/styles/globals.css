@@ -1,0 +1,171 @@
+@import "./tokens.css";
+@import "./typography.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --------------------------------------------------------------------------
+   视口零滚动锁定 (Zero Body Scroll) 与透明通道穿透
+   -------------------------------------------------------------------------- */
+html,
+body,
+#root {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  background-color: transparent !important;
+  color: var(--text-primary);
+}
+
+/* 硬件级文字光栅化调谐：亮色激活次像素 ClearType 锐化，暗色启用灰度抗锯齿防光渗 */
+:root {
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+.dark {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* --------------------------------------------------------------------------
+   全局输入控件与占位符排版光学重校 (Input Placeholder Optics)
+   彻底消除浅色模式下 placeholder 隐形、浅淡发虚问题
+   -------------------------------------------------------------------------- */
+input::placeholder,
+textarea::placeholder {
+  color: #64748b; /* slate-500 亮色模式高对比度，告别默认 50% 隐形浅灰 */
+  opacity: 0.9;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #94a3b8; /* slate-400 暗色模式柔和纯净 */
+  opacity: 0.75;
+}
+
+/* --------------------------------------------------------------------------
+   真实物理级双层毛玻璃拟态核心类 (Authentic Liquid Glass 2.0)
+   -------------------------------------------------------------------------- */
+
+/* 1. HUD 窗口外壳大毛玻璃 (HUD Outer Glass Shell - 极透冷瓷/曜石) */
+.glass-hud-window {
+  background-color: var(--surface-canvas);
+  background-image: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--window-shadow);
+  backdrop-filter: blur(var(--window-blur, 36px)) saturate(190%) contrast(102%);
+  -webkit-backdrop-filter: blur(var(--window-blur, 36px)) saturate(190%) contrast(102%);
+}
+
+.dark .glass-hud-window {
+  background-image: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.035) 0%,
+    rgba(255, 255, 255, 0.005) 100%
+  );
+}
+
+/* 2. 悬浮功能卡片晶体 (Floating Glass Tiles - 浅色白瓷透光 / 深色黑曜石沉浸) */
+.glass-surface {
+  background-color: var(--surface-card);
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.70) 0%,
+    rgba(255, 255, 255, 0.35) 100%
+  );
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--card-shadow);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  transition: all 180ms var(--ease-out-expo);
+}
+
+/* 深色模式黑曜石专用光效：彻底废除白亮死灰雾气，采用 1px 微发丝反光与纯黑曜吸光底质 */
+.dark .glass-surface {
+  background-image: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.035) 0%,
+    rgba(255, 255, 255, 0.005) 100%
+  );
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--card-shadow);
+}
+
+.glass-surface:hover,
+.glass-surface-hover:hover {
+  background-color: var(--surface-card-hover);
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.9), 0 6px 24px -2px rgba(15, 23, 42, 0.10);
+}
+
+.dark .glass-surface:hover,
+.dark .glass-surface-hover:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.14), 0 10px 28px -4px rgba(0, 0, 0, 0.65);
+}
+
+/* 3. 选中的晶体胶囊滑块 (Active Glass Capsule) */
+.glass-pill-active {
+  background-color: var(--surface-card-hover);
+  background-image: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.60) 0%,
+    rgba(255, 255, 255, 0.20) 100%
+  );
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 1), 0 2px 8px -1px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+}
+
+.dark .glass-pill-active {
+  background-image: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.18), 0 4px 12px -2px rgba(0, 0, 0, 0.45);
+}
+
+/* 沉浸式透明毛玻璃栏（顶栏、侧边栏、状态栏） */
+.glass-bar {
+  background-color: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+}
+
+/* 层叠上下文沙箱隔离 */
+.isolate {
+  isolation: isolate;
+}
+
+/* 极简无边框滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--glass-border-subtle);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--glass-border);
+}

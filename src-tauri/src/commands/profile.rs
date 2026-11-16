@@ -502,15 +502,8 @@ pub async fn delete_profile(id: String) -> Result<bool, String> {
     let _write = PROFILE_WRITE.lock().await;
     let mut list = read_profiles_index();
     if let Some(pos) = list.iter().position(|p| p.id == id) {
-        if super::profile_switch::uses_saved_source(&crate::routing_overrides::read()?, &id) {
-            return Err("此订阅仍用于分流规则的原出口，请先换绑或停用相关规则后再删除".into());
-        }
         let is_selected = list[pos].is_selected;
         if is_selected {
-            if crate::routing_overrides::foreign_targets::bindings(&crate::routing_overrides::read()?, "")
-                .iter().any(|target| target.profile_id == id) {
-                return Err("当前订阅仍有启用的分流绑定，请先切换订阅并选择原出口处理方式，再删除".into());
-            }
             // 如果仅剩一个订阅且正在生效，禁止直接删除
             if list.len() <= 1 {
                 return Err("无法删除当前正在生效的唯一订阅。请先添加或切换至其他可用订阅后再删除。".into());

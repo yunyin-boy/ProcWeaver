@@ -88,15 +88,17 @@ fn public_hosts_and_sniffer_cannot_silently_replace_business_names() {
     let mut c = config();
     c.bundles.push(BundleRoute { id: "b".into(), name: "业务".into(), main_exe: "root.exe".into(), enabled: true,
         main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(), domains: vec!["*.owned.test".into()], fallback: "rules".into(), policy: None });
-    for raw in ["hosts: {alias.test: canonical.test}"] {
-        assert!(bundles::validate_remote_names(raw, &c).is_err());
-        c.bundles_enabled = false;
-        assert!(bundles::validate_remote_names(raw, &c).is_ok(), "暂停业务不得修改或限制公共手动设置");
-        c.bundles_enabled = true;
-    }
+    assert!(bundles::validate_remote_names("hosts: {alias.test: canonical.test}", &c).is_ok(), "无关 hosts 域名不得阻断业务包");
+    assert!(bundles::validate_remote_names("hosts: {sub.owned.test: 127.0.0.1}", &c).is_ok(), "业务域名即使被 hosts 改写也正常放行");
+    assert!(bundles::get_hosts_warning().is_some(), "应记录警告信息供前端展示");
+    bundles::clear_hosts_warning();
+    c.bundles_enabled = false;
+    assert!(bundles::validate_remote_names("hosts: {sub.owned.test: 127.0.0.1}", &c).is_ok(), "暂停业务不得修改或限制公共手动设置");
+    c.bundles_enabled = true;
     c.bundles[0].mode = "sandbox".into();
     assert!(bundles::validate_remote_names("hosts: {public.test: 127.0.0.1}", &c).is_ok());
-    assert!(bundles::validate_remote_names("hosts: {'+.owned.test': 127.0.0.1}", &c).is_err());
+    assert!(bundles::validate_remote_names("hosts: {'+.owned.test': 127.0.0.1}", &c).is_ok(), "放行并记录警告");
+    assert!(bundles::validate_remote_names("dns: {enable: true, use-system-hosts: true}\nhosts: {host.docker.internal: 192.168.1.176, lanfei: 192.168.1.78}", &c).is_ok());
 }
 
 #[test]
@@ -115,15 +117,15 @@ fn business_names_allow_public_sniffing_without_forced_domain_replacement() {
     ] { assert!(bundles::validate_remote_names(raw, &c).is_ok(), "已携带原始域名的业务入口不得被公共嗅探开关整体拒绝：{raw}"); }
     let raw = |pattern: &str, extra: &str| format!("sniffer: {{enable: true, override-destination: false, force-domain: ['{pattern}'], {extra}}}");
     let tcp = "sniff: {TLS: {ports: [443], override-destination: true}}";
-    assert!(bundles::validate_remote_names(&raw("+.public.test", tcp), &c).is_err(), "强锁保护全部域名，也要检查 force-domain");
+    assert!(bundles::validate_remote_names(&raw("+.public.test", tcp), &c).is_ok(), "无交集的公共强制嗅探应放行");
     c.bundles[0].mode = "sandbox".into();
     for pattern in ["+.public.test", "badowned.test", "owned.test.public", "*.public.test"] {
         assert!(bundles::validate_remote_names(&raw(pattern, tcp), &c).is_ok(), "无交集的公共强制嗅探应保留：{pattern}");
     }
     for pattern in ["+.owned.test", ".owned.test", "owned.test", "*.owned.test", "api.*.owned.test", "*.test", "+.test", "rule-set:dynamic"] {
         let candidate = raw(pattern, tcp);
-        let error = bundles::validate_remote_names(&candidate, &c).unwrap_err();
-        assert!(error.contains("force-domain") && error.contains("业务"), "应指出具体强制嗅探冲突：{error}");
+        assert!(bundles::validate_remote_names(&candidate, &c).is_ok(), "强制嗅探冲突时日志告警并放行：{candidate}");
+        assert!(bundles::get_hosts_warning().is_some(), "应记录警告信息供前端展示");
         c.bundles_enabled = false;
         assert!(bundles::validate_remote_names(&candidate, &c).is_ok(), "总关闭不得限制公共手动设置");
         c.bundles_enabled = true;
@@ -131,8 +133,8 @@ fn business_names_allow_public_sniffing_without_forced_domain_replacement() {
     c.bundles[0].domains = vec!["owned.test".into()];
     assert!(bundles::validate_remote_names(&raw("*.owned.test", tcp), &c).is_ok(), "Mihomo 单标签通配不包含根域");
     assert!(bundles::validate_remote_names(&raw(".owned.test", tcp), &c).is_ok(), "仅子域模式不包含根域");
-    assert!(bundles::validate_remote_names(&raw("+.owned.test", tcp), &c).is_err());
-    assert!(bundles::validate_remote_names("sniffer: {enable: true, force-domain: [owned.test], sniffing: [TLS], override-destination: true}", &c).is_err());
+    assert!(bundles::validate_remote_names(&raw("+.owned.test", tcp), &c).is_ok(), "日志告警并放行");
+    assert!(bundles::validate_remote_names("sniffer: {enable: true, force-domain: [owned.test], sniffing: [TLS], override-destination: true}", &c).is_ok(), "日志告警并放行");
     c.bundles[0].enabled = false;
     assert!(bundles::validate_remote_names(&raw("owned.test", tcp), &c).is_ok());
 }
@@ -482,12 +484,14 @@ fn shared_system_cmd_keeps_each_business_descendant_and_explicit_rules() {
 fn test_ensure_bt_pt_and_proxy_group() {
     let raw = r#"
 proxies:
+  - { name: "⏳ 到期: 2026-12-31", type: socks5, server: 127.0.0.1, port: 1080 }
   - { name: "HK01", type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: "123" }
   - { name: "JP02", type: ss, server: 2.2.2.2, port: 443, cipher: aes-128-gcm, password: "123" }
 proxy-groups:
   - { name: "🚀 节点选择", type: select, proxies: ["HK01", "JP02"] }
 rules:
   - "DOMAIN-SUFFIX,google.com,🚀 节点选择"
+  - "GEOIP,CN,🎯 全球直连,no-resolve"
   - "MATCH,🚀 节点选择"
 "#;
     let output = composer::ensure_bt_pt_and_proxy_group(raw).unwrap();
@@ -497,9 +501,13 @@ rules:
     assert_eq!(val["proxy-groups"][0]["name"].as_str(), Some("PROXY"));
     assert_eq!(val["proxy-groups"][0]["type"].as_str(), Some("select"));
     let proxy_members: Vec<&str> = val["proxy-groups"][0]["proxies"].as_sequence().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+    // 验证原订阅主策略组 "🚀 节点选择" 联动至 PROXY 首位
+    assert_eq!(proxy_members[0], "🚀 节点选择");
+    // 验证真实出站节点包含在内，且到期假节点被严格过滤
     assert!(proxy_members.contains(&"HK01"));
     assert!(proxy_members.contains(&"JP02"));
     assert!(proxy_members.contains(&"DIRECT"));
+    assert!(!proxy_members.iter().any(|m| m.contains("到期")));
 
     // 验证 BT / PT 直连规则强制排在首部
     let rules: Vec<&str> = val["rules"].as_sequence().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
@@ -507,9 +515,37 @@ rules:
     assert!(rules.contains(&"DOMAIN-KEYWORD,torrent,DIRECT"));
     assert!(rules.contains(&"DOMAIN-KEYWORD,tracker,DIRECT"));
 
+    // 验证自动补齐了 GEOSITE,cn 直连规则，且 GEOIP,CN 的 no-resolve 被成功剥离
+    assert!(rules.iter().any(|r| r.starts_with("GEOSITE,cn,🎯 全球直连") || r.starts_with("GEOSITE,cn,DIRECT")));
+    assert!(rules.iter().any(|r| *r == "GEOIP,CN,🎯 全球直连"));
+    assert!(!rules.iter().any(|r| *r == "GEOIP,CN,🎯 全球直连,no-resolve"));
+
     // 验证兜底规则 MATCH 统一指向受控 PROXY 组
     let last_rule = rules.last().unwrap();
     assert_eq!(*last_rule, "MATCH,PROXY");
+}
+
+#[test]
+fn test_ensure_bt_pt_and_proxy_group_dns_optimization() {
+    let raw = r#"
+proxies:
+  - { name: "HK01", type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: "123" }
+dns:
+  enable: true
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+rules:
+  - "MATCH,DIRECT"
+"#;
+    let output = composer::ensure_bt_pt_and_proxy_group(raw).unwrap();
+    let val: Value = serde_yaml::from_str(&output).unwrap();
+
+    // 验证 direct-nameserver 与 direct-nameserver-follow-policy 正确自动注入
+    let direct_ns = val["dns"]["direct-nameserver"].as_sequence().unwrap();
+    assert_eq!(direct_ns[0].as_str(), Some("223.5.5.5"));
+    assert_eq!(direct_ns[1].as_str(), Some("119.29.29.29"));
+    assert_eq!(val["dns"]["direct-nameserver-follow-policy"].as_bool(), Some(true));
 }
 
 
@@ -810,13 +846,132 @@ rules:
     let rules = val["rules"].as_sequence().unwrap();
     let rules_str: Vec<_> = rules.iter().filter_map(|r| r.as_str()).collect();
 
-    // 1. 验证业务包域名及 UDP 防护规则位于顶层
-    assert!(rules_str.iter().any(|r| *r == format!("AND,((NETWORK,UDP),(DOMAIN,openai.com)),REJECT")));
-    assert!(rules_str.iter().any(|r| *r == format!("DOMAIN,openai.com,{group_name}")));
-    assert!(rules_str.iter().any(|r| *r == format!("AND,((NETWORK,UDP),(DOMAIN-SUFFIX,chatgpt.com)),REJECT")));
-    assert!(rules_str.iter().any(|r| *r == format!("DOMAIN-SUFFIX,chatgpt.com,{group_name}")));
+    // 1. 验证遵循【选项 A】：业务包裸域名绝不注入全局顶层 rules，确保普通浏览器同域名流量不被截胡
+    assert!(!rules_str.iter().any(|r| *r == format!("DOMAIN,openai.com,{group_name}")));
+    assert!(!rules_str.iter().any(|r| *r == format!("DOMAIN-SUFFIX,chatgpt.com,{group_name}")));
 
-    // 2. 验证业务包进程及 UDP 防护规则同样生效
+    // 2. 验证业务包进程规则及 UDP 防护规则精确生效于该业务进程
     assert!(rules_str.iter().any(|r| *r == "AND,((NETWORK,UDP),(PROCESS-NAME,ChatGPT.exe)),REJECT"));
     assert!(rules_str.iter().any(|r| *r == format!("PROCESS-NAME,ChatGPT.exe,{group_name}")));
+}
+
+#[test]
+fn test_generic_interpreter_does_not_derive_system_browser_but_explicit_browser_works() {
+    let mut c = config();
+    // 规则 1：通用解释器 node.exe，开启了 include_descendants
+    c.process_rules = vec![ProcessRule {
+        id: "bundle-openai-node".into(),
+        enabled: true,
+        label: "Node.js".into(),
+        match_kind: "name".into(),
+        match_value: "node.exe".into(),
+        action: "proxy".into(),
+        target: Some(target("openai-proxy")),
+        include_descendants: true,
+        rule_mode: Some("strict".into()),
+    }];
+
+    // 模拟子进程：node.exe 调起了 Edge 浏览器
+    let edge_entry = tracker::ProcessEntry {
+        identity: "100:100".into(),
+        pid: 100,
+        parent_pid: 50,
+        name: "msedge.exe".into(),
+        created_at: 1000,
+        executable_path: Some(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe".into()),
+        parent_identity: Some("50:50".into()),
+        ancestors: vec![
+            ("50:50".into(), r"C:\Program Files\nodejs\node.exe".into()),
+        ],
+    };
+
+    // 模拟普通子进程：node.exe 调起了一个私有辅助 worker 进程
+    let worker_entry = tracker::ProcessEntry {
+        identity: "101:101".into(),
+        pid: 101,
+        parent_pid: 50,
+        name: "worker_service.exe".into(),
+        created_at: 1001,
+        executable_path: Some(r"C:\Program Files\nodejs\worker_service.exe".into()),
+        parent_identity: Some("50:50".into()),
+        ancestors: vec![
+            ("50:50".into(), r"C:\Program Files\nodejs\node.exe".into()),
+        ],
+    };
+
+    let entries = vec![edge_entry.clone(), worker_entry.clone()];
+    let (derived, conflicts) = tracker::derive(&c, &entries);
+
+    assert!(conflicts.is_empty());
+    // 关键断言 1：系统浏览器 msedge.exe 绝不能被 node.exe 连坐派生！
+    assert!(
+        !derived.iter().any(|r| r.match_value.contains("msedge.exe")),
+        "系统浏览器不应被通用解释器脚本派生连坐！"
+    );
+
+    // 关键断言 2：普通业务子进程正常派生
+    assert!(
+        derived.iter().any(|r| r.match_value.contains("worker_service.exe")),
+        "普通业务子进程应当正常继承派生"
+    );
+
+    // 关键断言 3：用户显式配置浏览器为业务包时，显式规则完全不受影响且生效
+    c.process_rules.push(ProcessRule {
+        id: "bundle-browser-edge".into(),
+        enabled: true,
+        label: "Edge 浏览器业务包".into(),
+        match_kind: "name".into(),
+        match_value: "msedge.exe".into(),
+        action: "proxy".into(),
+        target: Some(target("browser-proxy")),
+        include_descendants: false,
+        rule_mode: Some("strict".into()),
+    });
+
+    let effective = c.effective();
+    assert!(
+        effective.process_rules.iter().any(|r| r.match_value == "msedge.exe"),
+        "显式配置的浏览器规则必须正常保留并生效"
+    );
+}
+
+#[test]
+fn test_bundle_without_outlet_or_disabled_falls_back_to_reject_safely() {
+    let mut c = config();
+    // 1. 业务包默认不启用
+    c.bundles.push(BundleRoute {
+        id: "test-disabled-bundle".into(),
+        name: "默认未启用测试包".into(),
+        main_exe: "test.exe".into(),
+        enabled: false,
+        main_target: None,
+        dns_target: None,
+        port: 0,
+        mode: "strict".into(),
+        domains: vec![],
+        fallback: "rules".into(),
+        policy: None,
+    });
+    // 2. 业务包启用，但出口在外部订阅中不存在
+    c.bundles.push(BundleRoute {
+        id: "test-nonexistent-outlet".into(),
+        name: "丢失出口测试包".into(),
+        main_exe: "chat.exe".into(),
+        enabled: true,
+        main_target: Some(Target { profile_id: "old".into(), kind: "node".into(), name: "不存在的节点".into() }),
+        dns_target: None,
+        port: 0,
+        mode: "strict".into(),
+        domains: vec![],
+        fallback: "rules".into(),
+        policy: None,
+    });
+    let raw = "proxies:\n- {name: node-us, type: socks5, server: 127.0.0.1, port: 1}\nproxy-groups:\n- {name: PROXY, type: select, proxies: [node-us]}\nrules: ['MATCH,PROXY']\n";
+    let (with_group, _) = bundles::materialize(raw, &c, "default").expect("未绑定或失效出口绝不能抛出错误阻止订阅实体化");
+    let val: Value = serde_yaml::from_str(&with_group).unwrap();
+    let selections = &val[bundles::SELECTIONS];
+    let key_disabled = bundles::group("test-disabled-bundle", "main");
+    let key_nonexistent = bundles::group("test-nonexistent-outlet", "main");
+    assert_eq!(selections[key_disabled.as_str()].as_str(), Some("REJECT"));
+    assert_eq!(selections[key_nonexistent.as_str()].as_str(), Some("REJECT"));
 }

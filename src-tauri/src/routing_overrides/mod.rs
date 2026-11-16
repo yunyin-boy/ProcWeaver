@@ -178,7 +178,7 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     // Explicit owners precede domain-wide package rules and every public bypass.
     let base = bundles::compose_bundle_rules(&base, config)?;
     let base = composer::compose(&base, &bundles, profile_id, &bundle_derived)?;
-    let base = if public_mode::enabled() { composer::core_bypass(&base)? } else { base };
+    let base = composer::safety_guard(&base)?;
     bundles::validate_remote_names(&base, config)?;
     #[cfg(windows)]
     let base = crate::commands::dns_listener::compose(&base, config)?;
@@ -237,7 +237,11 @@ pub(crate) async fn change_system_proxy(enable: bool, change: impl FnOnce() -> R
 
 /// 所有调用方已持有 LIFECYCLE。超时也可能已应用，因此错误时必须重新加载旧配置。
 pub async fn apply_runtime(prepared: &str) -> Result<(), String> {
-    if !process::ACTIVE.load(Ordering::SeqCst) { return Ok(()); }
+    if !process::ACTIVE.load(Ordering::SeqCst) {
+        let target = crate::storage::data_dir().join("core_data/config.yaml");
+        let _ = crate::storage::replace_atomic(&target, prepared.as_bytes());
+        return Ok(());
+    }
     #[cfg(windows)]
     let resolved = crate::commands::dns_listener::resolve_for_apply(prepared, process::PID.load(Ordering::SeqCst)).await?;
     #[cfg(windows)]

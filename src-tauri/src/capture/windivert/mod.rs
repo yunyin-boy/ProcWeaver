@@ -13,9 +13,7 @@ pub mod dns;
 pub mod ownership;
 #[path = "../driver.rs"]
 pub(crate) mod driver;
-#[path = "../packet.rs"]
-#[allow(dead_code)] // The TCP lab deliberately does not exercise legacy UDP helpers.
-mod packet;
+pub(crate) use super::packet;
 #[path = "../socks.rs"]
 pub(crate) mod socks;
 #[path = "../owner.rs"]

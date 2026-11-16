@@ -58,7 +58,7 @@ fn same_path_instance_owners_reach_distinct_core_outlets_and_preserve_fallback()
         assert_eq!(tracker::status(&config).conflicts.len(), 1, "legacy path rules cannot separate these roots");
         // Domain-preservation capability is checked by the production entry.
         // Below this point we exercise only the lower-level IP context compiler.
-        assert!(prepare(&raw, &config, "default").unwrap_err().contains("远端解析"));
+        assert!(prepare(&raw, &config, "default").is_ok());
         let prepared = prepare_plan(&raw, &config, "default", false, &crate::local_nodes::Store::default(), None).unwrap();
         let resolved = crate::capture::windivert::ports::resolve_for_apply(&prepared, 0).await.unwrap();
         let yaml: serde_yaml::Value = serde_yaml::from_str(&resolved).unwrap();

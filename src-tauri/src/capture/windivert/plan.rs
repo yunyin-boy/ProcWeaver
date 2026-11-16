@@ -1,4 +1,4 @@
-use super::{context, preflight};
+use super::{context, ownership::Identity, preflight};
 use crate::routing_overrides::{model::Overrides, ownership, tracker::{self, ProcessEntry, TrackingStatus}};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
@@ -14,6 +14,8 @@ pub struct Entry {
     pub port: u16,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_descendants: bool,
 }
 impl Entry {
     pub fn id(&self) -> Result<String, String> {
@@ -57,6 +59,10 @@ pub struct Plan {
     pub dns_domains: Vec<DnsDomain>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dns_all: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mixed_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub managed_endpoints: Vec<std::net::SocketAddr>,
 }
 impl Plan {
     pub fn validate(&self) -> Result<(), String> {
@@ -110,12 +116,41 @@ impl Plan {
         if let Some(target) = target {
             return self.context_for(&target.owner, path).map(|e| e.port);
         }
-        // 即时血缘穿透：快照轮询存在时间差，动态派生的子进程在此直接比对祖先链条
+        // 即时血缘穿透：快照轮询存在时间差，动态派生的子进程在此直接比对祖先链条 (必须确认祖先允许继承)
         let identity = format!("{pid}:{created_at}");
         if let Some(p) = tracker::entry(&identity) {
             for (_, ancestor_path) in &p.ancestors {
-                if let Some(target) = ["path", "name"].into_iter().find_map(|kind| self.targets.iter().find(|e| e.kind == kind && e.matches(ancestor_path))) {
+                if let Some(target) = ["path", "name"].into_iter().find_map(|kind| {
+                    self.targets.iter().find(|e| e.include_descendants && e.kind == kind && e.matches(ancestor_path))
+                }) {
                     return self.context_for(&target.owner, path).map(|e| e.port);
+                }
+            }
+        }
+        // 提权辅助进程独立运行：helper 内存中无 tracker 线程时，直接回溯操作系统父进程链路
+        #[cfg(windows)]
+        {
+            let mut current_pid = pid;
+            for _ in 0..6 {
+                if let Some(ppid) = crate::routing_overrides::native::parent_pid_of(current_pid) {
+                    if ppid == 0 || ppid == current_pid { break; }
+                    if let Some(parent_id) = Identity::inspect(ppid) {
+                        // 1. 父实例必须核验复合身份键 (pid + created_at)，且父规则必须勾选包含子进程
+                        if let Some(parent_instance) = self.instances.iter().find(|i| i.pid == ppid && i.created_at == parent_id.created_at) {
+                            if let Some(target) = self.targets.iter().find(|t| t.owner == parent_instance.owner && t.include_descendants) {
+                                return self.context_for(&target.owner, path).map(|e| e.port);
+                            }
+                        }
+                        // 2. 若父实例尚未入快照，直接路径比对同样必须严格满足 include_descendants 开关
+                        if let Some(target) = ["path", "name"].into_iter().find_map(|kind| {
+                            self.targets.iter().find(|e| e.include_descendants && e.kind == kind && e.matches(&parent_id.path))
+                        }) {
+                            return self.context_for(&target.owner, path).map(|e| e.port);
+                        }
+                    }
+                    current_pid = ppid;
+                } else {
+                    break;
                 }
             }
         }
@@ -173,7 +208,7 @@ fn compile_policy(yaml: &Value, owner: &str) -> Result<Vec<(Entry, context::Comp
         return Err("进程规则与保留上下文标识冲突".into());
     }
     let compile = |kind: &str, value: &str, path: &str| -> Result<(Entry, context::CompiledContext), String> {
-        let entry = Entry { kind: kind.into(), value: value.into(), port: 61000, owner: owner.into() };
+        let entry = Entry { kind: kind.into(), value: value.into(), port: 61000, owner: owner.into(), include_descendants: false };
         // A common temporary ID makes rule equality independent of listener IDs.
         let compiled = context::compile(yaml, &[context::ProcessContext { id: "compare".into(), executable_path: path.into() }])?.remove(0);
         Ok((entry, compiled))
@@ -228,10 +263,9 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
         for b in config.bundles.iter().filter(|b| b.enabled) {
             for d in &b.domains {
                 let clean = d.trim().trim_end_matches('.').to_ascii_lowercase();
-                let suffix = clean.starts_with("*.") || clean.starts_with('.');
                 let domain = clean.trim_start_matches('*').trim_start_matches('.').to_string();
-                if !domain.is_empty() && domains_set.insert((domain.clone(), suffix)) {
-                    dns_domains.push(DnsDomain { domain, suffix });
+                if !domain.is_empty() && domains_set.insert((domain.clone(), true)) {
+                    dns_domains.push(DnsDomain { domain, suffix: true });
                 }
             }
         }
@@ -250,6 +284,12 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
     } else {
         None
     };
+    let mixed_port = if crate::storage::is_initialized() {
+        crate::commands::settings::get_general_settings().map(|s| s.mixed_port).ok()
+    } else {
+        None
+    };
+    let managed_endpoints = crate::capture::local_proxy::managed_endpoints_with_port(mixed_port);
     let mut plan = Plan {
         entries,
         targets: vec![],
@@ -257,13 +297,21 @@ pub fn compose_with_policies(raw: &str, config: &Overrides, policies: &BTreeMap<
         dns_port,
         dns_domains,
         dns_all,
+        mixed_port,
+        managed_endpoints,
     };
     if config.process_enabled {
         for rule in config.process_rules.iter().filter(|r| ownership::standalone(r, config)) {
             let owner = ownership::key(rule, config);
             let path = if rule.match_kind == "path" { rule.match_value.clone() } else { format!(r"C:\__ProcWeaverRoot\{}", rule.match_value) };
             let port = plan.context_for(&owner, &path).ok_or("目标缺少所属策略上下文")?.port;
-            plan.targets.push(Entry { kind: rule.match_kind.clone(), value: rule.match_value.clone(), port, owner });
+            plan.targets.push(Entry {
+                kind: rule.match_kind.clone(),
+                value: rule.match_value.clone(),
+                port,
+                owner,
+                include_descendants: rule.include_descendants,
+            });
         }
     }
     plan.refresh_instances(config, &crate::routing_overrides::tracker::status(config))?;

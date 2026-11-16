@@ -98,11 +98,24 @@ pub fn process_command_lines(names: &[&str]) -> Result<Vec<ProcessCommand>, Stri
         let started = std::time::Instant::now();
         let mut buffer = vec![0;32768];
         loop {
-            if started.elapsed() > std::time::Duration::from_secs(3) { return Err("查询应用进程超时".into()); }
+            if started.elapsed() > std::time::Duration::from_secs(3) {
+                if !result.is_empty() { break; }
+                return Err("查询应用进程超时".into());
+            }
             let mut objects = [None]; let mut count = 0;
             let status = rows.Next(1500, &mut objects, &mut count);
-            if status.0 == WBEM_S_TIMEDOUT.0 { return Err("查询应用进程超时".into()); }
-            status.ok().map_err(|error| format!("读取应用进程失败（WMI 0x{:08X}）", error.code().0 as u32))?;
+            if status.0 == WBEM_S_TIMEDOUT.0 {
+                if !result.is_empty() { break; }
+                return Err("查询应用进程超时".into());
+            }
+            if let Err(error) = status.ok() {
+                if !result.is_empty() { break; }
+                let code = error.code().0 as u32;
+                if code == 0x8004106C {
+                    return Err("系统 WMI 查询配额超限（0x8004106C），建议稍后重试或使用免参数模式".into());
+                }
+                return Err(format!("读取应用进程失败（WMI 0x{:08X}）", code));
+            }
             if count == 0 { break; }
             let object = objects[0].as_ref().ok_or("应用进程查询无效")?;
             let mut value = VARIANT::default(); object.Get(w!("ProcessId"),0,&mut value,None,None).map_err(|_| "进程身份不可读")?;
@@ -110,9 +123,13 @@ pub fn process_command_lines(names: &[&str]) -> Result<Vec<ProcessCommand>, Stri
             let mut value = VARIANT::default(); object.Get(w!("Name"),0,&mut value,None,None).map_err(|_| "进程名称不可读")?;
             buffer.fill(0);
             let name = if VariantToString(&value, &mut buffer).is_ok() { string(&buffer) } else { String::new() };
-            let mut value = VARIANT::default(); object.Get(w!("CommandLine"),0,&mut value,None,None).map_err(|_| "进程参数不可读")?;
-            buffer.fill(0);
-            let command = if VariantToString(&value, &mut buffer).is_ok() { string(&buffer) } else { String::new() };
+            let mut value = VARIANT::default();
+            let command = if object.Get(w!("CommandLine"),0,&mut value,None,None).is_ok() {
+                buffer.fill(0);
+                if VariantToString(&value, &mut buffer).is_ok() { string(&buffer) } else { String::new() }
+            } else {
+                String::new()
+            };
             result.push(ProcessCommand { pid, name, command });
             if result.len() > 2048 { return Err("应用进程过多，无法安全核对".into()); }
         } Ok(result)

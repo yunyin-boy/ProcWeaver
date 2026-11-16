@@ -73,7 +73,7 @@ mod windows {
     use winreg::{enums::*, types::ToRegValue, RegKey, RegValue};
 
     const NAMES: [&str; 3] = ["ProxyServer", "ProxyOverride", "ProxyEnable"];
-    const BYPASS: &str = "<-loopback>;<local>;localhost;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*";
+    const BYPASS: &str = "<-loopback>;<local>;localhost;127.0.0.1;127.*;[::1];10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*";
     static OWNED: Mutex<Option<Recovery>> = Mutex::new(None);
 
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -255,6 +255,7 @@ mod windows {
             KEY_READ | KEY_WRITE,
         ) {
             let proxy_url = format!("http://127.0.0.1:{}", port);
+            let no_proxy_val = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
             if enable {
                 let _ = env_key.set_value("HTTP_PROXY", &proxy_url);
                 let _ = env_key.set_value("HTTPS_PROXY", &proxy_url);
@@ -262,8 +263,10 @@ mod windows {
                 let _ = env_key.set_value("http_proxy", &proxy_url);
                 let _ = env_key.set_value("https_proxy", &proxy_url);
                 let _ = env_key.set_value("all_proxy", &proxy_url);
-                let _ = env_key.set_value("NODE_USE_ENV_PROXY", &"1");
-                let _ = env_key.set_value("NO_PROXY", &"localhost,127.0.0.1,::1");
+                // 移除全局 NODE_USE_ENV_PROXY，避免将业务包派生的 Node 进程强制引入系统代理
+                let _ = env_key.delete_value("NODE_USE_ENV_PROXY");
+                let _ = env_key.set_value("NO_PROXY", &no_proxy_val);
+                let _ = env_key.set_value("no_proxy", &no_proxy_val);
             } else {
                 let mut cleared = false;
                 for name in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
@@ -272,14 +275,18 @@ mod windows {
                     }
                 }
                 if cleared {
-                    for (name, expected) in [("NODE_USE_ENV_PROXY", "1"), ("NO_PROXY", "localhost,127.0.0.1,::1")] {
-                        if env_key.get_value::<String, _>(name).is_ok_and(|value| value == expected) { let _ = env_key.delete_value(name); }
+                    let _ = env_key.delete_value("NODE_USE_ENV_PROXY");
+                    for name in ["NO_PROXY", "no_proxy"] {
+                        if env_key.get_value::<String, _>(name).is_ok_and(|value| value == no_proxy_val || value == "localhost,127.0.0.1,::1") {
+                            let _ = env_key.delete_value(name);
+                        }
                     }
                 }
             }
         }
         if enable {
             crate::commands::app_launcher::ensure_loopback_exempt("OpenAI.Codex_2p2nqsd0c76g0");
+            crate::commands::app_launcher::ensure_loopback_exempt("OpenAI.ChatGPT_2p2nqsd0c76g0");
         }
     }
 

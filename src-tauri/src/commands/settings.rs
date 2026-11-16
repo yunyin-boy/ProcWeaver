@@ -28,6 +28,8 @@ pub struct GeneralSettings {
     pub silent_start: bool,
     #[serde(default = "default_geo_low_memory")]
     pub auto_run: bool,
+    #[serde(default)]
+    pub auto_start_process_routing: bool,
     #[serde(default = "default_true")]
     pub only_proxy_traffic: bool,
     #[serde(default = "default_traffic_mode")]
@@ -70,7 +72,13 @@ fn default_close_action() -> String { "ask".into() }
 fn default_tray_menu_style() -> String { if cfg!(target_os = "macos") { "classic".into() } else { "modern".into() } }
 fn default_find_process_mode() -> String { "auto".into() }
 fn default_auto_close_connections() -> bool { true }
-fn default_traffic_mode() -> String { if cfg!(target_os = "android") { "tun".into() } else { "app_proxy".into() } }
+fn default_traffic_mode() -> String {
+    if cfg!(target_os = "android") {
+        "tun".into()
+    } else {
+        "app_proxy".into()
+    }
+}
 fn default_routing_priority() -> String { "domain_first".into() }
 fn default_geo_low_memory() -> bool { true }
 fn default_speed_test_url() -> String { "https://cp.cloudflare.com/generate_204".into() }
@@ -93,6 +101,7 @@ impl Default for GeneralSettings {
             minimize_on_close: default_minimize_on_close(),
             silent_start: false,
             auto_run: true,
+            auto_start_process_routing: false,
             only_proxy_traffic: true,
             traffic_mode: default_traffic_mode(),
             routing_priority: "domain_first".into(),
@@ -210,6 +219,35 @@ async fn save_and_restart(mut settings: GeneralSettings, state: &super::process:
             if proxy_enabled { super::sysproxy::set_system_proxy_locked(true, Some(previous.mixed_port)).await?; }
             return Err(format!("新设置启动失败，已恢复旧设置和核心：{error}"));
         }
+    } else if previous.allow_lan != settings.allow_lan {
+        // Mihomo 原生支持热重载 allow-lan，无需杀进程硬重启，彻底避免 Windows 端口释放竞争
+        #[cfg(not(target_os = "android"))]
+        {
+            if let Ok(base) = super::mihomo_api::base_url() {
+                if let Ok(client) = super::mihomo_api::controller_client().build() {
+                    let body = serde_json::json!({ "allow-lan": settings.allow_lan });
+                    let _ = client.patch(format!("{}/configs", base)).json(&body).send().await;
+                }
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            let _ = crate::platform::android::call_async::<serde_json::Value>("allow_lan", serde_json::json!({ "allowLan": settings.allow_lan })).await;
+        }
+        // 同步更新 core_data/config.yaml，保证磁盘配置文件与内核热状态同步
+        let core_config_path = crate::storage::data_dir().join("core_data/config.yaml");
+        if core_config_path.exists() {
+            if let Ok(text) = std::fs::read_to_string(&core_config_path) {
+                if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
+                    if let Some(map) = val.as_mapping_mut() {
+                        map.insert(serde_yaml::Value::from("allow-lan"), serde_yaml::Value::from(settings.allow_lan));
+                        if let Ok(new_yaml) = serde_yaml::to_string(&val) {
+                            let _ = crate::storage::replace(&core_config_path, new_yaml.as_bytes());
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(settings)
 }
@@ -231,7 +269,10 @@ pub(crate) fn persist_general_settings(mut settings: GeneralSettings, state: &su
             return Err("端口须为 1–65535，且两个端口不能相同".into());
         }
     }
-    if settings.traffic_mode.is_empty() || settings.traffic_mode == "windivert" {
+    if settings.traffic_mode == "windivert" || settings.traffic_mode == "windivert_v1" {
+        settings.traffic_mode = "windivert_v1".into();
+        settings.tun_mode = false;
+    } else if settings.traffic_mode.is_empty() {
         settings.traffic_mode = if settings.tun_mode { "tun".into() } else { "app_proxy".into() };
     }
     if settings.traffic_mode == "tun" {
@@ -302,7 +343,7 @@ pub(crate) fn persist_general_settings(mut settings: GeneralSettings, state: &su
 fn core_settings_changed(a: &GeneralSettings, b: &GeneralSettings) -> bool {
     a.mixed_port != b.mixed_port || a.controller_port != b.controller_port
         || a.enable_controller_port != b.enable_controller_port
-        || a.allow_lan != b.allow_lan || a.tun_mode != b.tun_mode
+        || a.tun_mode != b.tun_mode
         || a.unified_delay != b.unified_delay || a.tcp_concurrent != b.tcp_concurrent
         || a.geo_low_memory != b.geo_low_memory || a.traffic_mode != b.traffic_mode
         || a.routing_priority != b.routing_priority
@@ -317,6 +358,20 @@ pub fn get_active_traffic_driver() -> String {
     #[cfg(target_os = "android")]
     { return "tun".into(); }
     crate::capture::smart_arbiter::get_active_driver_name()
+}
+
+#[tauri::command]
+pub async fn clean_windivert_residual_service() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        crate::process_capture::stop();
+        crate::capture::windivert::assets::cleanup_driver_and_service()?;
+        Ok("WinDivert 内核驱动服务已停止并注销，临时解压组件已清理完毕。".into())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok("当前操作系统无需清理 WinDivert 服务。".into())
+    }
 }
 
 pub fn prepare_config(raw: &str) -> Result<String, String> {
@@ -366,8 +421,11 @@ fn prepare_with_runtime(raw: &str, settings: &GeneralSettings, os: &str, dns_set
         "strict" => "strict",
         "off" => "off",
         _ => {
-            if crate::routing_overrides::read().map(|r| r.effective().process_enabled).unwrap_or(false) {
-                "strict"
+            let overrides = crate::routing_overrides::read().map(|r| r.effective());
+            let has_process = overrides.as_ref().map_or(false, |r| r.process_enabled);
+            let has_bundles = overrides.as_ref().map_or(false, |r| r.bundles_enabled && r.bundles.iter().any(|b| b.enabled));
+            if has_bundles || has_process {
+                "always"
             } else {
                 "off"
             }
@@ -416,6 +474,30 @@ fn prepare_with_runtime(raw: &str, settings: &GeneralSettings, os: &str, dns_set
         }
     } else if let Some(dns_map) = map.get_mut(serde_yaml::Value::from("dns")).and_then(|v| v.as_mapping_mut()) {
         dns_map.insert("append-system-dns".into(), append_system_dns.into());
+    }
+
+    // 强制为所有自动探活/测速策略组 (url-test, fallback, load-balance) 注入 lazy: true
+    // 杜绝核心启动与重新加载配置时的全量并发盲测，未经过流量时不进行探活，彻底避免网络雪崩与带宽塞爆
+    if let Some(groups) = map.get_mut(serde_yaml::Value::from("proxy-groups")).and_then(serde_yaml::Value::as_sequence_mut) {
+        for group in groups {
+            if let Some(group_map) = group.as_mapping_mut() {
+                let group_type = group_map.get(&serde_yaml::Value::from("type"))
+                    .and_then(serde_yaml::Value::as_str)
+                    .unwrap_or("");
+                if matches!(group_type, "url-test" | "fallback" | "load-balance") {
+                    group_map.insert("lazy".into(), true.into());
+                }
+            }
+        }
+    }
+    if let Some(providers) = map.get_mut(serde_yaml::Value::from("proxy-providers")).and_then(serde_yaml::Value::as_mapping_mut) {
+        for (_k, provider) in providers {
+            if let Some(p_map) = provider.as_mapping_mut() {
+                if let Some(hc) = p_map.get_mut(&serde_yaml::Value::from("health-check")).and_then(serde_yaml::Value::as_mapping_mut) {
+                    hc.insert("lazy".into(), true.into());
+                }
+            }
+        }
     }
 
     // Windows 订阅常见的 DNS 通配监听随“允许局域网”收敛到回环。
@@ -884,5 +966,48 @@ mod tests {
             super::super::process::stop_owned_child(&mut state.lock().unwrap()).unwrap();
         });
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn test_auto_health_groups_inject_lazy_true_to_prevent_blind_testing() {
+        let raw = r#"
+proxies:
+  - { name: 'node-1', type: socks5, server: 127.0.0.1, port: 1080 }
+  - { name: 'node-2', type: socks5, server: 127.0.0.1, port: 1081 }
+proxy-groups:
+  - name: 自动优选
+    type: url-test
+    url: http://cp.cloudflare.com/generate_204
+    interval: 300
+    proxies: [node-1, node-2]
+  - name: 故障转移
+    type: fallback
+    url: http://cp.cloudflare.com/generate_204
+    interval: 300
+    proxies: [node-1, node-2]
+  - name: 普通手动组
+    type: select
+    proxies: [node-1, node-2]
+proxy-providers:
+  provider1:
+    type: http
+    url: http://example.com/subs
+    path: ./subs.yaml
+    health-check:
+      enable: true
+      url: http://cp.cloudflare.com/generate_204
+      interval: 300
+"#;
+        let prepared = prepare_with(raw, &GeneralSettings::default()).unwrap();
+        let val: serde_yaml::Value = serde_yaml::from_str(&prepared).unwrap();
+
+        // 验证 url-test 自动注入了 lazy: true
+        assert_eq!(val["proxy-groups"][0]["lazy"].as_bool(), Some(true));
+        // 验证 fallback 自动注入了 lazy: true
+        assert_eq!(val["proxy-groups"][1]["lazy"].as_bool(), Some(true));
+        // 验证 select 组不注入 lazy
+        assert!(val["proxy-groups"][2].get("lazy").is_none());
+        // 验证 proxy-providers 的 health-check 自动注入了 lazy: true
+        assert_eq!(val["proxy-providers"]["provider1"]["health-check"]["lazy"].as_bool(), Some(true));
     }
 }

@@ -50,3 +50,9 @@ export async function getActiveTrafficDriver(): Promise<string> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("get_active_traffic_driver");
 }
+
+export async function cleanWindivertResidualService(): Promise<string> {
+  if (!isTauri()) return "非桌面客户端环境";
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<string>("clean_windivert_residual_service");
+}

@@ -263,6 +263,10 @@ pub fn try_data_dir() -> Option<PathBuf> {
     DATA.get().cloned()
 }
 
+pub fn is_initialized() -> bool {
+    DATA.get().is_some()
+}
+
 pub fn data_dir() -> PathBuf {
     DATA.get().cloned().unwrap_or_else(|| {
         #[cfg(test)]

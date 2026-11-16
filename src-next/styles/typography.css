@@ -1,0 +1,84 @@
+/* ==========================================================================
+   ProcWeaver src-next 排版光学与等宽双轨治理
+   规范溯源: typography-dark-mono-optics / tauri-desktop-layout-typography
+   ========================================================================== */
+
+:root {
+  /* 现代高级比例字体栈（主 UI） */
+  --font-sans: "Geist", "Inter Variable", "Inter", -apple-system, 
+               BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", 
+               "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", sans-serif;
+
+  /* 工业级全等宽字体栈（代码 / 终端 / IP / 密钥） */
+  --font-mono: "Geist Mono", "JetBrains Mono", "SF Mono", "Berkeley Mono", 
+               Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+/* 全局主字体与 GRAD 轴绑定 (零重排消光渗) */
+body {
+  font-family: var(--font-sans);
+  font-variation-settings: "GRAD" var(--font-grade);
+  letter-spacing: var(--font-tracking);
+}
+
+/* --------------------------------------------------------------------------
+   微字号排版光学加固与防发虚 (Micro-Typography Optical Stabilization)
+   防止 10px-12px 在 Windows 低缩放或普通屏幕下笔画坍塌、模糊粘连
+   -------------------------------------------------------------------------- */
+.text-xs,
+.text-\[9px\],
+.text-\[10px\],
+.text-\[11px\],
+.text-\[12px\] {
+  letter-spacing: 0.012em;
+}
+
+/* 浅色模式骨架加固：确保在 LCD 屏幕上笔画坚实，杜绝发虚发灰 */
+:root:not(.dark) .font-normal {
+  font-weight: 450;
+}
+
+:root:not(.dark) .font-medium {
+  font-weight: 550;
+}
+
+/* --------------------------------------------------------------------------
+   轨道 1：表格数字 (Tabular Figures)
+   保持字母紧凑比例，仅 0~9 强制等宽，数值高频跳动防抖
+   -------------------------------------------------------------------------- */
+.tabular-numeric {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "cv02" 1, "cv03" 1, "cv04" 1;
+}
+
+/* --------------------------------------------------------------------------
+   轨道 2：技术型全等宽 (Full Monospace)
+   严格 1ch 物理栅格，适用于 IP、规则语法、终端日志
+   -------------------------------------------------------------------------- */
+.font-code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+   ch 字符栅格物理约束输入框
+   -------------------------------------------------------------------------- */
+.ch-ipv4 {
+  width: 17ch; /* 15 字符 (255.255.255.255) + 2ch 内边距 */
+}
+
+.ch-port {
+  width: 8ch;  /* 5 字符 (65535) + 2ch 内边距 */
+}
+
+/* --------------------------------------------------------------------------
+   防孤字折行平衡
+   -------------------------------------------------------------------------- */
+h1, h2, h3, .text-balance {
+  text-wrap: balance;
+}
+
+p, .text-pretty {
+  text-wrap: pretty;
+}

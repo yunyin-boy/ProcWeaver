@@ -333,7 +333,7 @@ pub async fn download_app_update(
 
 /// 执行客户端更新替换安装（便携模式保护：绝不碰 data/ 目录）
 #[tauri::command]
-pub async fn install_app_update(archive_path: String) -> Result<bool, String> {
+pub async fn install_app_update(app: tauri::AppHandle, archive_path: String) -> Result<bool, String> {
     #[cfg(target_os = "android")]
     {
         let _: serde_json::Value = crate::platform::android::call_async("installUpdate", serde_json::json!({"path":archive_path})).await?;
@@ -347,6 +347,7 @@ pub async fn install_app_update(archive_path: String) -> Result<bool, String> {
 
     let current_exe = std::env::current_exe().map_err(|e| format!("获取当前程序路径失败: {}", e))?;
     let app_dir = current_exe.parent().ok_or("无法获取应用所在目录")?.to_path_buf();
+    let current_pid = std::process::id();
 
     let file_name_lower = archive.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
 
@@ -359,6 +360,11 @@ pub async fn install_app_update(archive_path: String) -> Result<bool, String> {
                 .creation_flags(0x00000008) // DETACHED_PROCESS
                 .spawn()
                 .map_err(|e| format!("启动安装程序失败: {}", e))?;
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+                let _ = app_clone.exit(0);
+            });
             return Ok(true);
         }
         #[cfg(not(windows))]
@@ -367,7 +373,7 @@ pub async fn install_app_update(archive_path: String) -> Result<bool, String> {
         }
     }
 
-    // 若为 ZIP 便携包：解压并无损热替换
+    // 若为 ZIP 便携包：解压并利用独立脱机批处理完成全量无损替换（便携保护：绝不碰 data/ 目录）
     if file_name_lower.ends_with(".zip") {
         let temp_extract = app_dir.join(".update_cache").join("extracted");
         let _ = std::fs::remove_dir_all(&temp_extract);
@@ -412,41 +418,94 @@ pub async fn install_app_update(archive_path: String) -> Result<bool, String> {
             return Err("解压更新包失败，请检查压缩文件完整性".into());
         }
 
-        // 寻找新版的 ProcWeaver.exe
-        let mut new_exe_path = temp_extract.join("ProcWeaver.exe");
-        if !new_exe_path.exists() {
+        // 寻找新版根目录（定位包含 ProcWeaver.exe 的源目录）
+        let mut source_dir = temp_extract.clone();
+        if !source_dir.join("ProcWeaver.exe").exists() {
             // 可能压缩包内套了一层目录，深入一层查找
             if let Ok(entries) = std::fs::read_dir(&temp_extract) {
                 for entry in entries.flatten() {
-                    let sub = entry.path().join("ProcWeaver.exe");
-                    if sub.exists() {
-                        new_exe_path = sub;
+                    let path = entry.path();
+                    if path.is_dir() && path.join("ProcWeaver.exe").exists() {
+                        source_dir = path;
                         break;
                     }
                 }
             }
         }
 
-        if !new_exe_path.exists() {
+        if !source_dir.join("ProcWeaver.exe").exists() {
             return Err("更新包内未找到主程序 ProcWeaver.exe".into());
         }
 
-        // 在 Windows 下执行运行中 exe 重命名并替换
+        // 清理此前残留的临时备份文件（严格遵循 AGENTS.md 规范）
         let old_exe_bak = app_dir.join("ProcWeaver.exe.old");
-        let _ = std::fs::remove_file(&old_exe_bak);
-
-        if let Err(e) = std::fs::rename(&current_exe, &old_exe_bak) {
-            return Err(format!("重命名当前主程序失败: {}", e));
+        if old_exe_bak.exists() {
+            let _ = std::fs::remove_file(&old_exe_bak);
         }
 
-        if let Err(e) = std::fs::copy(&new_exe_path, &current_exe) {
-            // 复制失败尝试回滚
-            let _ = std::fs::rename(&old_exe_bak, &current_exe);
-            return Err(format!("写入新版主程序失败: {}", e));
-        }
+        // 生成脱机独立无感热替换批处理脚本 apply_update.bat
+        let bat_path = app_dir.join(".update_cache").join("apply_update.bat");
+        let source_str = source_dir.to_string_lossy().to_string();
+        let app_dir_str = app_dir.to_string_lossy().to_string();
+        let extract_str = temp_extract.to_string_lossy().to_string();
 
-        // 便携模式核心铁律：绝对禁止清空或覆盖 app_dir/data 目录！
-        return Ok(true);
+        let bat_content = format!(
+            "@echo off\r\n\
+            chcp 65001 >nul\r\n\
+            set TARGET_PID={pid}\r\n\
+            set RETRIES=0\r\n\
+            :WAIT_LOOP\r\n\
+            tasklist /fi \"PID eq %TARGET_PID%\" 2>nul | findstr /i \"%TARGET_PID%\" >nul\r\n\
+            if not errorlevel 1 (\r\n\
+                timeout /t 1 /nobreak >nul\r\n\
+                set /a RETRIES+=1\r\n\
+                if %RETRIES% GEQ 8 (\r\n\
+                    taskkill /f /pid %TARGET_PID% >nul 2>&1\r\n\
+                )\r\n\
+                goto WAIT_LOOP\r\n\
+            )\r\n\
+            taskkill /f /im mihomo.exe >nul 2>&1\r\n\
+            timeout /t 1 /nobreak >nul\r\n\
+            robocopy \"{src}\" \"{dst}\" /E /XD \"{dst}\\data\" \"{dst}\\.update_cache\" /NP /NFL /NDL >nul 2>&1\r\n\
+            cd /d \"{dst}\"\r\n\
+            start \"\" \"{dst}\\ProcWeaver.exe\"\r\n\
+            timeout /t 2 /nobreak >nul\r\n\
+            rmdir /s /q \"{ext}\" >nul 2>&1\r\n\
+            (goto) 2>nul & del \"%~f0\"\r\n\
+            exit\r\n",
+            pid = current_pid,
+            src = source_str,
+            dst = app_dir_str,
+            ext = extract_str
+        );
+
+        std::fs::write(&bat_path, bat_content).map_err(|e| format!("生成更新调度脚本失败: {}", e))?;
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x00000008;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+            std::process::Command::new("cmd.exe")
+                .args(["/c", &bat_path.to_string_lossy()])
+                .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+                .spawn()
+                .map_err(|e| format!("启动独立更新程序失败: {}", e))?;
+
+            // 延迟 600ms 平滑关闭当前主程序，让前端获得完成通知并优雅释放端口
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+                let _ = app_clone.exit(0);
+            });
+
+            return Ok(true);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("非 Windows 平台不支持批处理更新".into());
+        }
     }
 
     Err("不受支持的更新包类型".into())

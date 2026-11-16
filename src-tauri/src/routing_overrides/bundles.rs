@@ -40,13 +40,24 @@ pub fn materialize(raw: &str, config: &Overrides, profile_id: &str) -> Result<(S
             if slot == "dns" && cfg!(windows) && !crate::edition::PROCESS { continue; }
             let target = target.as_ref().or(bundle.main_target.as_ref());
             let destination = if bundle.enabled {
-                let target = target.filter(|t| available.contains(t)).ok_or_else(|| format!("「{}」出口已失效，请重新绑定", bundle.name))?;
-                target.name.as_str()
+                if let Some(target) = target {
+                    if target.name == "DIRECT" {
+                        "DIRECT"
+                    } else if available.contains(target) {
+                        target.name.as_str()
+                    } else {
+                        "REJECT"
+                    }
+                } else {
+                    "REJECT"
+                }
             } else { "REJECT" };
             let name = group(&bundle.id, slot);
             if available.iter().any(|t| t.name == name) { return Err("订阅与业务包出口组重名".into()); }
             let mut members: Vec<_> = available.iter().map(|t| t.name.clone()).collect();
-            members.sort(); members.insert(0, "REJECT".into());
+            members.sort();
+            members.insert(0, "DIRECT".into());
+            members.insert(0, "REJECT".into());
             groups.push(serde_yaml::to_value(serde_json::json!({"name": name, "type":"select", "proxies": members, "hidden":true})).unwrap());
             selections.insert(name, destination.into());
         }
@@ -105,71 +116,75 @@ fn forced_domain_overlaps(forced: &str, business: &str) -> bool {
     labels.iter().rev().zip(protected.iter().rev()).all(|(left, right)| *left == "*" || left == right)
 }
 
+static LAST_HOSTS_WARNING: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn get_hosts_warning() -> Option<String> {
+    LAST_HOSTS_WARNING.lock().ok().and_then(|g| g.clone())
+}
+
+pub fn clear_hosts_warning() {
+    if let Ok(mut g) = LAST_HOSTS_WARNING.lock() {
+        *g = None;
+    }
+}
+
 pub fn validate_remote_names(raw: &str, config: &Overrides) -> Result<(), String> {
     if !cfg!(windows) || crate::edition::PROCESS || !config.bundles_enabled { return Ok(()); }
     let enabled: Vec<_> = config.bundles.iter().filter(|b| b.enabled).collect();
     if enabled.is_empty() { return Ok(()); }
     let yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
     // Hosts and destination overriding run before proxy dialing in Mihomo.
-    // Reject conflicting combinations rather than rewriting public user settings.
+    // Record warnings rather than rejecting public user settings.
     let protected = |name: &str| {
         let name = name.trim_start_matches(['*', '+', '.']).trim_end_matches('.').to_ascii_lowercase();
         if name == "localhost" || name.parse::<std::net::IpAddr>().is_ok() { return false; }
-        if name.is_empty() { return enabled.iter().any(|b| b.mode == "strict" || !b.domains.is_empty()); }
-        enabled.iter().any(|b| b.mode == "strict" || b.domains.iter().any(|pattern| {
+        if name.is_empty() { return false; }
+        enabled.iter().any(|b| b.domains.iter().any(|pattern| {
             let root = pattern.strip_prefix("*.").unwrap_or(pattern);
             name == root || name.ends_with(&format!(".{root}")) || root.ends_with(&format!(".{name}"))
         }))
     };
+    let mut warning_msg = None;
     if yaml["hosts"].as_mapping().is_some_and(|m| m.keys().any(|key| key.as_str().is_some_and(protected))) {
-        return Err("订阅 hosts 会在业务出口前改写域名，无法保证远端解析；请处理冲突 hosts，原配置未修改".into());
+        eprintln!("[警告] 订阅 hosts 会在业务出口前改写域名，如需确保远端解析请检查订阅 hosts（已正常放行）");
+        warning_msg = Some("提示：订阅 Hosts 中包含可能改写业务域名的条目，建议核对".to_string());
     }
     #[cfg(windows)]
     if yaml["dns"]["enable"].as_bool() == Some(true) && yaml["dns"]["use-system-hosts"].as_bool() != Some(false) {
         let path = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32/drivers/etc/hosts");
-        let hosts = std::fs::read_to_string(path).map_err(|_| "无法核对业务域名与系统 hosts 的冲突")?;
-        if hosts.lines().flat_map(|line| line.split('#').next().unwrap_or("").split_whitespace().skip(1)).any(protected) {
-            return Err("系统 hosts 可能改写业务域名；请处理冲突项或手动关闭公共 DNS 的使用系统 Hosts，原设置保留".into());
+        if let Ok(hosts) = std::fs::read_to_string(path) {
+            if hosts.lines().flat_map(|line| line.split('#').next().unwrap_or("").split_whitespace().skip(1)).any(protected) {
+                eprintln!("[警告] 系统 hosts 可能改写业务域名；如遇解析异常，可关闭公共 DNS 的使用系统 Hosts（已正常放行）");
+                warning_msg = Some("提示：系统 Hosts 中包含业务相关域名，如遇解析异常可在设置中关闭公共 DNS 的「使用系统 Hosts」".to_string());
+            }
         }
     }
     let sniffer = &yaml["sniffer"];
     if sniffer["enable"].as_bool() == Some(true) && tcp_sniffer_overrides(sniffer) {
         if let Some(forced) = sniffer["force-domain"].as_sequence() {
             for bundle in &enabled {
-                if forced.iter().filter_map(Value::as_str).any(|pattern| bundle.mode == "strict"
-                    || bundle.domains.iter().any(|domain| forced_domain_overlaps(pattern, domain))) {
-                    return Err(format!("公共嗅探 force-domain 与业务包「{}」域名范围重叠，可能改写业务原始域名；请处理该强制嗅探冲突后重试，公共嗅探和 DNS 设置未修改", bundle.name));
+                if forced.iter().filter_map(Value::as_str).any(|pattern|
+                    bundle.domains.iter().any(|domain| forced_domain_overlaps(pattern, domain))) {
+                    eprintln!("[警告] 公共嗅探 force-domain 与业务包「{}」域名范围重叠，可能改写业务原始域名（已正常放行）", bundle.name);
+                    if warning_msg.is_none() {
+                        warning_msg = Some(format!("提示：公共嗅探 force-domain 与业务包「{}」域名范围重叠", bundle.name));
+                    }
                 }
             }
         }
     }
+    if let Ok(mut g) = LAST_HOSTS_WARNING.lock() {
+        *g = warning_msg;
+    }
     Ok(())
 }
-pub fn compose_bundle_rules(raw: &str, config: &Overrides) -> Result<String, String> {
-    if !config.bundles_enabled { return Ok(raw.into()); }
-    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
-    let mut prefix: Vec<Value> = Vec::new();
-    for bundle in config.bundles.iter().filter(|b| b.enabled) {
-        if bundle.mode == "sandbox" { continue; }
-        let dest = group(&bundle.id, "main");
-        let block_udp = bundle.policy.as_ref().map_or(true, |p| p.block_udp);
-        for pattern in &bundle.domains {
-            let cond = domain_condition(pattern);
-            if block_udp {
-                prefix.push(Value::from(format!("AND,((NETWORK,UDP),({cond})),REJECT")));
-            }
-            prefix.push(Value::from(format!("{cond},{dest}")));
-            if dest != "DIRECT" && dest != "REJECT" {
-                prefix.push(Value::from(format!("{cond},REJECT")));
-            }
-        }
-    }
-    if !prefix.is_empty() {
-        let rules = yaml.as_mapping_mut().ok_or("配置须为对象")?.entry(Value::from("rules"))
-            .or_insert(Value::Sequence(vec![])).as_sequence_mut().ok_or("rules 须为数组")?;
-        rules.splice(0..0, prefix);
-    }
-    serde_yaml::to_string(&yaml).map_err(|_| "生成业务包分流规则失败".into())
+/// 业务包规则合成函数。
+/// 遵循【选项 A】：仅按业务进程 + 子进程捕获分流。
+/// 严禁在全局公共监听端口（如 10811）的顶层 rules 中注入无进程限定的裸 DOMAIN / DOMAIN-SUFFIX 规则，
+/// 从而保证普通浏览器或系统内其他进程在访问 Google、OpenAI 等同域名时，正常遵循公共订阅的分流策略（如 🤖 人工智能、节点选择）。
+/// 业务包流量完全通过 WinDivert 驱动级进程树重定向、公共端口的顶层 PROCESS-NAME 进程规则、以及专属监听端口的 sub-rules 实现精准分流。
+pub fn compose_bundle_rules(raw: &str, _config: &Overrides) -> Result<String, String> {
+    Ok(raw.into())
 }
 pub fn add_listeners(yaml: &mut Value, config: &Overrides, _prefix: &Value, fallback: &[Value]) -> Result<(), String> {
     for bundle in &config.bundles {
@@ -179,6 +194,17 @@ pub fn add_listeners(yaml: &mut Value, config: &Overrides, _prefix: &Value, fall
         let mut rules = Vec::new();
         if bundle.enabled && config.process_enabled {
             if bundle.policy.as_ref().map_or(true, |p| p.block_udp) { rules.push("NETWORK,UDP,REJECT".into()); }
+            if bundle.policy.as_ref().map_or(true, |p| p.bypass_lan) {
+                rules.push("DOMAIN,localhost,DIRECT".into());
+                rules.push("DOMAIN-SUFFIX,localhost,DIRECT".into());
+                rules.push("IP-CIDR,127.0.0.0/8,DIRECT,no-resolve".into());
+                rules.push("IP-CIDR6,::1/128,DIRECT,no-resolve".into());
+                rules.push("IP-CIDR,10.0.0.0/8,DIRECT,no-resolve".into());
+                rules.push("IP-CIDR,172.16.0.0/12,DIRECT,no-resolve".into());
+                rules.push("IP-CIDR,192.168.0.0/16,DIRECT,no-resolve".into());
+                rules.push("IP-CIDR6,fc00::/7,DIRECT,no-resolve".into());
+                rules.push("IP-CIDR6,fe80::/10,DIRECT,no-resolve".into());
+            }
             if bundle.mode == "sandbox" {
                 for pattern in &bundle.domains {
                     let condition=domain_condition(pattern);

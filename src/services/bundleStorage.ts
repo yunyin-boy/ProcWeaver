@@ -11,6 +11,7 @@ import type {
 import type { BundlePlatform } from "../types/platform";
 import { validAndroidPackage, processMembers, validateProcessBindings } from "../utils/bundlePlatform";
 import type { BundleRepositoryOrigin } from "../types/bundleRepository";
+import { businessBundlesApi } from "../api/businessBundles";
 
 function normalizeInstancePolicy(policy?: Partial<BundlePolicy> | null): BundlePolicy {
   return {
@@ -54,7 +55,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
   {
     packageId: "openai-chatgpt",
     packageName: "OpenAI / ChatGPT 生产力套件",
-    packageVersion: "v1.5",
+    packageVersion: "v1.6",
     category: "dev",
     mode: "strict",
     icon: "🧠",
@@ -77,7 +78,7 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
     processes: [
       { exe: "ChatGPT.exe", role: "main", description: "桌面主客户端" },
       { exe: "codex.exe", role: "worker", description: "OpenAI 核心数据与代码辅助进程" },
-      { exe: "node.exe", role: "worker", description: "扩展脚本与本地运行依赖" },
+      { exe: "node.exe", role: "worker", description: "扩展脚本与本地运行依赖（自身走代理，不连坐日常浏览器）", includeDescendants: false },
     ],
     additionalExes: ["ChatGPT.exe", "codex.exe", "node.exe"],
     macosProcesses: [
@@ -149,121 +150,12 @@ export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
   },
 ];
 
-// 获取全部已装载的本地规则包实例 (开箱严格仅装载官方 2 个预设：OpenAI 与 Google 反重力)
-export function getBundleInstances(): BundleLocalInstance[] {
-  const independent = typeof document !== "undefined" && document.documentElement.dataset.edition === "process";
-  const upgradePreset = (instances: BundleLocalInstance[]): { list: BundleLocalInstance[]; changed: boolean } => {
-    let changed = false;
-    const list = instances.map(item => {
-      if (item.definition?.packageId === "openai-chatgpt") {
-        const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
-        let itemChanged = false;
-        if (!domains.some(d => d.toLowerCase() === "sora.com")) {
-          domains.push("sora.com");
-          itemChanged = true;
-        }
-        if (item.definition.packageVersion !== "v1.5") {
-          itemChanged = true;
-        }
-        if (!itemChanged) return item;
-        changed = true;
-        return {
-          ...item,
-          definition: {
-            ...item.definition,
-            packageVersion: "v1.5",
-            domains,
-          },
-        };
-      }
-      if (item.definition?.packageId !== "google-antigravity") return item;
-      const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
-      const additionalExes = Array.isArray(item.definition.additionalExes) ? [...item.definition.additionalExes] : [];
-      const processes = Array.isArray(item.definition.processes) ? [...item.definition.processes] : [];
-      let itemChanged = false;
-      if (!domains.some(d => d.toLowerCase() === "googleapis.com")) {
-        domains.push("googleapis.com");
-        itemChanged = true;
-      }
-      if (!additionalExes.some(e => e.toLowerCase() === "language_server_windows_x64.exe")) {
-        additionalExes.push("language_server_windows_x64.exe");
-        itemChanged = true;
-      }
-      if (!processes.some(p => p.exe.toLowerCase() === "language_server_windows_x64.exe")) {
-        processes.push({ exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" });
-        itemChanged = true;
-      }
-      if (!additionalExes.some(e => e.toLowerCase() === "gemini.exe")) {
-        additionalExes.push("Gemini.exe");
-        itemChanged = true;
-      }
-      if (!processes.some(p => p.exe.toLowerCase() === "gemini.exe")) {
-        processes.push({ exe: "Gemini.exe", role: "worker", description: "Google Gemini 桌面客户端" });
-        itemChanged = true;
-      }
-      const policy = item.definition.policy ? { ...item.definition.policy } : undefined;
-      if (policy && policy.disallowProxyArgs === undefined) {
-        policy.disallowProxyArgs = true;
-        itemChanged = true;
-      }
-      if (item.definition.packageVersion !== "v1.2") {
-        itemChanged = true;
-      }
-      if (!itemChanged) return item;
-      changed = true;
-      return {
-        ...item,
-        policy: item.policy && item.policy.disallowProxyArgs === undefined ? { ...item.policy, disallowProxyArgs: true } : item.policy,
-        definition: {
-          ...item.definition,
-          packageVersion: "v1.2",
-          domains,
-          additionalExes,
-          processes,
-          policy: policy ?? item.definition.policy,
-        },
-      };
-    });
-    return { list, changed };
-  };
-  const prepare = (instances: BundleLocalInstance[]): BundleLocalInstance[] => {
-    return instances.map(i => {
-      const base = independent && i.backend !== "external"
-        ? { ...i, backend: "external" as const, enabled: false, slotBindings: { main: null, dns: "FOLLOW_MAIN" }, slotTargets: undefined, externalEndpointId: null }
-        : i;
-      return {
-        ...base,
-        policy: normalizeInstancePolicy(base.policy ?? base.definition.policy),
-      };
-    });
-  };
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        // 自动清洗历史遗留的旧版未修改 mock 套件 (inst-cursor / inst-browser)
-        const cleaned = parsed.filter(
-          (item: BundleLocalInstance) =>
-            !["inst-cursor", "inst-browser"].includes(item.instanceId)
-        );
-        const upgraded = upgradePreset(cleaned);
-        if (cleaned.length !== parsed.length || upgraded.changed) {
-          const ready = prepare(upgraded.list);
-          saveBundleInstances(ready);
-          return ready;
-        }
-        const ready = prepare(upgraded.list);
-        if (independent && ready.some((item, index) => item !== parsed[index])) saveBundleInstances(ready);
-        return ready;
-      }
-    }
-  } catch (err) {
-    console.error("读取业务规则包存储失败:", err);
-  }
+let memoryInstances: BundleLocalInstance[] | null = null;
+let initialized = false;
+let initPromise: Promise<BundleLocalInstance[]> | null = null;
 
-  // 初次初始化：严格仅装载官方开箱双预设（OpenAI 和 反重力），其余全部按需自仓库获取或手动导入
-  const initialInstances: BundleLocalInstance[] = [
+function initialPresetInstances(): BundleLocalInstance[] {
+  return [
     {
       instanceId: "inst-chatgpt",
       definition: PRESET_BUNDLES_CATALOG[0], // ChatGPT
@@ -285,20 +177,217 @@ export function getBundleInstances(): BundleLocalInstance[] {
       updatedAt: Date.now(),
     },
   ];
-
-  const ready = prepare(initialInstances);
-  saveBundleInstances(ready);
-  return ready;
 }
 
-// 保存本地实例到持久化存储
-export function saveBundleInstances(instances: BundleLocalInstance[]): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(instances));
-  } catch (err) {
-    console.error("持久化业务规则包实例失败:", err);
-    throw new Error("无法保存本机规则包，请检查存储空间后重试");
+const upgradePreset = (instances: BundleLocalInstance[]): { list: BundleLocalInstance[]; changed: boolean } => {
+  let changed = false;
+  const list = instances.map(item => {
+    if (item.definition?.packageId === "openai-chatgpt") {
+      const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
+      let itemChanged = false;
+      if (!domains.some(d => d.toLowerCase() === "sora.com")) {
+        domains.push("sora.com");
+        itemChanged = true;
+      }
+      const processes = (item.definition.processes || []).map(p => {
+        if (p.exe.toLowerCase() === "node.exe" && p.includeDescendants !== false) {
+          itemChanged = true;
+          return { ...p, includeDescendants: false };
+        }
+        return p;
+      });
+      if (item.definition.packageVersion !== "v1.6") {
+        itemChanged = true;
+      }
+      if (!itemChanged) return item;
+      changed = true;
+      return {
+        ...item,
+        definition: {
+          ...item.definition,
+          packageVersion: "v1.6",
+          domains,
+          processes,
+        },
+      };
+    }
+    if (item.definition?.packageId !== "google-antigravity") return item;
+    const domains = Array.isArray(item.definition.domains) ? [...item.definition.domains] : [];
+    const additionalExes = Array.isArray(item.definition.additionalExes) ? [...item.definition.additionalExes] : [];
+    const processes = Array.isArray(item.definition.processes) ? [...item.definition.processes] : [];
+    let itemChanged = false;
+    if (!domains.some(d => d.toLowerCase() === "googleapis.com")) {
+      domains.push("googleapis.com");
+      itemChanged = true;
+    }
+    if (!additionalExes.some(e => e.toLowerCase() === "language_server_windows_x64.exe")) {
+      additionalExes.push("language_server_windows_x64.exe");
+      itemChanged = true;
+    }
+    if (!processes.some(p => p.exe.toLowerCase() === "language_server_windows_x64.exe")) {
+      processes.push({ exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" });
+      itemChanged = true;
+    }
+    if (!additionalExes.some(e => e.toLowerCase() === "gemini.exe")) {
+      additionalExes.push("Gemini.exe");
+      itemChanged = true;
+    }
+    if (!processes.some(p => p.exe.toLowerCase() === "gemini.exe")) {
+      processes.push({ exe: "Gemini.exe", role: "worker", description: "Google Gemini 桌面客户端" });
+      itemChanged = true;
+    }
+    const policy = item.definition.policy ? { ...item.definition.policy } : undefined;
+    if (policy && policy.disallowProxyArgs === undefined) {
+      policy.disallowProxyArgs = true;
+      itemChanged = true;
+    }
+    if (item.definition.packageVersion !== "v1.2") {
+      itemChanged = true;
+    }
+    if (!itemChanged) return item;
+    changed = true;
+    return {
+      ...item,
+      policy: item.policy && item.policy.disallowProxyArgs === undefined ? { ...item.policy, disallowProxyArgs: true } : item.policy,
+      definition: {
+        ...item.definition,
+        packageVersion: "v1.2",
+        domains,
+        additionalExes,
+        processes,
+        policy: policy ?? item.definition.policy,
+      },
+    };
+  });
+  return { list, changed };
+};
+
+const prepare = (instances: BundleLocalInstance[]): BundleLocalInstance[] => {
+  const independent = typeof document !== "undefined" && document.documentElement.dataset.edition === "process";
+  return instances.map(i => {
+    const base = independent && i.backend !== "external"
+      ? { ...i, backend: "external" as const, enabled: false, slotBindings: { main: null, dns: "FOLLOW_MAIN" }, slotTargets: undefined, externalEndpointId: null }
+      : i;
+    return {
+      ...base,
+      policy: normalizeInstancePolicy(base.policy ?? base.definition.policy),
+    };
+  });
+};
+
+/**
+ * 异步初始化业务规则包存储，并在必要时执行无感平滑迁移
+ */
+export async function initializeBundleStorage(): Promise<BundleLocalInstance[]> {
+  if (initialized && memoryInstances) return memoryInstances;
+  if (initPromise) return initPromise;
+
+  initPromise = (async () => {
+    try {
+      // 1. 优先尝试从后端读取已持久化的明文文件 data/config/business-bundles.json
+      const backendData = await businessBundlesApi.load();
+      if (Array.isArray(backendData) && backendData.length > 0) {
+        const cleaned = backendData.filter(
+          (item: BundleLocalInstance) => !["inst-cursor", "inst-browser"].includes(item.instanceId)
+        );
+        const upgraded = upgradePreset(cleaned);
+        const ready = prepare(upgraded.list);
+        memoryInstances = ready;
+        if (upgraded.changed) {
+          void businessBundlesApi.save(ready);
+        }
+        // 清理旧版 localStorage 遗留
+        try { localStorage.removeItem(STORAGE_KEY); } catch {}
+        initialized = true;
+        return ready;
+      }
+
+      // 2. 后端没有数据（老版本升级或全新开箱）：检查 localStorage 是否有旧数据
+      let legacyData: BundleLocalInstance[] | null = null;
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            legacyData = parsed;
+          }
+        }
+      } catch {}
+
+      let finalInstances: BundleLocalInstance[];
+      if (legacyData && legacyData.length > 0) {
+        // 发现老版本数据：清洗、升级并自动迁移到后端
+        const cleaned = legacyData.filter(
+          (item: BundleLocalInstance) => !["inst-cursor", "inst-browser"].includes(item.instanceId)
+        );
+        const upgraded = upgradePreset(cleaned);
+        finalInstances = prepare(upgraded.list);
+      } else {
+        // 全新开箱：初始化默认双套件
+        finalInstances = prepare(initialPresetInstances());
+      }
+
+      // 3. 立即持久化至后端明文文件并清理老旧 localStorage
+      memoryInstances = finalInstances;
+      await businessBundlesApi.save(finalInstances);
+      try { localStorage.removeItem(STORAGE_KEY); } catch {}
+      initialized = true;
+      return finalInstances;
+    } catch (err) {
+      console.error("从后端读取业务规则包失败，降级本地存储/预设:", err);
+      if (!memoryInstances) {
+        memoryInstances = prepare(initialPresetInstances());
+      }
+      initialized = true;
+      return memoryInstances;
+    } finally {
+      initPromise = null;
+    }
+  })();
+
+  return initPromise;
+}
+
+// 同步获取全部已装载的本地规则包实例
+export function getBundleInstances(): BundleLocalInstance[] {
+  if (memoryInstances) {
+    return memoryInstances;
   }
+
+  // 首屏未完成异步初始化时的同步兜底：从 localStorage 恢复或加载默认预设
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const cleaned = parsed.filter(
+          (item: BundleLocalInstance) => !["inst-cursor", "inst-browser"].includes(item.instanceId)
+        );
+        const upgraded = upgradePreset(cleaned);
+        memoryInstances = prepare(upgraded.list);
+      }
+    }
+  } catch {}
+
+  if (!memoryInstances) {
+    memoryInstances = prepare(initialPresetInstances());
+  }
+
+  // 触发后台异步持久化与迁移对齐
+  if (!initialized) {
+    void initializeBundleStorage();
+  }
+
+  return memoryInstances;
+}
+
+// 保存本地实例到持久化存储（统一写入后端）
+export function saveBundleInstances(instances: BundleLocalInstance[]): void {
+  memoryInstances = instances;
+  // 异步将业务定义原子持久化至后端的 data/config/business-bundles.json
+  void businessBundlesApi.save(instances).catch(err => {
+    console.error("持久化业务规则包实例至后端失败:", err);
+  });
 }
 
 // 从预设模板装载新实例

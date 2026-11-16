@@ -79,6 +79,12 @@ impl Packet {
             syn: protocol == 6 && bytes[offset + 13] & 0x12 == 2,
         })
     }
+    pub fn is_fin_or_rst(&self, bytes: &[u8]) -> bool {
+        self.flow.protocol == 6 && bytes.get(self.transport + 13).is_some_and(|&b| b & 0x05 != 0)
+    }
+    pub fn is_ack(&self, bytes: &[u8]) -> bool {
+        self.flow.protocol == 6 && bytes.get(self.transport + 13).is_some_and(|&b| b & 0x10 != 0)
+    }
     pub fn rewrite(&self, bytes: &mut [u8], source: SocketAddr, destination: SocketAddr) {
         match (source.ip(), destination.ip()) {
             (IpAddr::V4(s), IpAddr::V4(d)) => {

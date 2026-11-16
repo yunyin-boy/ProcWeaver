@@ -5,8 +5,9 @@
 #include "process_hook.h"
 
 HookConfig g_config = {
-    0, 45053, false,
-    { true, true, true, false, true, true, DnsMode::SafePure, PortFilterMode::All, {}, TargetFilterMode::All, {} }
+    0, 45053, false, false,
+    { true, true, true, false, true, true, DnsMode::SafePure, PortFilterMode::All, {}, TargetFilterMode::All, {}, false },
+    {}, ""
 };
 HMODULE g_hModule = NULL;
 thread_local uint32_t g_reentry_depth = 0;
@@ -57,6 +58,55 @@ void LoadHookConfig() {
         }
     }
 
+    char rules_buf[2048] = { 0 };
+    if (GetEnvironmentVariableA("PROCWEAVER_OVERRIDE_RULES", rules_buf, sizeof(rules_buf)) > 0) {
+        g_config.override_rules = rules_buf;
+    }
+
+    char action_buf[32] = { 0 };
+    if (GetEnvironmentVariableA("PROCWEAVER_ACTION", action_buf, sizeof(action_buf)) > 0) {
+        if (_stricmp(action_buf, "REJECT") == 0) {
+            g_config.reject_all = true;
+        } else if (_stricmp(action_buf, "DIRECT") == 0) {
+            g_config.bundle_port = 0;
+            g_config.reject_all = false;
+        }
+    }
+
+    // 针对自身进程可执行文件名，核验是否有专有覆盖规则 (避免固定继承父进程端口)
+    char selfPath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameA(NULL, selfPath, MAX_PATH) > 0 && !g_config.override_rules.empty()) {
+        const char* base = strrchr(selfPath, '\\');
+        const char* myName = base ? (base + 1) : selfPath;
+        // 在 override_rules (形如 "git.exe=DIRECT;curl.exe=REJECT;sub.exe=34015;") 中检索
+        std::string target = myName;
+        for (auto& c : target) c = (char)tolower(c);
+        std::string rules = g_config.override_rules;
+        for (auto& c : rules) c = (char)tolower(c);
+
+        std::string pattern = target + "=";
+        size_t pos = rules.find(pattern);
+        if (pos != std::string::npos) {
+            size_t val_start = pos + pattern.length();
+            size_t val_end = rules.find(';', val_start);
+            if (val_end == std::string::npos) val_end = rules.length();
+            std::string action = rules.substr(val_start, val_end - val_start);
+            if (action == "direct") {
+                g_config.bundle_port = 0;
+                g_config.reject_all = false;
+            } else if (action == "reject") {
+                g_config.reject_all = true;
+            } else {
+                int p = atoi(action.c_str());
+                if (p > 0 && p <= 65535) {
+                    g_config.bundle_port = (uint16_t)p;
+                    g_config.reject_all = false;
+                    g_config.enabled = true;
+                }
+            }
+        }
+    }
+
     char dns_buf[32] = { 0 };
     DWORD r2 = GetEnvironmentVariableA("PROCWEAVER_DNS_PORT", dns_buf, sizeof(dns_buf));
     if (r2 > 0 && r2 < sizeof(dns_buf)) {
@@ -65,6 +115,24 @@ void LoadHookConfig() {
             g_config.dns_port = (uint16_t)dport;
         }
     }
+
+    char sysproxy_buf[256] = { 0 };
+    DWORD r_sp = GetEnvironmentVariableA("PROCWEAVER_SYSTEM_PROXY_PORTS", sysproxy_buf, sizeof(sysproxy_buf));
+    if (r_sp > 0 && r_sp < sizeof(sysproxy_buf)) {
+        char* token = strtok(sysproxy_buf, ",; ");
+        while (token) {
+            int p = atoi(token);
+            if (p > 0 && p <= 65535) {
+                g_config.system_proxy_ports.insert((uint16_t)p);
+            }
+            token = strtok(nullptr, ",; ");
+        }
+    }
+    // 默认垫底端口保障
+    g_config.system_proxy_ports.insert(7890);
+    g_config.system_proxy_ports.insert(10809);
+    g_config.system_proxy_ports.insert(10811);
+    g_config.system_proxy_ports.insert(7897);
 
     // 读取精细化策略配置
     g_config.policy.proxy_tcp = ReadEnvBool("PROCWEAVER_PROXY_TCP", true);
@@ -293,6 +361,47 @@ void ReportHookTier(HookTier tier) {
         UnmapViewOfFile(map);
     }
     static HANDLE s_hMapKeepAlive = hMap;
+}
+
+void ReportChildHookFailed(DWORD pid, const char* name) {
+    HANDLE hMap = CreateFileMappingA(
+        INVALID_HANDLE_VALUE,
+        NULL,
+        PAGE_READWRITE,
+        0,
+        sizeof(HookStatusMap),
+        "Local\\ProcWeaver_Hook_Tiers"
+    );
+    if (!hMap) return;
+
+    HookStatusMap* map = (HookStatusMap*)MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(HookStatusMap));
+    if (map) {
+        if (map->magic != 0x5057484B) {
+            map->magic = 0x5057484B;
+            map->count = 0;
+        }
+        int found_idx = -1;
+        for (uint32_t i = 0; i < map->count && i < 256; i++) {
+            if (map->records[i].pid == pid) {
+                found_idx = (int)i;
+                break;
+            }
+        }
+        if (found_idx == -1 && map->count < 256) {
+            found_idx = (int)map->count++;
+        }
+        if (found_idx >= 0 && found_idx < 256) {
+            map->records[found_idx].pid = pid;
+            map->records[found_idx].hook_tier = (uint32_t)HookTier::Failed;
+            map->records[found_idx].bundle_port = 0;
+            map->records[found_idx].timestamp_ms = (uint64_t)GetTickCount();
+            if (name && name[0]) {
+                strncpy(map->records[found_idx].process_name, name, sizeof(map->records[found_idx].process_name) - 1);
+            }
+        }
+        UnmapViewOfFile(map);
+    }
+    static HANDLE s_hMapKeepAliveChild = hMap;
 }
 
 extern "C" __declspec(dllexport) DWORD WINAPI PwGetHookTier() {

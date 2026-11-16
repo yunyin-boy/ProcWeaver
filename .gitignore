@@ -39,6 +39,7 @@
 node_modules/
 target/
 dist/
+dist-*/
 dist-packages/
 .cache/
 .vite/
@@ -47,6 +48,8 @@ test-results/
 playwright-report/
 /dist/
 /output/
+src-next/output/
+src-next/dist/
 /portable/
 /dist-packages/
 /html/
