@@ -18,4 +18,5 @@ export interface BundleRepositoryOrigin {
 export interface RepositoryPackage { key: string; definition: BusinessBundleDefinition; origin: BundleRepositoryOrigin }
 export interface RepositoryCatalog { packages: RepositoryPackage[]; warnings: string[] }
 export interface RepositoryStatus extends RepositoryCatalog { loading: boolean; fetched: boolean; error: string; updatedAt?: number }
-export interface RepositorySnapshot { repositories: BundleRepository[]; statuses: Record<string, RepositoryStatus>; error: string }
+export interface RepositorySettings { repositories: BundleRepository[]; githubProxy: string }
+export interface RepositorySnapshot extends RepositorySettings { statuses: Record<string, RepositoryStatus>; error: string }

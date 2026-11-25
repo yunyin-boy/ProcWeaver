@@ -44,6 +44,8 @@ export type ConnectionViewMode = "active" | "history";
 export interface ConnectionsSnapshot {
   downloadTotal: number;
   uploadTotal: number;
+  downloadSpeed?: number;
+  uploadSpeed?: number;
   connections: ConnectionItem[];
 }
 

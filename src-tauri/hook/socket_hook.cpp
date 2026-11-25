@@ -5,6 +5,33 @@ PFN_connect TrueConnect = connect;
 PFN_WSAConnect TrueWSAConnect = WSAConnect;
 PFN_sendto TrueSendTo = sendto;
 PFN_WSASendTo TrueWSASendTo = WSASendTo;
+decltype(&::socket) TrueSocket = ::socket;
+decltype(&::WSASocketA) TrueWSASocketA = ::WSASocketA;
+decltype(&::WSASocketW) TrueWSASocketW = ::WSASocketW;
+
+static bool RejectSocketFamily(int af) {
+    if ((af == AF_INET || af == AF_INET6 || af == AF_UNSPEC || af == FROM_PROTOCOL_INFO) &&
+        g_config.reject_all && IsHookEnabled()) {
+        WSASetLastError(WSAEACCES);
+        return true;
+    }
+    return false;
+}
+
+SOCKET WSAAPI HookSocket(int af, int type, int protocol) {
+    if (RejectSocketFamily(af)) return INVALID_SOCKET;
+    return TrueSocket(af, type, protocol);
+}
+
+SOCKET WSAAPI HookWSASocketA(int af, int type, int protocol, LPWSAPROTOCOL_INFOA info, GROUP group, DWORD flags) {
+    if (RejectSocketFamily(af)) return INVALID_SOCKET;
+    return TrueWSASocketA(af, type, protocol, info, group, flags);
+}
+
+SOCKET WSAAPI HookWSASocketW(int af, int type, int protocol, LPWSAPROTOCOL_INFOW info, GROUP group, DWORD flags) {
+    if (RejectSocketFamily(af)) return INVALID_SOCKET;
+    return TrueWSASocketW(af, type, protocol, info, group, flags);
+}
 
 // 基于 select 超时机制的精确发送，原生兼容阻塞与非阻塞 (Non-blocking) 套接字
 static bool SendExactTimeout(SOCKET s, const char* buf, int len, int timeout_ms) {
@@ -48,6 +75,18 @@ static bool RecvExactTimeout(SOCKET s, char* buf, int len, int timeout_ms) {
     return true;
 }
 
+static bool IsSuiteDnsAlias(uint32_t address) {
+    return (ntohl(address) & 0xFFFF0000) == 0xC6130000;
+}
+
+static sockaddr_in SuiteDnsEndpoint() {
+    sockaddr_in endpoint{};
+    endpoint.sin_family = AF_INET;
+    endpoint.sin_addr.s_addr = htonl(0xC6130001); // 198.19.0.1, terminates in the bundle inlet.
+    endpoint.sin_port = htons(53);
+    return endpoint;
+}
+
 static bool PerformSocks5Handshake(SOCKET s, const struct sockaddr *orig_addr, int orig_len) {
     (void)orig_len;
     if (!orig_addr || (orig_addr->sa_family != AF_INET && orig_addr->sa_family != AF_INET6)) {
@@ -75,7 +114,9 @@ static bool PerformSocks5Handshake(SOCKET s, const struct sockaddr *orig_addr, i
     if (orig_addr->sa_family == AF_INET) {
         const sockaddr_in* sin = (const sockaddr_in*)orig_addr;
         std::string fake_domain = GetDomainForFakeIp(sin->sin_addr.s_addr);
-        if (g_config.policy.remote_dns_required && IsFakeIp(sin->sin_addr.s_addr) && (fake_domain.empty() || fake_domain.length() > 255)) {
+        bool scoped_token = g_config.policy.scoped_dns && IsSuiteDnsAlias(sin->sin_addr.s_addr);
+        if (g_config.policy.remote_dns_required && IsFakeIp(sin->sin_addr.s_addr) && !scoped_token
+            && (fake_domain.empty() || fake_domain.length() > 255)) {
             return false; // A lost token must never become an IP request or native DNS fallback.
         }
 
@@ -155,6 +196,66 @@ static bool PerformSocks5Handshake(SOCKET s, const struct sockaddr *orig_addr, i
     }
 
     return true;
+}
+
+bool ExchangeSuiteDns(const std::vector<uint8_t>& query, std::vector<uint8_t>& answer) {
+    if (!g_config.policy.scoped_dns || !g_config.bundle_port || query.size() < 12 || query.size() > 65535) {
+        return false;
+    }
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) return false;
+    SOCKET socket = TrueSocket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == INVALID_SOCKET) {
+        WSACleanup();
+        return false;
+    }
+    sockaddr_in inlet{};
+    inlet.sin_family = AF_INET;
+    inlet.sin_port = htons(g_config.bundle_port);
+    inlet.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    auto endpoint = SuiteDnsEndpoint();
+    constexpr int timeout = 4200;
+    unsigned char length[2] = {
+        static_cast<unsigned char>(query.size() >> 8), static_cast<unsigned char>(query.size()),
+    };
+    bool ok = TrueConnect(socket, reinterpret_cast<sockaddr*>(&inlet), sizeof(inlet)) == 0
+        && PerformSocks5Handshake(socket, reinterpret_cast<sockaddr*>(&endpoint), sizeof(endpoint))
+        && SendExactTimeout(socket, reinterpret_cast<const char*>(length), sizeof(length), timeout)
+        && SendExactTimeout(socket, reinterpret_cast<const char*>(query.data()), static_cast<int>(query.size()), timeout)
+        && RecvExactTimeout(socket, reinterpret_cast<char*>(length), sizeof(length), timeout);
+    if (ok) {
+        answer.resize((static_cast<size_t>(length[0]) << 8) | length[1]);
+        ok = answer.size() >= 12
+            && RecvExactTimeout(socket, reinterpret_cast<char*>(answer.data()), static_cast<int>(answer.size()), timeout)
+            && answer[0] == query[0] && answer[1] == query[1] && (answer[2] & 0x80) != 0;
+    }
+    closesocket(socket);
+    WSACleanup();
+    if (!ok) answer.clear();
+    return ok;
+}
+
+static bool IsDnsEndpoint(const sockaddr* to) {
+    if (!to) return false;
+    if (to->sa_family == AF_INET) return reinterpret_cast<const sockaddr_in*>(to)->sin_port == htons(53);
+    if (to->sa_family == AF_INET6) return reinterpret_cast<const sockaddr_in6*>(to)->sin6_port == htons(53);
+    return false;
+}
+
+static bool UseNativeDns(const sockaddr* to) {
+    if (g_config.policy.dns_mode != DnsMode::SystemNative || !IsDnsEndpoint(to)) return false;
+    for (const auto& server : g_config.policy.native_dns_servers) {
+        if (to->sa_family == AF_INET) {
+            IN_ADDR ip{};
+            if (InetPtonA(AF_INET, server.c_str(), &ip) == 1
+                && ip.s_addr == reinterpret_cast<const sockaddr_in*>(to)->sin_addr.s_addr) return true;
+        } else {
+            IN6_ADDR ip{};
+            if (InetPtonA(AF_INET6, server.c_str(), &ip) == 1
+                && memcmp(&ip, &reinterpret_cast<const sockaddr_in6*>(to)->sin6_addr, sizeof(ip)) == 0) return true;
+        }
+    }
+    return false;
 }
 
 static bool MatchTargetDomain(const std::string& domain, const std::string& rule) {
@@ -362,6 +463,7 @@ static bool IsQuicOrUdp443(const struct sockaddr *to) {
 
 static bool ShouldBlockUdp(const struct sockaddr *to) {
     if (!to || !IsHookEnabled()) return false;
+    if (UseNativeDns(to)) return false;
     if (g_config.policy.remote_dns_required && to->sa_family == AF_INET
         && IsFakeIp(((const sockaddr_in*)to)->sin_addr.s_addr)) return true;
 
@@ -379,6 +481,19 @@ static bool ShouldBlockUdp(const struct sockaddr *to) {
 
     // 默认防 QUIC 探测
     return IsQuicOrUdp443(to);
+}
+
+static int ConnectSuiteDns(SOCKET socket, const sockaddr* name) {
+    int type = 0;
+    int length = sizeof(type);
+    if (name->sa_family != AF_INET
+        || getsockopt(socket, SOL_SOCKET, SO_TYPE, reinterpret_cast<char*>(&type), &length) != 0
+        || type != SOCK_STREAM) {
+        WSASetLastError(WSAEACCES);
+        return SOCKET_ERROR;
+    }
+    auto endpoint = SuiteDnsEndpoint();
+    return RedirectToBundle(socket, reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint));
 }
 
 int WSAAPI HookConnect(
@@ -399,6 +514,8 @@ int WSAAPI HookConnect(
     if (g_config.bundle_port == 0) {
         return TrueConnect(s, name, namelen);
     }
+    if (UseNativeDns(name)) return TrueConnect(s, name, namelen);
+    if (g_config.policy.scoped_dns && IsDnsEndpoint(name)) return ConnectSuiteDns(s, name);
 
     // 阻止 IPv6：阻断所有外网 IPv6 连接
     if (g_config.policy.block_ipv6 && name && name->sa_family == AF_INET6) {
@@ -442,6 +559,8 @@ int WSAAPI HookWSAConnect(
     if (g_config.bundle_port == 0) {
         return TrueWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
+    if (UseNativeDns(name)) return TrueWSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
+    if (g_config.policy.scoped_dns && IsDnsEndpoint(name)) return ConnectSuiteDns(s, name);
 
     if (g_config.policy.block_ipv6 && name && name->sa_family == AF_INET6) {
         const sockaddr_in6* sin6 = (const sockaddr_in6*)name;
@@ -471,7 +590,7 @@ int WSAAPI HookSendTo(
     int tolen
 ) {
     ReentryGuard guard;
-    if (guard.is_reentrant) return TrueSendTo(s, buf, len, flags, to, tolen);
+    if (guard.is_reentrant || !IsHookEnabled()) return TrueSendTo(s, buf, len, flags, to, tolen);
     if (g_config.reject_all) {
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;
@@ -496,7 +615,11 @@ int WSAAPI HookWSASendTo(
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 ) {
     ReentryGuard guard;
-    if (guard.is_reentrant) return TrueWSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
+    if (guard.is_reentrant || !IsHookEnabled()) return TrueWSASendTo(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpTo, iTolen, lpOverlapped, lpCompletionRoutine);
+    if (g_config.reject_all) {
+        WSASetLastError(WSAECONNRESET);
+        return SOCKET_ERROR;
+    }
     if (ShouldBlockUdp(lpTo)) {
         WSASetLastError(WSAECONNRESET);
         return SOCKET_ERROR;

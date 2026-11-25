@@ -14,12 +14,14 @@ import {
 
 const DNS_STORAGE_KEY = "procweaver_dns_settings";
 
-export async function getDnsSettings(): Promise<DnsSettings> {
+export async function getDnsSettings({ strict = false }: { strict?: boolean } = {}): Promise<DnsSettings> {
   if (isTauriEnvironment()) {
     try {
       const data = await invokeCommand<DnsSettings>("get_dns_settings");
       if (data) return data;
+      if (strict) throw new Error("DNS 设置数据不可用");
     } catch (e) {
+      if (strict) throw e;
       console.warn("[dnsService] get_dns_settings failed:", e);
     }
   }

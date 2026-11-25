@@ -91,8 +91,11 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
         super::geo::validate_settings(&serde_json::from_str(raw).map_err(|_| "Geo 设置无效")?)?;
     }
     if let Some(raw) = snapshot.files.get("config/routing-overrides.json") {
-        let value = serde_json::from_str::<crate::routing_overrides::model::Overrides>(raw).map_err(|_| "分流设置无效")?;
-        if snapshot.platform == std::env::consts::OS { crate::routing_overrides::model::normalize(value)?; }
+        let mut value = serde_json::from_str::<crate::routing_overrides::model::Overrides>(raw).map_err(|_| "分流设置无效")?;
+        if snapshot.platform == std::env::consts::OS {
+            value.pause_unbound_existing_rule_bundles();
+            crate::routing_overrides::model::normalize(value)?;
+        }
     }
     if let Some(raw) = snapshot.files.get("config/dns-preferences.json") {
         serde_json::from_str::<super::dns::DnsSettings>(raw).map_err(|_| "DNS 设置无效")?.validate()?;

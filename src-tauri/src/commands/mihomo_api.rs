@@ -1,3 +1,4 @@
+use crate::routing_overrides::bundles;
 use serde_json::Value;
 mod monitor;
 mod attribution;
@@ -386,6 +387,7 @@ pub async fn switch_public_node(node: String) -> Result<SwitchPublicNodeResult, 
         .map_err(|e| e.to_string())?;
 
     let base = base_url()?;
+    let rule_selectors = bundles::active_rule_selectors()?;
 
     // 1. 读取当前策略组快照
     let res = client
@@ -494,6 +496,8 @@ pub async fn switch_public_node(node: String) -> Result<SwitchPublicNodeResult, 
         }
     }
 
+    sync_sandbox_after_switch(&client, &base, &rule_selectors, proxies, &switched_groups).await?;
+
     // 4. 精准连接收尾：若开启了 auto_close_connections，只关闭受影响公共组的连接
     let mut closed_connections_count = 0;
     if super::settings::get_general_settings().map(|s| s.auto_close_connections).unwrap_or(true) {
@@ -515,13 +519,47 @@ pub async fn switch_mihomo_proxy(group: String, proxy: String) -> Result<bool, S
     switch_mihomo_proxy_locked(group, proxy).await
 }
 
+async fn sync_sandbox_after_switch(
+    client: &reqwest::Client,
+    base: &str,
+    selectors: &bundles::RuleSelectors,
+    previous: &serde_json::Map<String, Value>,
+    groups: &[String],
+) -> Result<(), String> {
+    if let Err(error) = bundles::sync_rule_selectors(client, base, selectors).await {
+        let mut restored = true;
+        for group in groups.iter().rev() {
+            let Some(target) = previous.get(group).and_then(|entry| entry["now"].as_str()) else {
+                restored = false;
+                continue;
+            };
+            let url = format!("{base}/proxies/{}", url_encode(group));
+            restored &= client.put(&url).json(&serde_json::json!({"name":target}))
+                .send().await.is_ok_and(|response| response.status().is_success());
+        }
+        restored &= bundles::sync_rule_selectors(client, base, selectors).await.is_ok();
+        return if restored { Err(format!("同步沙盒分流失败，已恢复原策略组：{error}")) }
+            else { Err(format!("同步沙盒分流失败，原策略组恢复未确认：{error}")) };
+    }
+    Ok(())
+}
+
 pub(crate) async fn switch_mihomo_proxy_locked(group: String, proxy: String) -> Result<bool, String> {
     let client = controller_client()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let url = format!("{}/proxies/{}", base_url()?, url_encode(&group));
+    let base = base_url()?;
+    let rule_selectors = bundles::active_rule_selectors()?;
+    let before = if rule_selectors.is_empty() { Value::Null } else {
+        client.get(format!("{base}/proxies")).send().await.map_err(|_| "读取切换前策略组失败")?
+            .error_for_status().map_err(|_| "核心拒绝读取切换前策略组")?
+            .json::<Value>().await.map_err(|_| "切换前策略组状态无效")?
+    };
+    let previous = before["proxies"].as_object();
+    if !rule_selectors.is_empty() && previous.is_none() { return Err("切换前策略组状态无效".into()); }
+    let url = format!("{base}/proxies/{}", url_encode(&group));
     let body = serde_json::json!({ "name": &proxy });
 
     let res = client
@@ -536,18 +574,24 @@ pub(crate) async fn switch_mihomo_proxy_locked(group: String, proxy: String) -> 
         return Err(format!("Mihomo 拒绝切换: {}", err_body));
     }
 
+    let mut switched = vec![group];
     // 若切换的是公共主策略组，同步将 GLOBAL 策略组切换至相同节点，确保全局模式下无缝生效
     #[cfg(not(target_os = "android"))]
-    if group.to_lowercase().contains("节点选择") || group.eq_ignore_ascii_case("proxy") {
-        let global_url = format!("{}/proxies/GLOBAL", base_url()?);
+    if switched[0].contains("节点选择") || switched[0].eq_ignore_ascii_case("proxy") {
+        let global_url = format!("{base}/proxies/GLOBAL");
         let global_body = serde_json::json!({ "name": &proxy });
-        let _ = client.put(global_url).json(&global_body).send().await;
+        if client.put(global_url).json(&global_body).send().await.is_ok_and(|response| response.status().is_success()) {
+            switched.push("GLOBAL".to_string());
+        }
+    }
+    if let Some(previous) = previous {
+        sync_sandbox_after_switch(&client, &base, &rule_selectors, previous, &switched).await?;
     }
 
     // 切换节点后，根据设置决定是否断开旧连接
     // 严禁无差别全量 DELETE /connections！改用精准按 ID 关闭经过该组的连接，严格保护任何业务包专属连接
     if super::settings::get_general_settings().map(|s| s.auto_close_connections).unwrap_or(true) {
-        let _ = close_public_connections_for_groups(&client, &base_url()?, &[group], Some(&proxy)).await;
+        let _ = close_public_connections_for_groups(&client, &base, &switched[..1], Some(&proxy)).await;
     }
 
     Ok(true)
@@ -735,7 +779,12 @@ pub(crate) async fn close_withdrawn_bundle_connections(old: &crate::routing_over
         .map_err(|_| "读取旧业务连接失败")?.error_for_status().map_err(|_| "核心拒绝查询旧业务连接")?
         .json().await.map_err(|_| "旧业务连接状态无效")?;
     let names: Vec<_> = old.bundles.iter().flat_map(|b| [crate::routing_overrides::bundles::group(&b.id, "main"), crate::routing_overrides::bundles::group(&b.id, "dns"), crate::routing_overrides::bundles::listener(&b.id)]).collect();
-    for conn in value["connections"].as_array().ok_or("缺少旧业务连接列表")? {
+    let connections = match value.get("connections") {
+        Some(Value::Null) => return Ok(()),
+        Some(Value::Array(connections)) => connections,
+        _ => return Err("缺少旧业务连接列表".into()),
+    };
+    for conn in connections {
         let belongs = conn["metadata"]["inboundName"].as_str().is_some_and(|n| names.iter().any(|s| s == n))
             || conn["chains"].as_array().is_some_and(|chain| chain.iter().any(|v| v.as_str().is_some_and(|n| names.iter().any(|s| s == n))));
         if belongs { if let Some(id) = conn["id"].as_str() {
@@ -816,14 +865,13 @@ pub async fn update_mihomo_rule_provider(name: String) -> Result<bool, String> {
     Ok(res.status().is_success())
 }
 
-#[tauri::command]
-pub async fn get_active_connections() -> Result<Value, String> {
+pub(crate) async fn connection_snapshot() -> Result<Value, String> {
     let client = controller_client()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let res = client
+    client
         .get(format!("{}/connections", base_url()?))
         .send()
         .await
@@ -832,9 +880,12 @@ pub async fn get_active_connections() -> Result<Value, String> {
         .map_err(|e| format!("核心拒绝请求: {}", e))?
         .json::<Value>()
         .await
-        .map_err(|e| format!("活动连接数据解析失败: {}", e))?;
+        .map_err(|e| format!("活动连接数据解析失败: {}", e))
+}
 
-    let mut res = res;
+#[tauri::command]
+pub async fn get_active_connections() -> Result<Value, String> {
+    let mut res = connection_snapshot().await?;
     if let Some(conns) = res.get_mut("connections").and_then(|c| c.as_array_mut()) {
         #[cfg(windows)]
         let hook_tiers = super::windows_integration::read_hook_tiers();
@@ -851,6 +902,7 @@ pub async fn get_active_connections() -> Result<Value, String> {
                             1 => "Detours",
                             2 => "IAT",
                             3 => "Direct",
+                            4 => "Failed",
                             _ => "Direct",
                         };
                         break;

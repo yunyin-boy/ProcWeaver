@@ -20,11 +20,11 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
   onClick,
   title,
 }) => {
-  const dotColor = {
-    healthy: "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]",
-    warning: "bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.5)]",
-    error: "bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.5)]",
-    inactive: "bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]",
+  const tone = {
+    healthy: "workbench-tag-positive",
+    warning: "workbench-tag-warning",
+    error: "bg-[var(--workbench-danger-bg)] text-[var(--workbench-danger)]",
+    inactive: "",
   }[status];
 
   const Comp = onClick ? "button" : "span";
@@ -34,14 +34,10 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({
       type={onClick ? "button" : undefined}
       onClick={onClick}
       title={title}
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium tracking-tight bg-[var(--surface-hover)] border border-[var(--border-subtle)] transition-all ${
-        onClick
-          ? "cursor-pointer hover:border-blue-500/40 hover:bg-black/10 dark:hover:bg-white/10 active:scale-95"
-          : ""
-      } ${className}`}
+      className={`workbench-tag !rounded-full !px-2.5 !py-1 ${tone} ${onClick ? "hover:brightness-95" : ""} ${className}`}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />
-      {label && <span className="text-[var(--text-secondary)]">{label}</span>}
+      <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />
+      {label}
     </Comp>
   );
 };
@@ -54,7 +50,7 @@ interface KbdBadgeProps {
 export const KbdBadge: React.FC<KbdBadgeProps> = ({ keys, className = "" }) => {
   return (
     <kbd
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono font-medium text-[var(--text-muted)] bg-[var(--surface-hover)] border border-[var(--border-subtle)] rounded shadow-sm ${className}`}
+      className={`workbench-key inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] font-mono font-medium ${className}`}
     >
       {keys.map((k, idx) => (
         <span key={idx}>{k}</span>

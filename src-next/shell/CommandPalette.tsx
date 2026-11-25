@@ -1,10 +1,9 @@
-// ==========================================================================
-// ProcWeaver src-next Raycast / Linear 风格纯键盘命令浮层 (Command Palette)
-// 规范溯源: tauri-linear-raycast-ui / ui-surface-elevation-hierarchy / taste-skill
-// 快捷键: Ctrl + K (唤起 / 隐藏)
-// ==========================================================================
-
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import {
+  Activity, ClipboardList, Eraser, Globe, LayoutDashboard, LucideIcon, Moon,
+  Radio, RotateCw, ScrollText, Search, Settings, Shield, Sun, Workflow,
+} from "lucide-react";
+import { KbdBadge } from "../primitives/Badge";
 import { fetchProxiesData, switchGroupProxy } from "../services/proxyService";
 import { flushDns, reloadCoreConfig } from "../services/dnsService";
 import { toggleSystemProxy } from "../services/systemProxyService";
@@ -16,7 +15,7 @@ export interface CommandItem {
   title: string;
   subtitle?: string;
   category: "节点切换" | "快捷运维" | "视图导航" | "系统偏好";
-  icon: string;
+  icon: LucideIcon;
   badge?: string;
   action: () => void | Promise<void>;
 }
@@ -76,10 +75,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     return [
       {
         id: "nav-overview",
-        title: "前往运行概览驾驶舱",
+        title: "前往核心概览",
         subtitle: "查看 60s 吞吐流、落地 IP 与内存监控",
         category: "视图导航",
-        icon: "🧭",
+        icon: LayoutDashboard,
         action: () => {
           onNavigateTab("overview");
           onClose();
@@ -87,10 +86,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: "nav-proxies",
-        title: "前往出口节点大盘",
+        title: "前往出口节点",
         subtitle: "浏览所有策略组与批量测速",
         category: "视图导航",
-        icon: "⚡",
+        icon: Globe,
         action: () => {
           onNavigateTab("proxies");
           onClose();
@@ -98,10 +97,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: "nav-process",
-        title: "前往进程分流大盘",
+        title: "前往进程分流",
         subtitle: "应用强锁、自选进程代理与活跃进程接管",
         category: "视图导航",
-        icon: "🔀",
+        icon: Workflow,
         action: () => {
           onNavigateTab("process");
           onClose();
@@ -112,7 +111,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         title: "前往订阅源管理",
         subtitle: "云端机场订阅拉取、流量配额查看与方案切换",
         category: "视图导航",
-        icon: "📡",
+        icon: Radio,
         action: () => {
           onNavigateTab("profiles");
           onClose();
@@ -120,10 +119,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: "nav-routing",
-        title: "前往业务规则编织系统",
+        title: "前往规则编织",
         subtitle: "分流规则链、外部规则集与路由诊断仪",
         category: "视图导航",
-        icon: "🧬",
+        icon: ClipboardList,
         action: () => {
           onNavigateTab("routing");
           onClose();
@@ -131,10 +130,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: "nav-connections",
-        title: "前往活动连接追踪",
+        title: "前往链接追踪",
         subtitle: "实时连接流水、传输速率与单项强制断开",
         category: "视图导航",
-        icon: "🔗",
+        icon: Activity,
         action: () => {
           onNavigateTab("connections");
           onClose();
@@ -142,10 +141,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: "nav-logs",
-        title: "前往实时内核运行日志",
+        title: "前往实时日志",
         subtitle: "事件流抓取、等级过滤与诊断导出",
         category: "视图导航",
-        icon: "📜",
+        icon: ScrollText,
         action: () => {
           onNavigateTab("logs");
           onClose();
@@ -153,10 +152,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: "nav-settings",
-        title: "前往系统高级偏好设置",
+        title: "前往系统首选项",
         subtitle: "混合端口、TUN 网卡与过滤策略",
         category: "视图导航",
-        icon: "⚙️",
+        icon: Settings,
         action: () => {
           onNavigateTab("settings");
           onClose();
@@ -167,7 +166,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         title: "一键刷新 DNS 缓存与 Fake-IP",
         subtitle: "清空系统与内核 DNS 映射记录",
         category: "快捷运维",
-        icon: "🧹",
+        icon: Eraser,
         action: async () => {
           onClose();
           await flushDns();
@@ -179,7 +178,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         title: "平滑重载分流规则与内核配置",
         subtitle: "无缝应用最新规则包与端口",
         category: "快捷运维",
-        icon: "🔄",
+        icon: RotateCw,
         action: async () => {
           onClose();
           await reloadCoreConfig();
@@ -191,7 +190,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         title: "切换系统代理全局接管状态",
         subtitle: "一键启用或回滚 Windows 系统代理",
         category: "快捷运维",
-        icon: "🛡️",
+        icon: Shield,
         action: async () => {
           onClose();
           const active = await toggleSystemProxy();
@@ -201,9 +200,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       {
         id: "action-toggle-theme",
         title: `切换界面明暗模式 (当前: ${currentTheme})`,
-        subtitle: "无级流转于暗色星空与透光白瓷风格",
+        subtitle: "在浅色、深色和跟随系统之间切换",
         category: "系统偏好",
-        icon: currentTheme === "dark" ? "🌙" : "☀️",
+        icon: currentTheme === "dark" ? Sun : Moon,
         action: () => {
           onToggleTheme();
           onClose();
@@ -219,7 +218,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       title: item.meta.cleanName,
       subtitle: `组: ${item.groupName} | ${item.meta.regionName} | 倍率 ${item.meta.multiplier}x`,
       category: "节点切换",
-      icon: "🌐",
+      icon: Globe,
       badge: item.meta.protocolBadge,
       action: async () => {
         onClose();
@@ -283,103 +282,68 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center pt-[12vh] px-4 select-none">
-      {/* 遮罩背景 (毛玻璃高斯模糊) */}
-      <div
-        onClick={onClose}
-        className="fixed inset-0 bg-black/40 backdrop-blur-md transition-opacity animate-in fade-in duration-150"
-      />
+    <div className="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center px-3 pt-[10vh]">
+      <div onClick={onClose} className="workbench-dialog-backdrop fixed inset-0" aria-hidden="true" />
 
-      {/* 浮动命令面板本体 */}
       <div
         onKeyDown={handleKeyDown}
-        className="relative w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0f172a] backdrop-blur-2xl shadow-2xl overflow-hidden z-10 flex flex-col max-h-[70vh] transition-all"
+        className="workbench-dialog relative z-10 flex max-h-[76vh] w-full max-w-2xl flex-col overflow-hidden p-2.5"
+        role="dialog"
+        aria-label="命令中心"
+        aria-modal="true"
       >
-        {/* 顶部微高光内发丝 */}
-        <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none" />
-
-        {/* 顶部搜索框 */}
-        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-[var(--glass-border-subtle)]">
-          <span className="text-zinc-400 text-sm">🔍</span>
+        <div className="workbench-field flex items-center gap-2 px-3 py-1.5">
+          <Search size={17} className="shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
           <input
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
+            onChange={(event) => {
+              setQuery(event.target.value);
               setSelectedIndex(0);
             }}
-            placeholder="搜索节点、策略组或系统运维动作 (按 Esc 关闭)..."
-            className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
+            aria-label="搜索节点、页面或运维操作"
+            placeholder="搜索节点、页面或运维操作"
+            className="min-h-8 min-w-0 flex-1 rounded bg-transparent text-sm"
           />
-          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-black/10 dark:bg-white/10 text-[var(--text-muted)] border border-[var(--glass-border-subtle)]">
-            ESC
-          </span>
+          <KbdBadge keys={["Esc"]} className="shrink-0 !bg-[var(--workbench-surface)]" />
         </div>
 
-        {/* 候选列表区 */}
-        <div ref={listRef} className="overflow-y-auto p-2 space-y-1 divide-y divide-transparent">
+        <div ref={listRef} className="mt-2 grid gap-0.5 overflow-y-auto">
           {filteredCommands.length === 0 ? (
-            <div className="py-12 text-center text-xs text-[var(--text-muted)]">
-              未匹配到任何动作或节点
-            </div>
-          ) : (
-            filteredCommands.map((item, idx) => {
-              const isSelected = idx === selectedIndex;
-              return (
-                <div
-                  key={item.id}
-                  onClick={() => item.action()}
-                  onMouseEnter={() => setSelectedIndex(idx)}
-                  className={`flex items-center justify-between px-3 py-2 rounded-xl cursor-pointer text-xs transition-all ${
-                    isSelected
-                      ? "bg-blue-500/15 border border-blue-500/30 text-blue-500 dark:text-blue-300 shadow-sm"
-                      : "text-[var(--text-primary)] hover:bg-black/5 dark:hover:bg-white/5 border border-transparent"
-                  }`}
-                >
-                  {/* 左侧：图标 + 标题 + 副标题 */}
-                  <div className="flex items-center gap-3 min-w-0 flex-1 pr-3">
-                    <span className="text-sm shrink-0">{item.icon}</span>
-                    <div className="min-w-0">
-                      <div className="font-medium truncate">{item.title}</div>
-                      {item.subtitle && (
-                        <div className="text-[10px] text-[var(--text-muted)] truncate">
-                          {item.subtitle}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 右侧：分类标签或徽章 */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    {item.badge && (
-                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-black/10 dark:bg-white/10 text-[var(--text-secondary)] border border-[var(--glass-border-subtle)]">
-                        {item.badge}
-                      </span>
-                    )}
-                    <span className="text-[10px] text-[var(--text-muted)]">
-                      {item.category}
-                    </span>
-                    {isSelected && (
-                      <span className="text-[10px] font-mono text-blue-500 font-bold ml-1">
-                        ↵
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
+            <div className="p-7 text-center text-xs text-[var(--text-muted)]">未匹配到动作或节点</div>
+          ) : filteredCommands.map((item, index) => {
+            const Icon = item.icon;
+            const selected = index === selectedIndex;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => item.action()}
+                onFocus={() => setSelectedIndex(index)}
+                onMouseEnter={() => setSelectedIndex(index)}
+                className={"flex w-full min-w-0 items-center justify-between gap-2 rounded-lg p-2.5 text-left text-[13px] " + (
+                  selected ? "bg-[var(--workbench-selected)] text-[var(--workbench-accent)]" : "hover:bg-[var(--workbench-control)]"
+                )}
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <Icon size={16} className="shrink-0" aria-hidden="true" />
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium">{item.title}</span>
+                    {item.subtitle && <span className="block truncate text-[11px] text-[var(--text-muted)]">{item.subtitle}</span>}
+                  </span>
+                </span>
+                <span className="hidden shrink-0 items-center gap-1.5 text-[11px] text-[var(--text-muted)] sm:flex">
+                  {item.badge && <span className="workbench-tag">{item.badge}</span>}
+                  {item.category}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
-        {/* 底部导航提示条 */}
-        <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--glass-border-subtle)] bg-black/5 dark:bg-white/5 text-[10px] font-mono text-[var(--text-muted)]">
-          <div className="flex items-center gap-3">
-            <span>↑↓ 导航选择</span>
-            <span>↵ 回车执行</span>
-            <span>ESC 关闭</span>
-          </div>
-          <span>ProcWeaver Command Hub</span>
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 px-1 pb-0.5 text-[11px] text-[var(--text-muted)]">
+          <span>↑↓ 选择</span><span>Enter 执行</span><span>Esc 关闭</span>
         </div>
       </div>
     </div>

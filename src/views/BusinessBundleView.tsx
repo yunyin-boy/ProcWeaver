@@ -29,7 +29,7 @@ import { inspectBundleStaleConnections, resetBundleStaleConnections } from "../a
 import { BundleStudio } from "../components/business-bundle/BundleStudio";
 import { RepositoryCenter } from "../components/business-bundle/RepositoryCenter";
 import { useBundleRepositories } from "../hooks/useBundleRepositories";
-import { DEFAULT_REPOSITORY, repositoryPage } from "../services/bundleRepositories";
+import { repositoryPage } from "../services/bundleRepositories";
 import type { RepositoryPackage } from "../types/bundleRepository";
 import { type BundlePolicy, defaultBundlePolicy } from "../types/businessBundle";
 import { usePlatform } from "../context/PlatformContext";
@@ -723,49 +723,13 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   ))}
                 </div>
 
-                {/* 底部探索与扩展微卡 (填补空洞, Raycast 灵动发现槽) */}
-                {instances.length > 0 && instances.length <= 4 && (
-                  <div className="mt-3 p-3.5 rounded-2xl bg-white/40 dark:bg-white/[0.02] border border-slate-200/60 dark:border-white/[0.05] flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
-                    <div className="flex items-center space-x-2.5">
-                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 dark:bg-white/[0.04] text-indigo-600 dark:text-zinc-400 flex items-center justify-center shrink-0">
-                        <Sparkles className="w-3.5 h-3.5" />
-                      </div>
-                      <div className="text-[11.5px] text-slate-600 dark:text-zinc-400">
-                        <span>发现更多开箱即用规则包：前往</span>
-                        <button
-                          type="button"
-                          onClick={() => setActiveTab("presets")}
-                          className="mx-1 text-indigo-600 dark:text-zinc-200 font-semibold hover:underline cursor-pointer"
-                        >
-                          【仓库中心】
-                        </button>
-                        <span>一键装载 Telegram、Steam、Epic、流媒体规则，或使用</span>
-                        <button
-                          type="button"
-                          onClick={() => setActiveTab("studio")}
-                          className="mx-1 text-indigo-600 dark:text-zinc-200 font-semibold hover:underline cursor-pointer"
-                        >
-                          【自定义工坊】
-                        </button>
-                        <span>按进程自由分流。</span>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("presets")}
-                      className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-slate-700 dark:text-zinc-300 transition cursor-pointer"
-                    >
-                      前往探索 →
-                    </button>
-                  </div>
-                )}
               </>
             )}
           </main>
         )}
 
         {/* 仓库管理独立于已装载规则与运行配置。 */}
-        {activeTab === "presets" && <RepositoryCenter state={repositories.state} defaultId={DEFAULT_REPOSITORY.id} instances={instances}
+        {activeTab === "presets" && <RepositoryCenter state={repositories.state} instances={instances}
           onRefresh={id => { void repositories.actions.refresh(id); }} onReload={() => { repositories.actions.reload(); }}
           onSave={repositories.actions.upsert} onToggle={repositories.actions.toggle} onRemove={repositories.actions.remove}
           onInstall={handleInstallFromPreset} repositoryLink={repositoryPage} />}

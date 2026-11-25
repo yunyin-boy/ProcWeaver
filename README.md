@@ -1,10 +1,8 @@
 # ProcWeaver
 
-当前版本：**V2.3.3** · [Windows x64 绿色便携版发布](https://github.com/yunyin-boy/ProcWeaver/releases) · [Linux.do 官方讨论专帖](https://linux.do/t/topic/2940957)
+源码版本 **V3.0.0** · [Windows x64 绿色便携版发布](https://github.com/yunyin-boy/ProcWeaver/releases) · [Linux.do 官方讨论专帖](https://linux.do/t/topic/2940957)
 
-> 📢 **仓库状态说明**：  
-> - **主仓库**：[jojhaa/ProcWeaver](https://github.com/jojhaa/ProcWeaver)（目前处于账号与服务维护中）；  
-> - **官方镜像 / 发布副仓库**：[yunyin-boy/ProcWeaver](https://github.com/yunyin-boy/ProcWeaver)（日常开发推送、便携包构建与 Releases 发布双通道保障）。
+源码主仓库为 [yunyin-boy/ProcWeaver](https://github.com/yunyin-boy/ProcWeaver)。
 
 面向 **Windows / Android / macOS** 跨平台的高性能进程、应用与业务级智能分流客户端。  
 基于 **Tauri 2 · Rust · React · TypeScript · Mihomo** 深度构建。
@@ -114,9 +112,7 @@ ProcWeaver 的底层网络能力由一整套工业级分流与安全防御机制
 | **Android** | **大部分功能完成** | 基于 Android `VpnService` 虚拟接口；集成内嵌式 Mihomo 核心与 gVisor 用户态协议栈；支持按 App 与 UID 粒度绑定独立出口。 | 通用 Release APK 筹备中 |
 | **macOS** | **部分代码完成** | 支持 Apple Silicon (ARM64) 与 Intel (x86_64)；已实现应用层代理参数注入、系统代理自动管理与崩溃守护交接。 | 待物理机环境进一步实机联调 |
 
-- 📥 **官方发布页面**：
-  - 官方 Releases：[https://github.com/yunyin-boy/ProcWeaver/releases](https://github.com/yunyin-boy/ProcWeaver/releases)
-  - 主源发布页（维护中）：[https://github.com/jojhaa/ProcWeaver/releases](https://github.com/jojhaa/ProcWeaver/releases)
+- 📥 [Windows 便携版发布页面](https://github.com/yunyin-boy/ProcWeaver/releases)
 
 ---
 

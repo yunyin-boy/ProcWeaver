@@ -1,4 +1,5 @@
 #include "dns_hook.h"
+#include "socket_hook.h"
 #include <unordered_map>
 
 PFN_getaddrinfo TrueGetAddrInfo = getaddrinfo;
@@ -80,17 +81,74 @@ static bool IsLocalOrIp(const char* name) {
     return false;
 }
 
-// Direct DNS APIs can delegate to the shared Windows DNS service. They cannot
-// represent remote CONNECT resolution, so protected queries must fail explicitly.
+static std::vector<uint32_t> QueryDnsA(const char* domain, uint16_t dns_port);
+
+static std::vector<uint8_t> SuiteDnsQuestion(std::string name, WORD type) {
+    if (!name.empty() && name.back() == '.') name.pop_back();
+    if (name.empty() || name.size() > 253) return {};
+    const auto id = static_cast<uint16_t>(GetTickCount64() ^ GetCurrentThreadId());
+    std::vector<uint8_t> query = {
+        static_cast<uint8_t>(id >> 8), static_cast<uint8_t>(id), 1, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+    };
+    for (size_t from = 0; from < name.size();) {
+        size_t dot = name.find('.', from);
+        size_t end = dot == std::string::npos ? name.size() : dot;
+        size_t length = end - from;
+        if (!length || length > 63) return {};
+        query.push_back(static_cast<uint8_t>(length));
+        query.insert(query.end(), name.begin() + from, name.begin() + end);
+        from = end + 1;
+    }
+    query.insert(query.end(), {0, static_cast<uint8_t>(type >> 8), static_cast<uint8_t>(type), 0, 1});
+    return query;
+}
+
+static DNS_STATUS QuerySuiteRecords(PCSTR name, WORD type, DWORD options, DNS_CHARSET charset, PDNS_RECORD* result) {
+    if (!result) return ERROR_INVALID_PARAMETER;
+    *result = nullptr;
+    if (!g_config.policy.scoped_dns) return ERROR_NOT_SUPPORTED;
+    if (options & DNS_QUERY_NO_WIRE_QUERY) return DNS_INFO_NO_RECORDS;
+
+    auto query = SuiteDnsQuestion(name, type);
+    std::vector<uint8_t> answer;
+    if (query.empty()) return DNS_ERROR_INVALID_NAME;
+    if (!ExchangeSuiteDns(query, answer)) return ERROR_TIMEOUT;
+    const unsigned code = answer[3] & 0xf;
+    if (code) return DNS_ERROR_RESPONSE_CODES_BASE + code;
+    if (answer[6] == 0 && answer[7] == 0) return DNS_INFO_NO_RECORDS;
+
+    auto* message = reinterpret_cast<PDNS_MESSAGE_BUFFER>(answer.data());
+    DNS_BYTE_FLIP_HEADER_COUNTS(&message->MessageHead);
+    WORD length = static_cast<WORD>(answer.size());
+    if (charset == DnsCharSetUnicode) return DnsExtractRecordsFromMessage_W(message, length, result);
+    if (charset == DnsCharSetUtf8) return DnsExtractRecordsFromMessage_UTF8(message, length, result);
+
+    PDNS_RECORD utf8 = nullptr;
+    DNS_STATUS status = DnsExtractRecordsFromMessage_UTF8(message, length, &utf8);
+    if (status == ERROR_SUCCESS && utf8) {
+        *result = DnsRecordSetCopyEx(utf8, DnsCharSetUtf8, DnsCharSetAnsi);
+        if (!*result) status = ERROR_OUTOFMEMORY;
+    }
+    if (utf8) DnsFree(utf8, DnsFreeRecordList);
+    return status;
+}
+
+static DNS_STATUS QuerySuiteWide(PCWSTR name, WORD type, DWORD options, PDNS_RECORD* result) {
+    char utf8[256]{};
+    if (!name || !WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, sizeof(utf8), nullptr, nullptr)) {
+        if (result) *result = nullptr;
+        return DNS_ERROR_INVALID_NAME;
+    }
+    return QuerySuiteRecords(utf8, type, options, DnsCharSetUnicode, result);
+}
+
 DNS_STATUS WINAPI HookDnsQueryA(PCSTR name, WORD type, DWORD options, PVOID extra, PDNS_RECORDA* result, PVOID* reserved) {
     if (!IsHookEnabled() || !g_config.policy.remote_dns_required || IsLocalOrIp(name)) return TrueDnsQueryA(name,type,options,extra,result,reserved);
-    if (result) *result = nullptr;
-    return ERROR_NOT_SUPPORTED;
+    return QuerySuiteRecords(name, type, options, DnsCharSetAnsi, reinterpret_cast<PDNS_RECORD*>(result));
 }
 DNS_STATUS WINAPI HookDnsQueryUtf8(PCSTR name, WORD type, DWORD options, PVOID extra, PDNS_RECORDA* result, PVOID* reserved) {
     if (!IsHookEnabled() || !g_config.policy.remote_dns_required || IsLocalOrIp(name)) return TrueDnsQueryUtf8(name,type,options,extra,result,reserved);
-    if (result) *result = nullptr;
-    return ERROR_NOT_SUPPORTED;
+    return QuerySuiteRecords(name, type, options, DnsCharSetUtf8, reinterpret_cast<PDNS_RECORD*>(result));
 }
 static bool ProtectedWideName(PCWSTR name) {
     if (!name) return false;
@@ -99,13 +157,17 @@ static bool ProtectedWideName(PCWSTR name) {
 }
 DNS_STATUS WINAPI HookDnsQueryW(PCWSTR name, WORD type, DWORD options, PVOID extra, PDNS_RECORD* result, PVOID* reserved) {
     if (!IsHookEnabled() || !g_config.policy.remote_dns_required || !ProtectedWideName(name)) return TrueDnsQueryW(name,type,options,extra,result,reserved);
-    if (result) *result = nullptr;
-    return ERROR_NOT_SUPPORTED;
+    return QuerySuiteWide(name, type, options, result);
 }
 DNS_STATUS WINAPI HookDnsQueryEx(PDNS_QUERY_REQUEST request, PDNS_QUERY_RESULT result, PDNS_QUERY_CANCEL cancel) {
     if (!IsHookEnabled() || !g_config.policy.remote_dns_required || !request || !ProtectedWideName(request->QueryName)) return TrueDnsQueryEx(request,result,cancel);
-    if (result) { result->QueryStatus = ERROR_NOT_SUPPORTED; result->pQueryRecords = nullptr; }
-    return ERROR_NOT_SUPPORTED;
+    if (!result) return ERROR_INVALID_PARAMETER;
+    result->pQueryRecords = nullptr;
+    result->QueryOptions = request->QueryOptions;
+    result->QueryStatus = request->pQueryCompletionCallback
+        ? ERROR_NOT_SUPPORTED
+        : QuerySuiteWide(request->QueryName, request->QueryType, static_cast<DWORD>(request->QueryOptions), &result->pQueryRecords);
+    return result->QueryStatus;
 }
 
 hostent* WSAAPI HookGetHostByName(const char* name) {
@@ -116,8 +178,14 @@ hostent* WSAAPI HookGetHostByName(const char* name) {
     thread_local char* addresses[2];
     thread_local char* aliases[1] = { nullptr };
     thread_local hostent result;
-    address = AllocateFakeIpForDomain(name);
-    if (!address) { WSASetLastError(WSA_NOT_ENOUGH_MEMORY); return nullptr; }
+    if (g_config.policy.scoped_dns) {
+        const auto ips = QueryDnsA(name, g_config.dns_port);
+        if (ips.empty()) { WSASetLastError(WSAHOST_NOT_FOUND); return nullptr; }
+        address = ips.front();
+    } else {
+        address = AllocateFakeIpForDomain(name);
+        if (!address) { WSASetLastError(WSA_NOT_ENOUGH_MEMORY); return nullptr; }
+    }
     hostname = name;
     addresses[0] = reinterpret_cast<char*>(&address); addresses[1] = nullptr;
     result.h_name = &hostname[0]; result.h_aliases = aliases;
@@ -220,6 +288,18 @@ static std::atomic<int> g_dns_consecutive_fails(0);
 // 向 127.0.0.1:dns_port 发送 UDP DNS 查询，获取真实 IPv4 列表
 static std::vector<uint32_t> QueryDnsA(const char* domain, uint16_t dns_port) {
     std::vector<uint32_t> results;
+    if (g_config.policy.scoped_dns) {
+        PDNS_RECORD records = nullptr;
+        if (QuerySuiteRecords(domain, DNS_TYPE_A, 0, DnsCharSetUtf8, &records) == ERROR_SUCCESS) {
+            for (auto* record = records; record; record = record->pNext) {
+                if (record->wType == DNS_TYPE_A && record->Flags.S.Section == DnsSectionAnswer) {
+                    results.push_back(record->Data.A.IpAddress);
+                }
+            }
+        }
+        if (records) DnsFree(records, DnsFreeRecordList);
+        return results;
+    }
     if (!domain || strlen(domain) == 0 || strlen(domain) > 253 || dns_port == 0) return results;
 
     // 检查熔断状态：若处于熔断期 (10 秒内)，直接跳过本地查询，0ms 秒级回退原生解析
@@ -383,7 +463,7 @@ int WSAAPI HookGetAddrInfo(
     }
 
     std::vector<uint32_t> ips;
-    if (g_config.policy.dns_mode == DnsMode::FakeIp) {
+    if (g_config.policy.dns_mode == DnsMode::FakeIp && !g_config.policy.scoped_dns) {
         // Fake-IP 极速模式：0ms 分配 198.18.x.x 假 IP，后续 SOCKS5 发送原始域名
         uint32_t fake_ip = AllocateFakeIpForDomain(pNodeName);
         if (!fake_ip) return EAI_MEMORY;
@@ -392,6 +472,7 @@ int WSAAPI HookGetAddrInfo(
         // 安全纯净解析模式：向 127.0.0.1:dns_port 发送真实安全 DNS 查询
         ips = QueryDnsA(pNodeName, g_config.dns_port);
         if (ips.empty()) {
+            if (g_config.policy.remote_dns_required) return EAI_NONAME;
             return TrueGetAddrInfo(pNodeName, pServiceName, pHints, ppResult);
         }
     }
@@ -474,7 +555,7 @@ int WSAAPI HookGetAddrInfoW(
     }
 
     std::vector<uint32_t> ips;
-    if (g_config.policy.dns_mode == DnsMode::FakeIp) {
+    if (g_config.policy.dns_mode == DnsMode::FakeIp && !g_config.policy.scoped_dns) {
         // Fake-IP 极速模式：0ms 分配 198.18.x.x 假 IP，后续 SOCKS5 发送原始域名
         uint32_t fake_ip = AllocateFakeIpForDomain(node_a);
         if (!fake_ip) return EAI_MEMORY;
@@ -483,6 +564,7 @@ int WSAAPI HookGetAddrInfoW(
         // 安全纯净解析模式：向 127.0.0.1:dns_port 发送真实安全 DNS 查询
         ips = QueryDnsA(node_a, g_config.dns_port);
         if (ips.empty()) {
+            if (g_config.policy.remote_dns_required) return EAI_NONAME;
             return TrueGetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
         }
     }

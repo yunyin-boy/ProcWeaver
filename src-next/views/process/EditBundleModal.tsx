@@ -12,7 +12,6 @@ interface EditBundleModalProps {
   availableProxies: string[];
   onClose: () => void;
   onSave: (bundleId: string, updates: Partial<ProcessBundleItem>) => Promise<void>;
-  onResetPreset?: (bundleId: string) => Promise<void>;
 }
 
 export const EditBundleModal: React.FC<EditBundleModalProps> = ({
@@ -21,7 +20,6 @@ export const EditBundleModal: React.FC<EditBundleModalProps> = ({
   availableProxies,
   onClose,
   onSave,
-  onResetPreset,
 }) => {
   const handleSave = async (data: BundleFormData) => {
     if (!bundle) return;
@@ -43,7 +41,6 @@ export const EditBundleModal: React.FC<EditBundleModalProps> = ({
       availableProxies={availableProxies}
       onClose={onClose}
       onSave={handleSave}
-      onResetPreset={onResetPreset}
     />
   );
 };

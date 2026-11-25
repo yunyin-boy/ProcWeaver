@@ -4,14 +4,14 @@
 // ==========================================================================
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { GlassCard } from "../../primitives/GlassCard";
+import { Globe, ChevronRight, Copy, Power } from "lucide-react";
+import { RoutingModeControl } from "../../primitives/RoutingModeControl";
 import { Button } from "../../primitives/Button";
 import { CapsuleToggle } from "../../primitives/CapsuleToggle";
 import { ExclusionsModal } from "./ExclusionsModal";
 import { CoreStatusSnapshot } from "../../types/core";
 import { BandwidthSnapshot } from "../../types/telemetry";
 import { ExitIpHealthInfo } from "../../types/exitHealth";
-import { DnsGuardInfo, DnsListenerStatus } from "../../types/dns";
 import { GeneralSettings, DEFAULT_GENERAL_SETTINGS } from "../../types/settings";
 import { BundleSummary } from "../../types/bundle";
 import {
@@ -19,16 +19,12 @@ import {
   formatTrafficBytes,
   calculateAdaptiveCeilingBps,
 } from "../../services/telemetryService";
-import { formatMemoryBytes, getActiveOutboundNode, ActiveNodeInfo } from "../../services/coreService";
+import { getActiveOutboundNode, ActiveNodeInfo } from "../../services/coreService";
+import { isRealProxyNode } from "../../utils/nodeParser";
 import { generateSvgWave } from "../../utils/trafficWave";
 import { fetchExitIpHealth, getCachedExitHealth } from "../../services/exitHealthService";
 import { toggleSystemProxy, getSystemProxyState } from "../../services/systemProxyService";
-import {
-  getDnsGuardInfo,
-  getDnsListenerStatus,
-  flushDns,
-  reloadCoreConfig,
-} from "../../services/dnsService";
+import { flushDns, reloadCoreConfig } from "../../services/dnsService";
 import { getGeneralSettings, saveGeneralSettings } from "../../services/settingsService";
 import { getBundleSummary } from "../../services/bundleService";
 
@@ -51,49 +47,67 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onChangeMode,
   onToggleSystemProxy,
 }) => {
-  // 1. 落地 IP 深度体检状态 (优先从持久化快照中秒级回显，实现 Stale-While-Revalidate)
-  const [exitHealth, setExitHealth] = useState<ExitIpHealthInfo | null>(() => getCachedExitHealth());
+  const [activeOutlet, setActiveOutlet] = useState<{ scope: string; node: ActiveNodeInfo } | null>(null);
+  const [exitHealth, setExitHealth] = useState<ExitIpHealthInfo | null>(null);
   const [exitLoading, setExitLoading] = useState(false);
+  const exitRequest = useRef(0);
+  const { running, mode, activeProfile, mixedPort } = status;
+  const outletScope = JSON.stringify([mode, activeProfile, mixedPort]);
+  const currentNode = running && activeOutlet?.scope === outletScope ? activeOutlet.node : null;
+  const hasProxyNode = Boolean(currentNode?.type && isRealProxyNode(currentNode));
 
-  const loadExitHealth = async (isManual = false) => {
+  const loadExitHealth = useCallback(async (port: number, isManual = false) => {
+    const request = ++exitRequest.current;
     setExitLoading(true);
     try {
-      const data = await fetchExitIpHealth(status.mixedPort);
+      const data = await fetchExitIpHealth(port);
+      if (request !== exitRequest.current) return;
       setExitHealth(data);
       if (isManual) {
-        onShowNotice(`出口体检完成 · ${data.country || "链路正常"}`);
+        if (!data.ip) onShowNotice("未取得出口体检结果");
+        else if (data.stale) onShowNotice("出口体检暂不可用，显示上次结果");
+        else {
+          onShowNotice(`出口体检完成 · ${data.country || data.ip}`);
+          window.dispatchEvent(new Event("procweaver-exit-checked"));
+        }
       }
     } catch {
       // 仅当用户主动点击“刷新体检”且完全无响应时才温和提示；后台静默体检绝不弹窗打扰
-      if (isManual) {
+      if (isManual && request === exitRequest.current) {
         onShowNotice("出口网络探测耗时较长，节点仍在服务中");
       }
     } finally {
+      if (request === exitRequest.current) setExitLoading(false);
+    }
+  }, [onShowNotice]);
+
+  useEffect(() => {
+    let outletRequest = 0;
+    const refreshOutlet = async () => {
+      const request = ++outletRequest;
+      ++exitRequest.current;
+      setActiveOutlet(null);
+      setExitHealth(null);
       setExitLoading(false);
-    }
-  };
+      if (!running) return;
 
-  const [activeNode, setActiveNode] = useState<ActiveNodeInfo>({
-    name: "香港 01 | 极速专线 [BGP]",
-    type: "Shadowsocks",
-    delay: 24,
-  });
+      const node = await getActiveOutboundNode(mode);
+      if (request !== outletRequest) return;
+      setActiveOutlet({ scope: outletScope, node });
+      if (node.type && isRealProxyNode(node) && mixedPort > 0) {
+        setExitHealth(getCachedExitHealth());
+        void loadExitHealth(mixedPort);
+      }
+    };
 
-  const refreshActiveNode = useCallback(() => {
-    if (status.running) {
-      getActiveOutboundNode().then(setActiveNode).catch(() => {});
-    }
-  }, [status.running]);
-
-  useEffect(() => {
-    loadExitHealth(false);
-    refreshActiveNode();
-  }, [status.running, status.activeProfile, refreshActiveNode]);
-
-  useEffect(() => {
-    window.addEventListener("netbox-route-changed", refreshActiveNode);
-    return () => window.removeEventListener("netbox-route-changed", refreshActiveNode);
-  }, [refreshActiveNode]);
+    void refreshOutlet();
+    window.addEventListener("netbox-route-changed", refreshOutlet);
+    return () => {
+      ++outletRequest;
+      ++exitRequest.current;
+      window.removeEventListener("netbox-route-changed", refreshOutlet);
+    };
+  }, [running, mode, mixedPort, outletScope, loadExitHealth]);
 
   // 2. 系统代理接管状态 (Hero 大按钮核心映射，与全局状态双向强联动)
   const [isProxyActive, setIsProxyActive] = useState(false);
@@ -236,6 +250,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     setReloading(true);
     try {
       await reloadCoreConfig();
+      window.dispatchEvent(new Event("netbox-route-changed"));
       onShowNotice("分流规则与内核配置已平滑重载");
     } finally {
       setReloading(false);
@@ -253,570 +268,282 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   };
 
   // 7. 复制出口 IP
-  const handleCopyIp = () => {
-    if (!exitHealth?.ip) return;
-    navigator.clipboard.writeText(exitHealth.ip);
-    onShowNotice(`已复制出口 IP: ${exitHealth.ip}`);
+  const handleCopyIp = async () => {
+    if (!health) return;
+    try {
+      await navigator.clipboard.writeText(health.ip);
+      onShowNotice(`已复制出口 IP ${health.ip}`);
+    } catch {
+      onShowNotice("复制出口 IP 失败");
+    }
   };
 
-  // 8. DNS 智能护航与业务包概要
-  const [dnsGuard, setDnsGuard] = useState<DnsGuardInfo | null>(null);
-  const [dnsListener, setDnsListener] = useState<DnsListenerStatus | null>(null);
   const [bundleSummary, setBundleSummary] = useState<BundleSummary | null>(null);
 
-  const refreshOverviewExtras = useCallback(() => {
-    getDnsGuardInfo().then(setDnsGuard).catch(() => {});
-    getDnsListenerStatus().then(setDnsListener).catch(() => {});
-    getBundleSummary().then(setBundleSummary).catch(() => {});
+  useEffect(() => {
+    const refreshBundleSummary = () => {
+      getBundleSummary().then(setBundleSummary).catch(() => {});
+    };
+    refreshBundleSummary();
+    window.addEventListener("netbox-route-changed", refreshBundleSummary);
+    window.addEventListener("netbox-process-master-changed", refreshBundleSummary);
+    window.addEventListener("procweaver-route-changed", refreshBundleSummary);
+    return () => {
+      window.removeEventListener("netbox-route-changed", refreshBundleSummary);
+      window.removeEventListener("netbox-process-master-changed", refreshBundleSummary);
+      window.removeEventListener("procweaver-route-changed", refreshBundleSummary);
+    };
   }, []);
 
-  useEffect(() => {
-    refreshOverviewExtras();
-    window.addEventListener("netbox-route-changed", refreshOverviewExtras);
-    window.addEventListener("netbox-process-master-changed", refreshOverviewExtras);
-    window.addEventListener("procweaver-route-changed", refreshOverviewExtras);
-    return () => {
-      window.removeEventListener("netbox-route-changed", refreshOverviewExtras);
-      window.removeEventListener("netbox-process-master-changed", refreshOverviewExtras);
-      window.removeEventListener("procweaver-route-changed", refreshOverviewExtras);
-    };
-  }, [refreshOverviewExtras]);
+  const health = hasProxyNode && exitHealth?.ip && exitHealth.ip !== "待检测" ? exitHealth : null;
+  const emptyExitValue = hasProxyNode ? "待检测" : "无";
+  const fraudScore = health?.fraudScore;
+  const hasScore = typeof fraudScore === "number" && Number.isFinite(fraudScore);
+  let riskLabel = "暂无评分";
+  let riskColor = "text-[var(--text-muted)]";
+  if (hasScore) {
+    if (fraudScore <= 25) {
+      riskLabel = "低风险";
+      riskColor = "text-[var(--workbench-positive)]";
+    } else if (fraudScore <= 60) {
+      riskLabel = "常见机房";
+      riskColor = "text-[var(--workbench-warning)]";
+    } else {
+      riskLabel = "需注意";
+      riskColor = "text-[var(--workbench-danger)]";
+    }
+  }
 
-  // 欺诈风控分评级计算
-  const fraudScore = exitHealth?.fraudScore ?? 12;
-  const fraudBadge = useMemo(() => {
-    if (fraudScore <= 25) return { text: "极佳 / 低风险", color: "text-emerald-500", bar: "bg-emerald-500" };
-    if (fraudScore <= 60) return { text: "良好 / 常见机房", color: "text-amber-500", bar: "bg-amber-500" };
-    return { text: "风险较高 / 需注意", color: "text-rose-500", bar: "bg-rose-500" };
-  }, [fraudScore]);
+  const protocol = currentNode?.type ?? "";
+  const connectionNote = /hysteria|tuic/i.test(protocol)
+    ? "UDP / QUIC 协议"
+    : /shadowsocks|trojan|vmess|vless/i.test(protocol)
+      ? "支持 TCP 与 UDP 转发"
+      : null;
 
   const downFormatted = formatBitrate(bandwidth.downloadRateBytes);
   const upFormatted = formatBitrate(bandwidth.uploadRateBytes);
   const totalDownFormatted = formatTrafficBytes(bandwidth.downloadTotalBytes);
   const totalUpFormatted = formatTrafficBytes(bandwidth.uploadTotalBytes);
+  const bypassList = settings.bypassList ?? [];
+
+  const linkedProperties = [
+    {
+      label: "链路能力",
+      value: hasProxyNode ? protocol + " 链路" : "无",
+      caption: hasProxyNode ? connectionNote : null,
+      tab: "proxies",
+      actionLabel: hasProxyNode ? "查看出口节点" : undefined,
+    },
+    {
+      label: "分流业务包",
+      value: bundleSummary ? bundleSummary.totalCount + " 个规则包" : "暂无数据",
+      caption: bundleSummary?.isProcessMasterOn
+        ? bundleSummary.activeCount + " 包生效 · " + bundleSummary.processCount + " 个匹配进程"
+        : bundleSummary ? "进程分流已挂起" : null,
+      tab: "process",
+      actionLabel: "查看进程分流",
+    },
+  ];
 
   return (
-    <div className="space-y-4">
-      {/* ===================================================================
-         区域 1: 出站路由与落地网络深度体检 (一体化透光 Spec Strip)
-         =================================================================== */}
-      <GlassCard className="p-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3.5 border-b border-[var(--glass-border-subtle)]">
-          {/* 活动线路与节点快速选择 (Feature 1 & 2) */}
-          <div
+    <div className="workbench-view workbench-overview">
+      <section className="workbench-panel grid gap-4 p-4" aria-label="出口体检">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
             onClick={() => onNavigateTab("proxies")}
-            className="flex items-center gap-3.5 cursor-pointer group select-none min-w-0"
-            title="点击切换出站节点线路"
+            className="group flex min-w-0 items-center gap-3 rounded-lg text-left"
+            title="切换出口节点"
           >
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center font-mono font-bold text-xs bg-emerald-500/10 text-emerald-500 dark:bg-emerald-400/10 dark:text-emerald-400 border border-emerald-500/20 group-hover:scale-105 transition-transform shrink-0">
-              {activeNode.name.slice(0, 2).toUpperCase()}
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-[13px] text-[var(--text-primary)] truncate">
-                  {activeNode.name}
-                </span>
-                <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-white/10 dark:bg-white/10 text-zinc-300">
-                  {activeNode.type}
-                </span>
-              </div>
-              <div className="text-[11px] text-[var(--text-muted)] font-mono flex items-center gap-2 mt-0.5">
-                <span className="text-emerald-500 font-semibold flex items-center gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="tabular-numeric">{activeNode.delay ? `${activeNode.delay} ms` : "-- ms"}</span>
-                </span>
-                <span>•</span>
-                <span>UDP 满载</span>
-                <span>•</span>
-                <span>BBR 拥塞控制</span>
-                <span>•</span>
-                <span>核心内存 {formatMemoryBytes(status.memoryUsageBytes)}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* 快捷运维动作与刷新体检 (Feature 5 & 7 & 8) */}
-          <div className="flex items-center gap-2 shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              loading={exitLoading}
-              onClick={() => loadExitHealth(true)}
-              title="重新检测公网落地 IP 与风险指标"
-            >
-              刷新体检
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              loading={reloading}
-              onClick={handleReload}
-              title="平滑重载最新分流规则与配置"
-            >
-              重载配置
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              loading={flushing}
-              onClick={handleFlush}
-              title="彻底清理系统本地 DNS 缓存并清空 Fake-IP 映射"
-            >
-              清理 DNS
-            </Button>
+            <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--workbench-selected)] text-[var(--workbench-accent)]">
+              <Globe size={20} aria-hidden="true" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-xs text-[var(--text-muted)]">当前出口</span>
+              <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <strong className="min-w-0 text-[21px] leading-tight tracking-tight [overflow-wrap:anywhere] group-hover:text-[var(--workbench-accent)]">{currentNode?.name ?? "暂无活动出口"}</strong>
+                {protocol && <span className="workbench-tag">{protocol}</span>}
+                {currentNode && typeof currentNode.delay === "number" && currentNode.delay > 0 && (
+                  <span className="tabular-nums text-xs font-medium text-[var(--workbench-positive)]">{currentNode.delay} ms</span>
+                )}
+              </span>
+            </span>
+          </button>
+          <div className="flex flex-wrap gap-1.5">
+            <Button variant="primary" size="sm" disabled={!hasProxyNode || mixedPort <= 0} loading={hasProxyNode && exitLoading} onClick={() => void loadExitHealth(mixedPort, true)}>刷新体检</Button>
+            <Button size="sm" loading={reloading} onClick={handleReload}>重载配置</Button>
+            <Button size="sm" loading={flushing} onClick={handleFlush}>清理 DNS</Button>
           </div>
         </div>
 
-        {/* 落地 IP 物理参数流 (Feature 3, 4, 5, 6) */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-3.5 text-xs font-mono">
-          {/* 1. 落地 IP */}
-          <div className="flex flex-col justify-between min-w-0">
-            <div className="text-[11px] text-[var(--text-muted)] flex items-center justify-between">
-              <span>落地 IP</span>
-              <button
-                type="button"
-                onClick={handleCopyIp}
-                className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-                title="复制公网出口 IP"
-              >
-                复制
-              </button>
-            </div>
-            <div className="font-bold text-[13px] text-[var(--text-primary)] mt-1 truncate tabular-numeric">
-              {exitHealth?.ip || "104.28.192.88"}
-            </div>
-            <div className="text-[10px] text-[var(--text-muted)] truncate mt-0.5">
-              {exitHealth?.asn || "Cloudflare AS13335"}
-            </div>
-          </div>
-
-          {/* 2. 落地地理 */}
-          <div className="flex flex-col justify-between min-w-0 sm:border-l border-[var(--glass-border-subtle)] sm:pl-4">
-            <div className="text-[11px] text-[var(--text-muted)]">落地地理</div>
-            <div className="font-bold text-[13px] text-[var(--text-primary)] mt-1 truncate">
-              {exitHealth?.country || "中国香港"} {exitHealth?.city ? `(${exitHealth.city})` : ""}
-            </div>
-            <div className="text-[10px] text-[var(--text-muted)] truncate mt-0.5">
-              HKBN 专线出口
-            </div>
-          </div>
-
-          {/* 3. 欺诈风控分 */}
-          <div className="flex flex-col justify-between min-w-0 border-l border-[var(--glass-border-subtle)] pl-4">
-            <div className="text-[11px] text-[var(--text-muted)] flex items-center justify-between">
-              <span>欺诈风控</span>
-              <span className={`font-bold tabular-numeric ${fraudBadge.color}`}>
-                {fraudScore}/100
-              </span>
-            </div>
-            <div className="w-full h-1 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden my-1.5">
-              <div
-                className={`h-full ${fraudBadge.bar} transition-all duration-300`}
-                style={{ width: `${Math.min(100, Math.max(10, fraudScore))}%` }}
-              />
-            </div>
-            <div className={`text-[10px] font-medium ${fraudBadge.color}`}>
-              {fraudBadge.text}
-            </div>
-          </div>
-
-          {/* 4. IP 属性 */}
-          <div className="flex flex-col justify-between min-w-0 border-l border-[var(--glass-border-subtle)] pl-4">
-            <div className="text-[11px] text-[var(--text-muted)]">IP 属性</div>
-            <div className="font-bold text-[13px] text-[var(--text-primary)] mt-1 truncate">
-              {exitHealth?.isResidential ? "家宽 (Residential)" : "商宽 (DC/ISP)"}
-            </div>
-            <div className="text-[10px] text-[var(--text-muted)] mt-0.5 tabular-numeric">
-              首包 {exitHealth?.firstPacketMs || 2.1} ms
-            </div>
-          </div>
-        </div>
-      </GlassCard>
-
-      {/* ===================================================================
-         区域 2 & 3: 左侧 60s 贝塞尔波形雷达 + 右侧系统代理中枢 (双栏布局)
-         =================================================================== */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 【左侧 7 列：全景 60 秒平滑实时吞吐波形雷达】 (Feature 12) */}
-        <GlassCard className="lg:col-span-7 p-5 flex flex-col justify-between min-h-[260px] relative overflow-hidden">
-          {/* 顶部遥测指标行 */}
-          <div className="flex items-center justify-between pb-2 border-b border-[var(--glass-border-subtle)] z-10 text-xs font-mono">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-[13px] text-[var(--text-primary)] font-sans">
-                实时网络吞吐
-              </span>
-              <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-blue-500/10 text-blue-500 dark:text-blue-400 font-bold">
-                1S 周期
-              </span>
-            </div>
-
-            <div className="flex items-center gap-4">
-              <div
-                className="flex items-center gap-1.5 text-blue-500 dark:text-blue-400 font-semibold"
-                title={`实时下行: ${downFormatted.value} ${downFormatted.unit}`}
-              >
-                <span>↓</span>
-                <span className="tabular-numeric text-[13px] min-w-[5ch] text-right inline-block">
-                  {downFormatted.value}
-                </span>
-                <span className="text-[10px] uppercase font-sans text-[var(--text-muted)] font-bold">
-                  {downFormatted.unit}
-                </span>
-              </div>
-              <div
-                className="flex items-center gap-1.5 text-indigo-500 dark:text-indigo-400 font-semibold"
-                title={`实时上行: ${upFormatted.value} ${upFormatted.unit}`}
-              >
-                <span>↑</span>
-                <span className="tabular-numeric text-[13px] min-w-[5ch] text-right inline-block">
-                  {upFormatted.value}
-                </span>
-                <span className="text-[10px] uppercase font-sans text-[var(--text-muted)] font-bold">
-                  {upFormatted.unit}
-                </span>
-              </div>
-              <span className="text-emerald-500 text-[11px] hidden sm:inline">
-                丢包 0.00%
-              </span>
-            </div>
-          </div>
-
-          {/* 彻底融入双层毛玻璃的 SVG 贝塞尔波形绘图区 (支持自适应 10Gbps 顶线) */}
-          <div className="relative w-full flex-1 min-h-[140px] flex items-end overflow-hidden my-2">
-            {/* 发丝背景刻度辅助虚线与动态顶线标尺 */}
-            <div className="absolute inset-0 pointer-events-none flex flex-col justify-between z-0 select-none py-1">
-              {/* 顶线刻度 */}
-              <div className="w-full flex items-center justify-between border-b border-[var(--glass-border-subtle)] border-dashed pb-0.5">
-                <span className="text-[10px] font-mono text-[var(--text-secondary)] font-medium tracking-wider">
-                  {ceilingFormatted.value} {ceilingFormatted.unit}
-                </span>
-                <span className="text-[9px] font-mono text-[var(--text-muted)]">
-                  顶线标尺 (MAX 10Gbps)
-                </span>
-              </div>
-              {/* 中间 50% 刻度 */}
-              <div className="w-full flex items-center justify-between border-b border-[var(--glass-border-subtle)] border-dashed py-0.5">
-                <span className="text-[9px] font-mono text-[var(--text-muted)] tracking-wider">
-                  {halfCeilingFormatted.value} {halfCeilingFormatted.unit}
-                </span>
-                <span className="text-[9px] font-mono text-[var(--text-muted)]">
-                  50%
-                </span>
-              </div>
-              {/* 基准底 0 刻度 */}
-              <div className="w-full flex items-center justify-between border-b border-[var(--glass-border-subtle)] pt-0.5">
-                <span className="text-[9px] font-mono text-[var(--text-muted)] tracking-wider">
-                  0 bps
-                </span>
-                <span className="text-[9px] font-mono text-[var(--text-muted)]">
-                  基准底
-                </span>
-              </div>
-            </div>
-
-            <svg
-              className="w-full h-full relative z-10"
-              viewBox="0 0 1000 100"
-              preserveAspectRatio="none"
-            >
-              <defs>
-                <linearGradient id="downWaveGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.35" />
-                  <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.02" />
-                </linearGradient>
-                <linearGradient id="upWaveGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#818cf8" stopOpacity="0.25" />
-                  <stop offset="100%" stopColor="#818cf8" stopOpacity="0.01" />
-                </linearGradient>
-              </defs>
-              {/* 下行科技蓝主力起伏波 */}
-              <path d={downWave.areaD} fill="url(#downWaveGrad)" />
-              <path d={downWave.pathD} fill="none" stroke="#0ea5e9" strokeWidth="2.5" />
-              {/* 上行紫色柔和轻波 */}
-              <path d={upWave.areaD} fill="url(#upWaveGrad)" />
-              <path d={upWave.pathD} fill="none" stroke="#818cf8" strokeWidth="1.8" />
-              {/* 实时动态起伏脉冲光点 */}
-              <circle
-                cx="995"
-                cy={downWave.lastY || 80}
-                r="3.5"
-                fill="#0ea5e9"
-                className="animate-pulse"
-              />
-            </svg>
-          </div>
-
-          {/* 时间轴刻度与累计流量 */}
-          <div className="flex items-center justify-between text-[10px] font-mono text-[var(--text-muted)] pt-2 border-t border-[var(--glass-border-subtle)]">
-            <div className="flex items-center gap-3">
-              <span>-60s</span>
-              <span>-30s</span>
-              <span className="text-blue-500 font-semibold flex items-center gap-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-ping" />
-                <span>实时 (NOW)</span>
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span>总下行: {totalDownFormatted.value} {totalDownFormatted.unit}</span>
-              <span>总上行: {totalUpFormatted.value} {totalUpFormatted.unit}</span>
-            </div>
-          </div>
-        </GlassCard>
-
-        {/* 【右侧 5 列：系统代理总控中枢】 (Feature 6, 8, 9, 10, 11) */}
-        <GlassCard className="lg:col-span-5 p-5 flex flex-col justify-between">
+        {health?.stale && <p className="text-xs text-[var(--workbench-warning)]">当前显示上次体检结果</p>}
+        <dl className="workbench-stat-grid workbench-exit-stats">
           <div>
-            {/* 顶栏：系统代理状态徽章 */}
-            <div className="flex items-center justify-between pb-3 border-b border-[var(--glass-border-subtle)]">
-              <span className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] font-semibold">
-                系统代理 (SYSTEM PROXY)
-              </span>
-              <span
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase transition-colors ${
-                  isSystemProxyActive
-                    ? "bg-blue-500/15 text-blue-500 dark:text-blue-400 border border-blue-500/20"
-                    : "bg-black/10 dark:bg-white/10 text-[var(--text-muted)]"
-                }`}
-              >
-                {isSystemProxyActive ? "● PROXY ON" : "○ PROXY OFF"}
-              </span>
-            </div>
-
-            {/* 居中 Hero 冰晶大电源开关与 Uptime 秒表走字 (Feature 6 & 7) */}
-            <div className="flex flex-col items-center justify-center py-4 select-none">
-              <button
-                type="button"
-                onClick={handleToggleSystemProxy}
-                disabled={proxyPending}
-                className="cursor-pointer group flex flex-col items-center focus:outline-none"
-              >
-                <div
-                  className={`
-                    w-16 h-16 rounded-full flex items-center justify-center shadow-lg relative
-                    transition-all duration-200 ease-[var(--ease-out-expo)]
-                    group-hover:scale-105 group-active:scale-95
-                    ${
-                      isSystemProxyActive
-                        ? "bg-gradient-to-tr from-blue-600 to-indigo-500 text-white shadow-lg shadow-indigo-500/30"
-                        : "bg-black/10 dark:bg-white/10 text-zinc-400 border border-black/[0.06] dark:border-white/[0.08] group-hover:bg-black/15 dark:group-hover:bg-white/15"
-                    }
-                  `}
-                >
-                  <svg className="w-7 h-7 relative z-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M13 10V3L4 14h7v7l9-11h-7z"
-                    />
-                  </svg>
-
-                  {/* 激活时的柔和外发光微晶光晕 */}
-                  {isSystemProxyActive && (
-                    <div className="absolute -inset-1 rounded-full bg-indigo-500/25 blur-lg pointer-events-none animate-pulse" />
-                  )}
-                </div>
-
-                <div className="mt-3 text-center">
-                  <div className="font-bold text-[13px] text-[var(--text-primary)] tracking-tight">
-                    {isSystemProxyActive ? "系统代理已接管 · 全局生效" : "系统代理已断开 · 点击开启"}
-                  </div>
-                  <div className="mt-1 font-mono text-[11px] tabular-numeric text-[var(--text-muted)] flex items-center justify-center gap-2">
-                    <span>常驻: {formattedUptime}</span>
-                    <span>•</span>
-                    <span>内存: {formatMemoryBytes(status.memoryUsageBytes)}</span>
-                  </div>
-                </div>
-              </button>
-            </div>
-
-            {/* 三段分流模式滑块 (Feature 8) */}
-            <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-black/[0.04] dark:bg-white/[0.03] border border-[var(--glass-border-subtle)] text-xs font-semibold">
-              {(["rule", "global", "direct"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => onChangeMode(m)}
-                  className={`
-                    py-1 rounded text-center transition-all duration-120 text-[11px]
-                    ${
-                      status.mode === m
-                        ? "bg-white dark:bg-white/10 text-[var(--text-primary)] shadow-sm font-bold border border-black/5 dark:border-white/10"
-                        : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                    }
-                  `}
-                >
-                  {m === "rule" ? "智能分流" : m === "global" ? "全局代理" : "直连模式"}
+            <dt className="flex flex-wrap items-center gap-2">
+              落地 IP
+              {health && (
+                <button type="button" onClick={handleCopyIp} className="workbench-stat-action" title="复制出口 IP" aria-label="复制出口 IP">
+                  <Copy size={12} aria-hidden="true" />
                 </button>
-              ))}
+              )}
+            </dt>
+            <dd className="tabular-nums">{health?.ip ?? emptyExitValue}</dd>
+            {health?.asn && <dd className="workbench-stat-note">{health.asn}</dd>}
+          </div>
+          <div>
+            <dt>落地地理</dt>
+            <dd>{health?.country || health?.city || emptyExitValue}</dd>
+            {health?.country && health.city && health.city !== health.country && (
+              <dd className="workbench-stat-note">{health.city}</dd>
+            )}
+          </div>
+          <div>
+            <dt>欺诈风控</dt>
+            <dd className={"tabular-nums " + riskColor}>{hasScore ? fraudScore + " / 100" : emptyExitValue}</dd>
+            {hasScore && <dd className="workbench-stat-note">{riskLabel}</dd>}
+          </div>
+          <div>
+            <dt>IP 属性</dt>
+            <dd>{health?.isResidential === undefined ? emptyExitValue : health.isResidential ? "住宅网络" : "商用网络"}</dd>
+            {typeof health?.firstPacketMs === "number" && <dd className="workbench-stat-note tabular-nums">首包 {health.firstPacketMs} ms</dd>}
+          </div>
+          {linkedProperties.map(({ label, value, caption, tab, actionLabel }) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd className="tabular-nums">
+                {actionLabel ? (
+                  <button
+                    type="button"
+                    className="workbench-stat-link"
+                    title={actionLabel}
+                    aria-label={`${value}，${actionLabel}`}
+                    onClick={() => onNavigateTab(tab)}
+                  >
+                    {value}
+                  </button>
+                ) : value}
+              </dd>
+              {caption && <dd className="workbench-stat-note">{caption}</dd>}
             </div>
+          ))}
+        </dl>
+      </section>
 
-            {/* 排除代理名单条 (Feature 9) */}
-            <div className="mt-3 px-2 py-1.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.02] border border-[var(--glass-border-subtle)] flex items-center justify-between text-xs">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-[var(--text-muted)] text-[11px]">排除名单:</span>
-                <span className="px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-500 font-mono text-[10px] font-bold">
-                  {settings.bypassList.length} 条
-                </span>
-                <span className="text-[10px] font-mono text-[var(--text-muted)] truncate hidden sm:inline">
-                  {settings.bypassList.slice(0, 2).join(", ")}
-                </span>
+      <div className="workbench-overview-columns">
+        <section className="workbench-panel flex min-h-[290px] flex-col gap-2.5 p-4" aria-label="实时网络吞吐">
+          <header className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="workbench-panel-title">实时网络吞吐</h2>
+            <span className="text-xs text-[var(--text-muted)]">最近 60 秒 · 每秒采样</span>
+          </header>
+          <dl className="flex flex-wrap gap-x-6 gap-y-1">
+            {[
+              { label: "下行", rate: downFormatted, color: "bg-[var(--workbench-down)]" },
+              { label: "上行", rate: upFormatted, color: "bg-[var(--workbench-up)]" },
+            ].map(({ label, rate, color }) => (
+              <div key={label}>
+                <dt className="flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
+                  <span className={"size-1.5 rounded-full " + color} aria-hidden="true" />
+                  {label}
+                </dt>
+                <dd className="tabular-nums text-[24px] font-bold leading-tight tracking-tight">
+                  {rate.value} <span className="text-xs font-normal text-[var(--text-muted)]">{rate.unit}</span>
+                </dd>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsExclusionsOpen(true)}
-                className="text-[11px] font-medium text-blue-500 hover:text-blue-400 transition-colors"
+            ))}
+          </dl>
+
+          <div className="workbench-chart">
+            <div className="workbench-chart-labels tabular-nums" aria-hidden="true">
+              <span>{ceilingFormatted.value} {ceilingFormatted.unit}</span>
+              <span>{halfCeilingFormatted.value} {halfCeilingFormatted.unit}</span>
+              <span>0 bps</span>
+            </div>
+            <div className="workbench-chart-plot">
+              <div className="workbench-chart-grid" aria-hidden="true"><span /><span /><span /></div>
+              <svg
+                className="absolute inset-0 h-full w-full"
+                viewBox="0 0 1000 100"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="最近 60 秒的上下行速率曲线"
               >
-                配置
-              </button>
+                <defs>
+                  <linearGradient id="overview-down-fill" x1="0" y1="0" x2="0" y2="100%">
+                    <stop offset="0%" stopColor="var(--workbench-down)" stopOpacity="0.2" />
+                    <stop offset="100%" stopColor="var(--workbench-down)" stopOpacity="0.02" />
+                  </linearGradient>
+                </defs>
+                <path d={downWave.areaD} fill="url(#overview-down-fill)" />
+                <path d={downWave.pathD} fill="none" stroke="var(--workbench-down)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                <path d={upWave.pathD} fill="none" stroke="var(--workbench-up)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+              </svg>
             </div>
+            <div className="workbench-chart-time" aria-hidden="true"><span>60 秒前</span><span>30 秒前</span><span>现在</span></div>
           </div>
 
-          {/* 硬件级双开关并列 (TUN 虚拟网卡 & 允许局域网) (Feature 10 & 11) */}
-          <div className="mt-4 pt-3 border-t border-[var(--glass-border-subtle)] grid grid-cols-2 gap-2 text-xs">
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => handleToggleTun(!settings.tunMode)}
-              onKeyDown={(e) => e.key === "Enter" && handleToggleTun(!settings.tunMode)}
-              className="flex items-center justify-between p-2 px-2.5 rounded-xl bg-black/[0.02] dark:bg-white/[0.02] border border-[var(--glass-border-subtle)] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-all cursor-pointer select-none group"
-              title="开启后将劫持系统全部底层流量"
-            >
-              <span className="text-[11px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] font-medium transition-colors">
-                TUN 网卡接管
-              </span>
-              <CapsuleToggle
-                checked={settings.tunMode}
-                onChange={handleToggleTun}
-              />
-            </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--text-muted)]">
+            <span>总下行 <strong className="tabular-nums text-[var(--text-secondary)]">{totalDownFormatted.value} {totalDownFormatted.unit}</strong></span>
+            <span>总上行 <strong className="tabular-nums text-[var(--text-secondary)]">{totalUpFormatted.value} {totalUpFormatted.unit}</strong></span>
+            <span>丢包率 暂无数据</span>
+          </div>
+        </section>
 
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={() => handleToggleLan(!settings.allowLan)}
-              onKeyDown={(e) => e.key === "Enter" && handleToggleLan(!settings.allowLan)}
-              className="flex items-center justify-between p-2 px-2.5 rounded-xl bg-black/[0.02] dark:bg-white/[0.02] border border-[var(--glass-border-subtle)] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-all cursor-pointer select-none group"
-              title="允许同一 WiFi 下的其他设备连接代理"
+        <section className="workbench-panel flex flex-col gap-3 p-4" aria-label="网络接管">
+          <header className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="workbench-panel-title">网络接管</h2>
+            <span className="tabular-nums text-[11px] text-[var(--text-muted)]" title="核心常驻时长">
+              常驻 {formattedUptime}
+            </span>
+          </header>
+          <div className="workbench-proxy-entry flex-1 content-center">
+            <button
+              type="button"
+              role="switch"
+              aria-label="系统代理"
+              aria-checked={isSystemProxyActive}
+              title={isSystemProxyActive ? "关闭系统代理" : "启动系统代理"}
+              disabled={proxyPending}
+              className="workbench-proxy-power"
+              onClick={() => void handleToggleSystemProxy()}
             >
-              <span className="text-[11px] text-[var(--text-secondary)] group-hover:text-[var(--text-primary)] font-medium transition-colors">
-                允许局域网
+              <Power size={48} aria-hidden="true" />
+            </button>
+            <p className="mt-1 flex flex-wrap justify-center gap-x-1.5 text-xs">
+              <span className="font-semibold">系统代理</span>
+              <span role="status" className="text-[var(--text-muted)]">
+                {proxyPending ? "切换中" : isSystemProxyActive ? "已接管" : "未接管"}
               </span>
-              <CapsuleToggle
-                checked={settings.allowLan}
-                onChange={handleToggleLan}
-              />
+            </p>
+          </div>
+          <div className="workbench-network-switches min-h-11" role="group" aria-label="网络开关">
+            <div className="workbench-network-switch-row">
+              <span>TUN 虚拟网卡</span>
+              <CapsuleToggle checked={settings.tunMode} onChange={handleToggleTun} title="TUN 虚拟网卡" />
+            </div>
+            <div className="workbench-network-switch-row">
+              <span>允许局域网</span>
+              <CapsuleToggle checked={settings.allowLan} onChange={handleToggleLan} title="允许局域网" />
             </div>
           </div>
-        </GlassCard>
+          <div className="grid gap-1">
+            <span className="text-xs font-medium">分流模式</span>
+            <RoutingModeControl mode={status.mode} onChange={onChangeMode} />
+          </div>
+          <button type="button" className="workbench-control-row min-h-11 w-full text-left" onClick={() => setIsExclusionsOpen(true)}>
+            <div className="min-w-0">
+              <p>排除名单</p>
+              {bypassList.length > 0 && <span className="block truncate" title={bypassList.join(" · ")}>{bypassList.slice(0, 2).join(" · ")}</span>}
+            </div>
+            <span className="inline-flex shrink-0 items-center gap-1 tabular-nums">{bypassList.length} 条 <ChevronRight size={13} aria-hidden="true" /></span>
+          </button>
+        </section>
       </div>
 
-      {/* ===================================================================
-         区域 4: 一体化常驻底盘四大能力卡 (Feature 13, 14, 15, 16)
-         =================================================================== */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs font-mono">
-        {/* [卡片 1] 链路协议与 UDP 真实能力 */}
-        <GlassCard
-          interactive
-          onClick={() => onNavigateTab("proxies")}
-          className="p-3.5 flex flex-col justify-between"
-        >
-          <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span className="font-sans font-medium text-[var(--text-primary)]">链路能力</span>
-            <span className="px-1.5 py-0.2 rounded font-bold text-[9px] bg-emerald-500/15 text-emerald-500">
-              ● UDP 就绪
-            </span>
-          </div>
-          <div className="my-1.5 font-bold text-[14px] text-[var(--text-primary)] font-sans truncate">
-            {activeNode.type ? `${activeNode.type} 链路` : "标准代理专线"}
-          </div>
-          <div className="text-[10px] text-[var(--text-muted)] truncate">
-            {activeNode.type?.toLowerCase().includes("hysteria") || activeNode.type?.toLowerCase().includes("tuic")
-              ? "基于 UDP/QUIC 极速拥塞控制协议"
-              : activeNode.type?.toLowerCase().includes("shadowsocks") ||
-                activeNode.type?.toLowerCase().includes("trojan") ||
-                activeNode.type?.toLowerCase().includes("vmess") ||
-                activeNode.type?.toLowerCase().includes("vless")
-              ? "支持标准 TCP 与 UDP 全双工转发"
-              : "支持完整 UDP 联机游戏转发"}
-          </div>
-        </GlassCard>
-
-        {/* [卡片 2] 分流业务规则包 */}
-        <GlassCard
-          interactive
-          onClick={() => onNavigateTab("routing")}
-          className="p-3.5 flex flex-col justify-between"
-        >
-          <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span className="font-sans font-medium text-[var(--text-primary)]">分流业务包</span>
-            <span
-              className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${
-                bundleSummary?.isProcessMasterOn && (bundleSummary?.activeCount || 0) > 0
-                  ? "bg-indigo-500/15 text-indigo-500"
-                  : "bg-zinc-500/15 text-[var(--text-muted)]"
-              }`}
-            >
-              {bundleSummary?.isProcessMasterOn
-                ? `${bundleSummary?.activeCount ?? 0} 包生效`
-                : "○ 已挂起"}
-            </span>
-          </div>
-          <div className="my-1.5 font-bold text-[14px] text-[var(--text-primary)] font-sans truncate">
-            {bundleSummary?.totalCount ?? 0} 个规则包托管
-          </div>
-          <div className="text-[10px] text-[var(--text-muted)] truncate">
-            {bundleSummary?.isProcessMasterOn
-              ? `覆盖 ${bundleSummary?.processCount ?? 0} 个强锁进程`
-              : "进程分流总开关未开启"}
-          </div>
-        </GlassCard>
-
-        {/* [卡片 3] DNS 智能护航 */}
-        <GlassCard
-          interactive
-          onClick={() => onNavigateTab("settings")}
-          className="p-3.5 flex flex-col justify-between"
-        >
-          <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span className="font-sans font-medium text-[var(--text-primary)]">DNS 智能护航</span>
-            <span className="px-1.5 py-0.2 rounded font-bold text-[9px] bg-blue-500/15 text-blue-500">
-              {dnsGuard?.enabled ? "● 护航生效" : "○ 未接管"}
-            </span>
-          </div>
-          <div className="my-1.5 font-bold text-[14px] text-[var(--text-primary)] font-sans truncate">
-            {dnsListener?.listen || "127.0.0.1:53"}
-          </div>
-          <div className="text-[10px] text-[var(--text-muted)] truncate">
-            防污染纯净解析 · DoH 守护
-          </div>
-        </GlassCard>
-
-        {/* [卡片 4] 今日累计吞吐 */}
-        <GlassCard
-          interactive
-          onClick={() => onNavigateTab("settings")}
-          className="p-3.5 flex flex-col justify-between"
-        >
-          <div className="flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-            <span className="font-sans font-medium text-[var(--text-primary)]">今日累计吞吐</span>
-            <span className="px-1.5 py-0.2 rounded font-bold text-[9px] bg-amber-500/15 text-amber-500">
-              {settings.onlyProxyTraffic ? "仅统计代理" : "全网累积"}
-            </span>
-          </div>
-          <div className="my-1.5 font-bold text-[14px] text-[var(--text-primary)] font-sans truncate tabular-numeric">
-            {totalDownFormatted.value} {totalDownFormatted.unit}
-          </div>
-          <div className="text-[10px] text-[var(--text-muted)] truncate">
-            点击前往连接追踪大盘
-          </div>
-        </GlassCard>
-      </div>
-
-      {/* 排除名单编辑弹窗 (Feature 9 弹窗) */}
       <ExclusionsModal
         isOpen={isExclusionsOpen}
         onClose={() => setIsExclusionsOpen(false)}
-        bypassList={settings.bypassList}
+        bypassList={bypassList}
         onSave={handleSaveBypass}
       />
     </div>

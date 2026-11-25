@@ -22,6 +22,8 @@ export interface RuleItem {
   payload: string;
   proxy: string;
   size?: number;
+  hitCount?: number;
+  disabled?: boolean;
   format?: string;
 }
 
@@ -34,7 +36,8 @@ export interface RuleProviderItem {
   ruleCount: number;
   updatedAt?: string;
   url?: string;
-  isUpdating?: boolean;
+  managed?: boolean;
+  loaded?: boolean;
 }
 
 export interface RouteSimulateResult {

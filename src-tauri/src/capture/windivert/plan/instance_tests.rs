@@ -101,8 +101,9 @@ fn sandbox_contexts_keep_original_process_rules_and_do_not_merge_paths() {
         let port = plan.port_for(path, pid, 100).unwrap();
         let e = plan.entries.iter().find(|e| e.port == port).unwrap();
         let rules = yaml["sub-rules"][format!("pw-wd-{}", e.id().unwrap())].as_sequence().unwrap();
-        assert_eq!(rules[0], "DOMAIN,excluded.test,DIRECT");
-        assert_eq!(rules[1], "DOMAIN,selected.test,ExitA");
+        let prefix = if plan.blocks_ipv6(&e.owner) { PUBLIC_IPV6_REJECT_RULES.len() } else { 0 };
+        assert_eq!(rules[prefix], "DOMAIN,excluded.test,DIRECT");
+        assert_eq!(rules[prefix + 1], "DOMAIN,selected.test,ExitA");
         assert!(rules.contains(&Value::from(expected)));
     }
 }

@@ -3,6 +3,9 @@
 // 规范溯源: tauri-desktop-layout-typography / typography-dark-mono-optics
 // ==========================================================================
 
+import type { RoutingTarget } from "../../src/types/routingOverrides";
+import type { BundleRepositoryOrigin } from "../../src/types/bundleRepository";
+
 export type ProcessRuleAction = "proxy" | "direct" | "reject";
 export type ProcessMatchKind = "process-name" | "process-path";
 
@@ -37,6 +40,7 @@ export interface BundlePolicyConfig {
   targetRules?: string[];          // 目标过滤规则 (域名/IP 列表)
   disallowProxyArgs?: boolean;     // 禁用启动代理参数 (--proxy-server)
   staleConnectionStrategy: BundleStaleConnectionStrategy; // 存量旧长连接策略 (默认 "prompt")
+  useExistingRules?: boolean;
 }
 
 /**
@@ -45,6 +49,8 @@ export interface BundlePolicyConfig {
  */
 export interface ProcessBundleItem {
   id: string;
+  packageId?: string;
+  repositoryOrigin?: BundleRepositoryOrigin;
   name: string;
   description: string;
   icon?: string;
@@ -52,11 +58,16 @@ export interface ProcessBundleItem {
   exes: string[];
   enabled: boolean;
   targetProxy: string; // 绑定的代理出口插槽 (如 "香港 01", "Auto - 自动低延迟优选")
+  targetIdentity?: RoutingTarget;
   mode: BundleTrafficMode; // "strict" 强锁独占 | "sandbox" 智能沙盒
   fallback: BundleFallback; // 沙盒模式下未命中时的策略
   domains: string[]; // 专属出口域名清单
   policy: BundlePolicyConfig;
   updatedAt?: string;
+}
+
+export function usesExistingBundleRules(bundle: Pick<ProcessBundleItem, "mode" | "policy">): boolean {
+  return bundle.mode === "sandbox" && bundle.policy?.useExistingRules === true;
 }
 
 /**
@@ -76,16 +87,13 @@ export interface ProcessRuleItem {
 }
 
 /**
- * 系统实时活跃进程 (Live Sniffed Process)
+ * 系统进程快照
  */
 export interface LiveProcessItem {
   pid: number;
   name: string;
   path?: string;
-  connectionCount: number;
-  uploadBytes: number;
-  downloadBytes: number;
-  isRouted: boolean; // 当前是否已被规则或业务包接管
+  isRouted: boolean; // 当前是否匹配规则或业务包
   matchedRuleName?: string; // 命中的规则或业务包名称
   matchedProxy?: string; // 命中的出站出口
 }
@@ -121,9 +129,9 @@ export const PROCESS_DRIVER_OPTIONS: ProcessDriverOption[] = [
   {
     id: "windivert_v1",
     title: "WinDivert 驱动",
-    subLabel: "内核强锁",
+    subLabel: "内核转发",
     tag: "0 虚拟网卡",
-    description: "Windows 内核网络包过滤，微秒级进程拦截强锁，无额外虚拟网卡开销",
+    description: "按已识别的进程规则转发新连接，无需虚拟网卡",
     requiresAdmin: true,
   },
 ];
@@ -138,7 +146,29 @@ export interface ProcessRoutingState {
   engineMode: ProcessTrafficDriver; // 目标驱动模式 (windivert_v1 | user_mode | app_proxy)
   activeDriverName?: string; // 内核实际运行状态 (windivert | windivert_pending | user_mode | app_proxy)
   isAdmin?: boolean; // 是否拥有管理员权限
-  activeProcessCount: number; // 当前接管中的进程数
+  matchedProcessCount: number; // 当前匹配已启用规则的进程数
   totalBundleCount: number;
   totalRuleCount: number;
+}
+
+export interface CaptureConnectionEvidence {
+  connectionId: number;
+  timeMs: number;
+  pid: number;
+  processName: string;
+  ruleOwner?: string | null;
+  entryPort?: number | null;
+  destination: string;
+  dnsName?: string | null;
+  dnsUpstream?: string | null;
+  protocol: "tcp" | "udp";
+  stage: string;
+  outcome: "attributed" | "relayed" | "failed";
+  errorKind?: string | null;
+}
+
+export interface ProcessCaptureEvidence {
+  unclassified: number;
+  failures: number;
+  recentConnections?: CaptureConnectionEvidence[];
 }

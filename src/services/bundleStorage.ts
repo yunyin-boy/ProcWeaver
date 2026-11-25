@@ -50,134 +50,9 @@ const DEFAULT_SLOTS: BundleSlot[] = [
   },
 ];
 
-// 内置开箱精选规则包模板（便携包与安装包仅携带 OpenAI 与 Google 反重力 2 个核心套件）
-export const PRESET_BUNDLES_CATALOG: BusinessBundleDefinition[] = [
-  {
-    packageId: "openai-chatgpt",
-    packageName: "OpenAI / ChatGPT 生产力套件",
-    packageVersion: "v1.6",
-    category: "dev",
-    mode: "strict",
-    icon: "🧠",
-    description: "管理 ChatGPT、Codex 及已配置伴生进程的业务出口；目标应用须支持代理接入，实际效果以连接记录为准",
-    slots: DEFAULT_SLOTS,
-    policy: {
-      proxyTcp: true,
-      blockIpv6: true,
-      blockUdp: true,
-      proxyUdp: false,
-      proxySubprocesses: true,
-      bypassLan: true,
-      dnsMode: "safe_pure",
-      portFilterMode: "all",
-      customPorts: "",
-      targetFilterMode: "all",
-      targetRules: [],
-      disallowProxyArgs: false,
-    },
-    processes: [
-      { exe: "ChatGPT.exe", role: "main", description: "桌面主客户端" },
-      { exe: "codex.exe", role: "worker", description: "OpenAI 核心数据与代码辅助进程" },
-      { exe: "node.exe", role: "worker", description: "扩展脚本与本地运行依赖（自身走代理，不连坐日常浏览器）", includeDescendants: false },
-    ],
-    additionalExes: ["ChatGPT.exe", "codex.exe", "node.exe"],
-    macosProcesses: [
-      { exe: "ChatGPT", role: "main", description: "macOS 桌面客户端；需遵循系统代理设置" },
-      { exe: "codex", role: "cli", description: "命令行进程；需配置代理环境变量" },
-    ],
-    domains: [
-      "openai.com",
-      "chatgpt.com",
-      "chat.com",
-      "sora.com",
-      "oaistatic.com",
-      "oaiusercontent.com",
-      "auth0.openai.com",
-    ],
-  },
-  {
-    packageId: "google-antigravity",
-    packageName: "Google Antigravity 2.0 研发套件",
-    packageVersion: "v1.2",
-    category: "dev",
-    mode: "strict",
-    icon: "🌌",
-    description: "管理 Antigravity 主程序及当前平台已配置的协同进程；可观测子进程继承业务出口规则",
-    slots: DEFAULT_SLOTS,
-    policy: {
-      proxyTcp: true,
-      blockIpv6: true,
-      blockUdp: true,
-      proxyUdp: false,
-      proxySubprocesses: true,
-      bypassLan: true,
-      dnsMode: "safe_pure",
-      portFilterMode: "all",
-      customPorts: "",
-      targetFilterMode: "all",
-      targetRules: [],
-      disallowProxyArgs: true,
-    },
-    processes: [
-      { exe: "Antigravity.exe", role: "main", description: "主集成开发环境与核心进程" },
-      { exe: "language_server.exe", role: "worker", description: "LSP 语言模型与语义推理核心工作服务" },
-      { exe: "language_server_windows_x64.exe", role: "worker", description: "LSP 语言模型服务 (Windows x64 变体)" },
-      { exe: "agy.exe", role: "cli", description: "Antigravity 开发者命令行终端" },
-      { exe: "antigravity-service.exe", role: "worker", description: "后台状态监测守护服务" },
-      { exe: "Gemini.exe", role: "worker", description: "Google Gemini 桌面客户端" },
-    ],
-    additionalExes: [
-      "Antigravity.exe",
-      "antigravity.exe",
-      "language_server.exe",
-      "language_server_windows_x64.exe",
-      "agy.exe",
-      "antigravity-service.exe",
-      "Antigravity IDE.exe",
-      "Gemini.exe",
-      "google gemini.exe",
-    ],
-    macosProcesses: [{ exe: "Antigravity", role: "main", description: "macOS 应用主进程及可观测的子进程" }],
-    domains: [
-      "antigravity.google",
-      "gemini.google.com",
-      "generativeai.google",
-      "aistudio.google.com",
-      "generativelanguage.googleapis.com",
-      "cloudaicompanion.googleapis.com",
-      "googleapis.com",
-    ],
-  },
-];
-
 let memoryInstances: BundleLocalInstance[] | null = null;
 let initialized = false;
 let initPromise: Promise<BundleLocalInstance[]> | null = null;
-
-function initialPresetInstances(): BundleLocalInstance[] {
-  return [
-    {
-      instanceId: "inst-chatgpt",
-      definition: PRESET_BUNDLES_CATALOG[0], // ChatGPT
-      enabled: true,
-      slotBindings: { main: null, dns: "FOLLOW_MAIN" },
-      watcherMode: "auto",
-      isModified: false,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    },
-    {
-      instanceId: "inst-antigravity",
-      definition: PRESET_BUNDLES_CATALOG[1], // Google Antigravity
-      enabled: false, // 默认停用 (跟随系统默认)
-      slotBindings: { main: null, dns: "FOLLOW_MAIN" },
-      watcherMode: "auto",
-      isModified: false,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    },
-  ];
-}
 
 const upgradePreset = (instances: BundleLocalInstance[]): { list: BundleLocalInstance[]; changed: boolean } => {
   let changed = false;
@@ -286,7 +161,7 @@ export async function initializeBundleStorage(): Promise<BundleLocalInstance[]> 
     try {
       // 1. 优先尝试从后端读取已持久化的明文文件 data/config/business-bundles.json
       const backendData = await businessBundlesApi.load();
-      if (Array.isArray(backendData) && backendData.length > 0) {
+      if (Array.isArray(backendData)) {
         const cleaned = backendData.filter(
           (item: BundleLocalInstance) => !["inst-cursor", "inst-browser"].includes(item.instanceId)
         );
@@ -323,20 +198,19 @@ export async function initializeBundleStorage(): Promise<BundleLocalInstance[]> 
         const upgraded = upgradePreset(cleaned);
         finalInstances = prepare(upgraded.list);
       } else {
-        // 全新开箱：初始化默认双套件
-        finalInstances = prepare(initialPresetInstances());
+        finalInstances = [];
       }
 
       // 3. 立即持久化至后端明文文件并清理老旧 localStorage
       memoryInstances = finalInstances;
-      await businessBundlesApi.save(finalInstances);
+      if (legacyData?.length) await businessBundlesApi.save(finalInstances);
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
       initialized = true;
       return finalInstances;
     } catch (err) {
-      console.error("从后端读取业务规则包失败，降级本地存储/预设:", err);
+      console.error("从后端读取业务规则包失败:", err);
       if (!memoryInstances) {
-        memoryInstances = prepare(initialPresetInstances());
+        memoryInstances = [];
       }
       initialized = true;
       return memoryInstances;
@@ -354,7 +228,7 @@ export function getBundleInstances(): BundleLocalInstance[] {
     return memoryInstances;
   }
 
-  // 首屏未完成异步初始化时的同步兜底：从 localStorage 恢复或加载默认预设
+  // 首屏尚未读取后端时，从旧版的本地配置恢复已保存的实例。
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -370,7 +244,7 @@ export function getBundleInstances(): BundleLocalInstance[] {
   } catch {}
 
   if (!memoryInstances) {
-    memoryInstances = prepare(initialPresetInstances());
+    memoryInstances = [];
   }
 
   // 触发后台异步持久化与迁移对齐
@@ -573,17 +447,30 @@ export function validateAndParseBundlePackage(jsonString: string): {
     if (!bundle.packageName || typeof bundle.packageName !== "string" || !bundle.packageName.trim()) {
       return { valid: false, error: "缺少必要的规则包名称 (packageName)" };
     }
-    if (!Array.isArray(bundle.processes) || (bundle.processes.length === 0 && !bundle.macosProcesses?.length && !bundle.androidPackages?.length)) {
+    let processes = Array.isArray(bundle.processes) ? bundle.processes : null;
+    if (!processes && Array.isArray(bundle.exes)) {
+      if (bundle.exes.length > 100) {
+        return { valid: false, error: "单包进程数量超过安全上限 (最大 100 个)" };
+      }
+      const mainIndex = Math.max(0, bundle.exes.indexOf(bundle.mainExe));
+      processes = bundle.exes.map((exe: unknown, index: number) => ({
+        exe,
+        role: index === mainIndex ? "main" : "worker",
+      }));
+    }
+    if (!processes || (processes.length === 0 && !bundle.macosProcesses?.length && !bundle.androidPackages?.length)) {
       return { valid: false, error: "规则包中必须至少包含一个进程定义 (processes)" };
     }
-    if (bundle.processes.length > 100) {
+    if (processes.length > 100) {
       return { valid: false, error: "单包进程数量超过安全上限 (最大 100 个)" };
     }
 
     // 清洗并严格校验进程名（严禁路径遍历字符、斜杠以及纯数字）
     const validProcesses: BundleProcessMember[] = [];
-    for (const p of bundle.processes) {
-      const rawExe = (typeof p === "string" ? p : p?.exe || "").trim();
+    for (const p of processes) {
+      const exe = typeof p === "string" ? p : p?.exe;
+      if (typeof exe !== "string") continue;
+      const rawExe = exe.trim();
       if (!rawExe) continue;
       // 拒绝路径遍历或带路径的非法执行内容
       if (rawExe.includes("/") || rawExe.includes("\\") || rawExe.includes("..")) {
@@ -650,7 +537,7 @@ export function validateAndParseBundlePackage(jsonString: string): {
       androidPackages,
       additionalExes: Array.isArray(bundle.additionalExes) ? bundle.additionalExes.filter((e: any) => typeof e === "string") : undefined,
       domains: validDomains,
-      author: bundle.author,
+      author: typeof bundle.author === "string" ? bundle.author : undefined,
     };
 
     return { valid: true, bundle: validBundle };

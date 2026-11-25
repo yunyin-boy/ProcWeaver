@@ -82,6 +82,23 @@ impl Index {
         }
         self.healthy && self.entries.get(&owner.endpoint).is_some_and(|e|e.event.timestamp==owner.observed_at&&e.identity.as_ref()==Some(&owner.identity))
     }
+    pub fn current_udp_flow(
+        &self,
+        original: &Owner,
+        local: SocketAddr,
+        remote: SocketAddr,
+        inspect: impl FnMut(u32) -> Option<Identity>,
+    ) -> bool {
+        // A late CONNECT can refine the original BIND without replacing the socket.
+        // Never deliver an old response after a CLOSE or an ambiguous rebind.
+        original.endpoint != 0
+            && original.observed_at > self.discarded_before
+            && !self.closed.get(&original.endpoint).is_some_and(|stamp| *stamp >= original.observed_at)
+            && self.resolve(local, remote, 17, i64::MAX, inspect).is_some_and(|current| {
+                current.endpoint == original.endpoint && current.identity == original.identity
+                    && current.observed_at >= original.observed_at
+            })
+    }
     pub fn len(&self) -> usize { self.entries.len() }
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
     pub fn invalidate(&mut self) { self.healthy = false; }

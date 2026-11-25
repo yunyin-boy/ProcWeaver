@@ -5,7 +5,7 @@
 
 import { invokeCommand, isTauriEnvironment } from "./client";
 import { BundleSummary } from "../types/bundle";
-import { calcActiveRoutedProcessCount } from "./processRoutingService";
+import { calcMatchedProcessCount } from "./processRoutingService";
 
 export async function getBundleSummary(): Promise<BundleSummary> {
   if (isTauriEnvironment()) {
@@ -19,7 +19,7 @@ export async function getBundleSummary(): Promise<BundleSummary> {
       if (overrides) {
         const config = overrides.config;
         isProcessMasterOn = Boolean(config?.processEnabled || config?.bundlesEnabled);
-        processCount = calcActiveRoutedProcessCount(overrides);
+        processCount = calcMatchedProcessCount(overrides);
       }
 
       const bundles = await invokeCommand<any[]>("get_business_bundles").catch(() => []);

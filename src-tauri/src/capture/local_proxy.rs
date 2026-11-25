@@ -167,7 +167,7 @@ impl Nat {
             if !e.established {
                 e.touched.elapsed() < Duration::from_secs(30)
             } else {
-                !e.closed || e.touched.elapsed() < Duration::from_secs(60)
+                !e.closed || e.touched.elapsed() < Duration::from_secs(180)
             }
         });
     }
@@ -205,6 +205,12 @@ mod tests {
         assert_eq!(nat.entries.len(), 2);
         for entry in nat.entries.values_mut() {
             entry.closed = true;
+        }
+        // 半关闭在 61 秒时应继续保留，防止长响应尾包被误丢或原样旁路
+        nat.cleanup();
+        assert_eq!(nat.entries.len(), 2);
+        for entry in nat.entries.values_mut() {
+            entry.touched = Instant::now() - Duration::from_secs(181);
         }
         nat.cleanup();
         assert!(nat.entries.is_empty());

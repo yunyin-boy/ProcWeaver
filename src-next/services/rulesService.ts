@@ -5,7 +5,7 @@
 //           switch_mihomo_proxy, get_mihomo_proxies
 // ==========================================================================
 
-import { isTauriEnvironment } from "./client";
+import { invokeCommand, isTauriEnvironment } from "./client";
 import { RuleItem, RuleProviderItem, RouteSimulateResult } from "../types/rules";
 
 // 常见中国顶级与常见直连域名特征
@@ -97,27 +97,38 @@ const MOCK_PROVIDERS: RuleProviderItem[] = [
   },
 ];
 
+const ruleTypeAliases: Record<string, string> = {
+  DOMAINSUFFIX: "DOMAIN-SUFFIX",
+  DOMAINKEYWORD: "DOMAIN-KEYWORD",
+  DOMAINREGEX: "DOMAIN-REGEX",
+  DOMAINWILDCARD: "DOMAIN-WILDCARD",
+  IPCIDR: "IP-CIDR",
+  IPCIDR6: "IP-CIDR6",
+  PROCESSNAME: "PROCESS-NAME",
+  PROCESSPATH: "PROCESS-PATH",
+  RULESET: "RULE-SET",
+};
+
 /**
  * 获取内核当前生效的全部规则
  */
 export async function fetchRules(): Promise<RuleItem[]> {
   if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const raw = await invoke<any>("get_mihomo_rules");
-      if (raw && Array.isArray(raw.rules)) {
-        return raw.rules.map((r: any, idx: number) => ({
-          id: `rule_${idx}`,
-          type: r.type || "UNKNOWN",
-          payload: r.payload || "",
-          proxy: r.proxy || "DIRECT",
-          size: r.size,
-          format: r.format,
-        }));
-      }
-    } catch (err) {
-      console.warn("[rulesService] get_mihomo_rules failed:", err);
-    }
+    const raw = await invokeCommand<any>("get_mihomo_rules");
+    if (!Array.isArray(raw?.rules)) throw new Error("核心未返回规则列表");
+    return raw.rules.map((rule: any, index: number) => {
+      const type = String(rule.type || "UNKNOWN").toUpperCase();
+      return {
+        id: `rule_${index}`,
+        type: ruleTypeAliases[type] ?? type,
+        payload: String(rule.payload ?? ""),
+        proxy: String(rule.proxy || "DIRECT"),
+        size: typeof rule.size === "number" && rule.size >= 0 ? rule.size : undefined,
+        hitCount: typeof rule.extra?.hitCount === "number" ? rule.extra.hitCount : undefined,
+        disabled: rule.extra?.disabled === true,
+        format: rule.format,
+      };
+    });
   }
 
   return MOCK_RULES;
@@ -261,48 +272,86 @@ export const PRESET_RULE_PROVIDERS: PresetProviderItem[] = [
 // 本地外部规则集持久化存储键
 const STORAGE_PROVIDERS_KEY = "procweaver_rule_providers_v2";
 
+interface LocalProviderSpec {
+  name: string;
+  url: string;
+  behavior: string;
+  format?: string;
+}
+
 /**
- * 获取内核外部规则集订阅 (带空值绝对防护)
+ * 合并核心已载入的规则集与保存的本地规则集。
  */
 export async function fetchRuleProviders(): Promise<RuleProviderItem[]> {
   if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const raw = await invoke<any>("get_mihomo_rule_providers");
-      if (raw && typeof raw === "object") {
-        const providers = raw.providers || raw;
-        return Object.entries<any>(providers).map(([name, item]) => ({
-          name,
-          type: item?.type || "Rule",
-          vehicleType: item?.vehicleType || "HTTP",
-          behavior: item?.behavior || "domain",
-          format: item?.format || "yaml",
-          ruleCount: item?.ruleCount ?? 0,
-          updatedAt: item?.updatedAt ? new Date(item.updatedAt).toLocaleString() : undefined,
-          url: item?.url,
-        }));
-      }
-    } catch (err) {
-      console.warn("[rulesService] get_mihomo_rule_providers failed:", err);
-    }
+    const [liveResult, localResult] = await Promise.allSettled([
+      invokeCommand<{ providers: Record<string, Partial<RuleProviderItem>> }>("get_mihomo_rule_providers"),
+      invokeCommand<{ providers: LocalProviderSpec[] }>("get_local_rule_plan"),
+    ]);
+    const live = liveResult.status === "fulfilled" && liveResult.value?.providers;
+    const local = localResult.status === "fulfilled" ? localResult.value?.providers : undefined;
+    if (!live && !Array.isArray(local)) throw new Error("未读取到外部规则集");
+
+    const active = new Map<string, RuleProviderItem>(Object.entries(live || {}).map(([name, item]) => [name, {
+      name,
+      type: item?.type || "Rule",
+      vehicleType: item?.vehicleType || "HTTP",
+      behavior: item?.behavior || "domain",
+      format: item?.format || "yaml",
+      ruleCount: item?.ruleCount ?? 0,
+      updatedAt: item?.updatedAt ? new Date(item.updatedAt).toLocaleString() : undefined,
+      url: item?.url,
+      loaded: true,
+    }]));
+    const saved = (Array.isArray(local) ? local : []).map((item): RuleProviderItem => {
+      const loaded = active.get(item.name);
+      active.delete(item.name);
+      return {
+        name: item.name,
+        type: loaded?.type || "Rule",
+        vehicleType: loaded?.vehicleType || "HTTP",
+        behavior: item.behavior,
+        format: item.format || loaded?.format || "yaml",
+        ruleCount: loaded?.ruleCount ?? 0,
+        updatedAt: loaded?.updatedAt,
+        url: item.url,
+        managed: true,
+        loaded: live ? Boolean(loaded) : undefined,
+      };
+    });
+    return [...saved, ...active.values()];
   }
 
   try {
     const rawLocal = localStorage.getItem(STORAGE_PROVIDERS_KEY);
     if (rawLocal) {
-      return JSON.parse(rawLocal);
+      return (JSON.parse(rawLocal) as RuleProviderItem[]).map((item) => ({ ...item, managed: true, loaded: true }));
     }
   } catch {}
 
-  return MOCK_PROVIDERS;
+  return MOCK_PROVIDERS.map((item) => ({ ...item, managed: true, loaded: true }));
 }
 
 /**
  * 添加外部规则集 (支持自定义与开源预设一键挂载)
  */
 export async function addExternalRuleProvider(
-  provider: Omit<RuleProviderItem, "ruleCount"> & { ruleCount?: number }
-): Promise<RuleProviderItem[]> {
+  provider: Omit<RuleProviderItem, "ruleCount"> & { ruleCount?: number; targetProxy?: string }
+): Promise<void> {
+  if (isTauriEnvironment()) {
+    const added = await invokeCommand<boolean>("add_external_rule_provider", {
+      spec: {
+        name: provider.name.trim(),
+        url: provider.url,
+        behavior: provider.behavior,
+        format: provider.format,
+        targetProxy: provider.targetProxy ?? "Proxy",
+      },
+    });
+    if (!added) throw new Error("未能保存本地规则集");
+    return;
+  }
+
   const current = await fetchRuleProviders();
   const nextItem: RuleProviderItem = {
     name: provider.name.trim(),
@@ -310,7 +359,7 @@ export async function addExternalRuleProvider(
     vehicleType: provider.vehicleType || "HTTP",
     behavior: provider.behavior || "domain",
     format: provider.format || "yaml",
-    ruleCount: provider.ruleCount || 1000,
+    ruleCount: provider.ruleCount ?? 0,
     updatedAt: new Date().toLocaleString(),
     url: provider.url,
   };
@@ -318,43 +367,19 @@ export async function addExternalRuleProvider(
   const filtered = current.filter((p) => p.name !== nextItem.name);
   const next = [nextItem, ...filtered];
   localStorage.setItem(STORAGE_PROVIDERS_KEY, JSON.stringify(next));
-
-  if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("add_external_rule_provider", {
-        name: nextItem.name,
-        url: nextItem.url,
-        behavior: nextItem.behavior,
-        format: nextItem.format,
-        target_proxy: "Proxy",
-      });
-    } catch (err) {
-      console.warn("[rulesService] add_external_rule_provider in Tauri failed:", err);
-    }
-  }
-
-  return next;
 }
 
 /**
  * 移除外部规则集
  */
-export async function removeExternalRuleProvider(name: string): Promise<RuleProviderItem[]> {
-  const current = await fetchRuleProviders();
-  const next = current.filter((p) => p.name !== name);
-  localStorage.setItem(STORAGE_PROVIDERS_KEY, JSON.stringify(next));
-
+export async function removeExternalRuleProvider(name: string): Promise<void> {
   if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("remove_external_rule_provider", { name });
-    } catch (err) {
-      console.warn("[rulesService] remove_external_rule_provider in Tauri failed:", err);
-    }
+    const removed = await invokeCommand<boolean>("remove_external_rule_provider", { name });
+    if (!removed) throw new Error("核心未确认规则集卸载");
+    return;
   }
-
-  return next;
+  const current = await fetchRuleProviders();
+  localStorage.setItem(STORAGE_PROVIDERS_KEY, JSON.stringify(current.filter((provider) => provider.name !== name)));
 }
 
 /**
@@ -362,8 +387,8 @@ export async function removeExternalRuleProvider(name: string): Promise<RuleProv
  */
 export async function updateRuleProvider(name: string): Promise<void> {
   if (isTauriEnvironment()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("update_mihomo_rule_provider", { name });
+    const updated = await invokeCommand<boolean>("update_mihomo_rule_provider", { name });
+    if (!updated) throw new Error("核心未确认规则集更新");
   } else {
     // 浏览器仿真延迟
     await new Promise((resolve) => setTimeout(resolve, 800));
@@ -386,6 +411,7 @@ export function simulateRouting(
   // 1. 逐条规则匹配引擎
   for (let i = 0; i < rules.length; i++) {
     const rule = rules[i];
+    if (rule.disabled) continue;
     const type = rule.type.toUpperCase();
     const payload = rule.payload.toLowerCase();
 

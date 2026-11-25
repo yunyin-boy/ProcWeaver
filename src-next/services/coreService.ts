@@ -4,8 +4,9 @@
 // ==========================================================================
 
 import { invokeCommand, isTauriEnvironment } from "./client";
+import type { ProxyItem } from "../types/proxy";
 import { CoreStatusSnapshot, CpuInfo, CoreArchitecture, EngineMode } from "../types/core";
-import { calcActiveRoutedProcessCount } from "./processRoutingService";
+import { calcMatchedProcessCount } from "./processRoutingService";
 
 // 纯浏览器预览用保真 Mock 数据
 let mockRunning = true;
@@ -53,14 +54,15 @@ export async function getCoreStatus(): Promise<CoreStatusSnapshot> {
         try {
           const overrides = await invokeCommand<any>("get_routing_overrides");
           if (overrides) {
-            processCount = calcActiveRoutedProcessCount(overrides);
+            processCount = calcMatchedProcessCount(overrides);
           }
         } catch {}
       }
 
-      const uptimeSeconds = raw?.startedAt
-        ? Math.max(0, Math.floor((Date.now() - raw.startedAt) / 1000))
-        : 0;
+      const startedAt = raw?.startedAt;
+      const uptimeSeconds = running && typeof startedAt === "number" && Number.isFinite(startedAt) && startedAt > 0
+        ? Math.max(0, Math.floor(Date.now() / 1000 - startedAt))
+        : undefined;
 
       const systemProxyEnabled = Boolean(
         raw?.systemProxyEnabled ??
@@ -72,6 +74,7 @@ export async function getCoreStatus(): Promise<CoreStatusSnapshot> {
       return {
         running,
         mixedPort,
+        controllerPort: raw?.controllerPort,
         mode,
         coreMode: (raw?.activeCore?.includes("v3") ? "v3" : "compatible") as CoreArchitecture,
         processCount,
@@ -143,43 +146,36 @@ export async function setEngineMode(mode: EngineMode): Promise<boolean> {
   return true;
 }
 
-export async function getActiveOutboundNode(): Promise<ActiveNodeInfo> {
+export async function getActiveOutboundNode(mode: EngineMode): Promise<ActiveNodeInfo> {
+  if (mode === "direct") return { name: "DIRECT", type: "Direct" };
+
   if (isTauriEnvironment()) {
     try {
-      const data = await invokeCommand<any>("get_mihomo_proxies");
-      const allProxies = data?.proxies || {};
-      let activeName = "";
+      const data = await invokeCommand<{ proxies?: Record<string, ProxyItem>; offline?: boolean }>("get_mihomo_proxies");
+      const proxies: Record<string, ProxyItem> = data?.offline ? {} : (data?.proxies ?? {});
+      const groupNames = mode === "global"
+        ? ["GLOBAL", "PROXY", "Proxy", "节点选择"]
+        : ["PROXY", "Proxy", "节点选择", "GLOBAL"];
+      const group = groupNames.map((name) => proxies[name])
+        .find((item) => item && (Array.isArray(item.all) || typeof item.now === "string"))
+        ?? Object.values(proxies).find((item) => Array.isArray(item.all) && item.now);
 
-      // 优先从 PROXY / GLOBAL / 节点选择 策略组里读取当前激活出站
-      for (const groupKey of ["PROXY", "GLOBAL", "Proxy", "节点选择"]) {
-        if (allProxies[groupKey] && allProxies[groupKey].now) {
-          activeName = allProxies[groupKey].now;
-          break;
+      let name = group?.now;
+      const visited = new Set<string>();
+      while (name && !visited.has(name)) {
+        const proxy = proxies[name];
+        if (!proxy) break;
+        if (!Array.isArray(proxy.all) && typeof proxy.now !== "string") {
+          const history = proxy.history;
+          return { name, type: proxy.type || "Proxy", delay: history?.[history.length - 1]?.delay };
         }
-      }
-
-      if (!activeName) {
-        // 如果没有特定名字的组，找第一个拥有 now 字段的 Selector
-        for (const [_, val] of Object.entries<any>(allProxies)) {
-          if (val.all && Array.isArray(val.all) && val.now) {
-            activeName = val.now;
-            break;
-          }
-        }
-      }
-
-      if (activeName && allProxies[activeName]) {
-        const p = allProxies[activeName];
-        const delay = p.history?.length ? p.history[p.history.length - 1].delay : undefined;
-        return {
-          name: activeName,
-          type: p.type || "Proxy",
-          delay,
-        };
+        visited.add(name);
+        name = proxy.now;
       }
     } catch (e) {
       console.warn("[coreService] getActiveOutboundNode failed:", e);
     }
+    return { name: "暂无活动出口", type: "" };
   }
 
   return {

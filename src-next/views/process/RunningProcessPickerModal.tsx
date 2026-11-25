@@ -103,10 +103,10 @@ export const RunningProcessPickerModal: React.FC<RunningProcessPickerModalProps>
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4 bg-black/30 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+      className="workbench-dialog-backdrop fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 shadow-2xl p-4 sm:p-5 text-left flex flex-col gap-3 max-h-[82vh] overflow-hidden">
+      <div className="workbench-dialog relative flex max-h-[82vh] w-full max-w-lg flex-col gap-3 overflow-hidden p-4 text-left sm:p-5" role="dialog" aria-modal="true" aria-label="选择运行进程">
         {/* 顶部标题栏 */}
         <div className="flex items-center justify-between gap-3 border-b border-[var(--glass-border-subtle)] pb-2.5">
           <div className="flex items-center gap-2">

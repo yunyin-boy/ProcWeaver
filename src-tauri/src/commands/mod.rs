@@ -7,6 +7,8 @@ pub mod process;
 pub mod process;
 pub mod profile;
 pub mod profile_switch;
+#[cfg(all(test, windows))]
+mod profile_delete_tests;
 pub mod sysproxy;
 pub mod geo;
 pub mod settings;

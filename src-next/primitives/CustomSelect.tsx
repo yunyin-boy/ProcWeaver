@@ -116,9 +116,10 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       <button
         type="button"
         disabled={disabled}
+        aria-expanded={isOpen}
         onClick={toggleOpen}
         className={`
-          w-full flex items-center justify-between
+          workbench-picker-trigger w-full flex items-center justify-between
           bg-slate-50/90 hover:bg-white dark:bg-[#141720]/80 dark:hover:bg-[#1a1e28]
           border border-slate-200 hover:border-slate-300 dark:border-white/10 dark:hover:border-white/20
           text-slate-800 dark:text-zinc-200
@@ -151,7 +152,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
       {isOpen && (
         <div
           className={`
-            absolute z-[999] left-0 right-0
+            workbench-menu absolute z-[999] left-0 right-0
             ${openUpward ? "bottom-full mb-1.5" : "top-full mt-1.5"}
             bg-white dark:bg-[#0f172a]
             border border-slate-200/90 dark:border-white/15

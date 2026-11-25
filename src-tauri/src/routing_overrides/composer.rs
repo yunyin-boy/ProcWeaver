@@ -65,6 +65,27 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
             if let Some(bundle)=super::bundles::owner(&rule.id,&config.bundles).filter(|b|b.mode=="sandbox") {
                 if !bundle.enabled {continue;}
                 let block_udp = bundle.policy.as_ref().map_or(true, |p| p.block_udp);
+                let scoped_filters = owned && super::filters::active(bundle);
+                if scoped_filters {
+                    if block_udp { prefix.push("NETWORK,UDP,REJECT".into()); }
+                    prefix.extend(super::bundles::lan_direct_rules(bundle).iter().copied().map(Value::from));
+                    super::filters::append(&mut prefix, bundle)?;
+                }
+                if bundle.uses_existing_rules() {
+                    if block_udp && !scoped_filters {
+                        prefix.push(format!("AND,((NETWORK,UDP),({process})),REJECT").into());
+                    }
+                    let name = super::bundles::existing_rules_name(bundle);
+                    let rules = yaml["sub-rules"][name.as_str()].as_sequence().ok_or("缺少沙盒分流规则")?;
+                    if owned {
+                        prefix.extend_from_slice(rules);
+                        yaml["rules"] = Value::Sequence(vec![]);
+                        break;
+                    }
+                    prefix.push(format!("SUB-RULE,({process}),{name}").into());
+                    prefix.push(format!("{process},DIRECT").into());
+                    continue;
+                }
                 for pattern in &bundle.domains {
                     let d_cond = super::bundles::domain_condition(pattern);
                     let condition=format!("AND,(({process}),({d_cond}))");
@@ -74,7 +95,7 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
                     prefix.push(format!("{condition},{dest}").into());
                     if dest!="REJECT" && dest!="DIRECT" {prefix.push(format!("{condition},REJECT").into());}
                 }
-                // 系统开关在 prepare 中解析；仅此包进程的未命中请求可直连，不影响其他进程。
+                // System-dependent fallback is resolved when preparing the plan.
                 if bundle.fallback == "direct" { prefix.push(format!("{process},DIRECT").into()); }
                 else if !owned && yaml["sub-rules"][super::public_mode::RULES].is_sequence() {
                     prefix.push(format!("SUB-RULE,({process}),{}", super::public_mode::RULES).into());
@@ -100,6 +121,10 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
                     if block_udp {
                         prefix.push(Value::from(format!("AND,((NETWORK,UDP),({process})),REJECT")));
                     }
+                    if owned && bundle.enabled && bundle.mode == "strict" {
+                        prefix.extend(super::bundles::lan_direct_rules(bundle).iter().copied().map(Value::from));
+                        super::filters::append(&mut prefix, bundle)?;
+                    }
                 }
                 prefix.push(Value::from(format!("{process},{dest}")));
                 // 不支持 UDP 的代理可能被核心跳过：同一匹配项随后拒绝，禁止落入原有直连。
@@ -113,22 +138,7 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
     let dns_rules: Vec<_> = config.dns_rules.iter().filter(|r| config.dns_enabled && r.enabled).collect();
     if !dns_rules.is_empty() || windivert_guard {
         for r in &dns_rules { if !available.contains(&r.target) { return Err(format!("域名 {} 的 DNS 出口不可用，请重绑定或禁用该规则", r.domain)); } }
-        // 不静默改变已有直连 DNS、hosts 或节点启动解析策略。
-        if yaml["dns"]["direct-nameserver"].as_sequence().is_some_and(|v| !v.is_empty())
-            && yaml["dns"]["direct-nameserver-follow-policy"].as_bool() != Some(true) {
-            return Err("订阅 direct-nameserver 绕过域名策略，请先明确设置 direct-nameserver-follow-policy: true".into());
-        }
-        if yaml["hosts"].as_mapping().is_some_and(|m| m.keys().any(|k| k.as_str().is_some_and(|s| dns_rules.iter().any(|r| domains_overlap(s, r))))) {
-            return Err("指定 DNS 域名与订阅 hosts 冲突，请先移除对应 hosts".into());
-        }
-        #[cfg(windows)]
-        if yaml["dns"]["use-system-hosts"].as_bool() != Some(false) {
-            let hosts_path = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32/drivers/etc/hosts");
-            let hosts = std::fs::read_to_string(hosts_path).map_err(|_| "无法核对系统 hosts，请检查读取权限")?;
-            if hosts.lines().flat_map(|line| line.split('#').next().unwrap_or("").split_whitespace().skip(1)).any(|s| dns_rules.iter().any(|r| matches_domain(s, r))) {
-                return Err("指定域名命中系统 hosts，无法应用 DNS 策略；请先处理对应 hosts 或显式关闭核心 use-system-hosts".into());
-            }
-        }
+        validate_dns_scope(&yaml, &dns_rules)?;
         let was_enabled = yaml["dns"]["enable"].as_bool() == Some(true);
         let dns = yaml.as_mapping_mut().ok_or("配置须为对象")?.entry(Value::from("dns"))
             .or_insert(Value::Mapping(Default::default())).as_mapping_mut().ok_or("dns 须为对象")?;
@@ -171,6 +181,27 @@ fn compose_scoped(raw: &str, config: &Overrides, profile_id: &str, derived: &[Pr
     }
     serde_yaml::to_string(&yaml).map_err(|_| "合成进程与 DNS 规则失败".into())
 }
+
+pub(super) fn validate_dns_scope(yaml: &Value, rules: &[&DnsRule]) -> Result<(), String> {
+    // Do not alter the profile's direct resolvers or a local hosts mapping.
+    if yaml["dns"]["direct-nameserver"].as_sequence().is_some_and(|v| !v.is_empty())
+        && yaml["dns"]["direct-nameserver-follow-policy"].as_bool() != Some(true) {
+        return Err("订阅 direct-nameserver 绕过域名策略，请先明确设置 direct-nameserver-follow-policy: true".into());
+    }
+    if yaml["hosts"].as_mapping().is_some_and(|m| m.keys().any(|k| k.as_str().is_some_and(|s| rules.iter().any(|r| domains_overlap(s, r))))) {
+        return Err("指定 DNS 域名与订阅 hosts 冲突，请先移除对应 hosts".into());
+    }
+    #[cfg(windows)]
+    if yaml["dns"]["use-system-hosts"].as_bool() != Some(false) {
+        let hosts_path = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32/drivers/etc/hosts");
+        let hosts = std::fs::read_to_string(hosts_path).map_err(|_| "无法核对系统 hosts，请检查读取权限")?;
+        if hosts.lines().flat_map(|line| line.split('#').next().unwrap_or("").split_whitespace().skip(1)).any(|s| rules.iter().any(|r| matches_domain(s, r))) {
+            return Err("指定域名命中系统 hosts，无法应用 DNS 策略；请先处理对应 hosts 或显式关闭核心 use-system-hosts".into());
+        }
+    }
+    Ok(())
+}
+
 pub fn matches_domain(value: &str, r: &DnsRule) -> bool {
     let value = value.trim_end_matches('.');
     value.eq_ignore_ascii_case(&r.domain) || (r.domain_kind == "suffix" && value.to_ascii_lowercase().ends_with(&format!(".{}", r.domain)))

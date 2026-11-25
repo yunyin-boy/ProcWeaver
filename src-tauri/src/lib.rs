@@ -15,6 +15,8 @@ mod process_conflict;
 mod bundle_repository;
 #[cfg(not(target_os = "android"))]
 mod app_lifecycle;
+#[cfg(all(not(target_os = "android"), not(feature = "process-edition")))]
+mod desktop_startup;
 #[cfg(target_os = "android")]
 #[path = "platform/android/lifecycle.rs"]
 mod app_lifecycle;
@@ -28,8 +30,14 @@ pub mod capture;
 use std::sync::Mutex;
 #[cfg(not(feature = "process-edition"))]
 use commands::process::{CoreState, CoreStateMutex};
-#[cfg(not(feature = "process-edition"))]
+#[cfg(all(not(target_os = "android"), not(feature = "process-edition")))]
 use tauri::Manager;
+
+#[cfg(all(target_os = "android", not(feature = "process-edition")))]
+#[tauri::command]
+fn get_first_use_status() -> Option<()> {
+    None
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[cfg(not(feature = "process-edition"))]
@@ -53,7 +61,9 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             app_lifecycle::show(app);
-            commands::bundle_launch::dispatch(app, args);
+            if desktop_startup::started() {
+                commands::bundle_launch::dispatch(app, args);
+            }
         }));
     #[cfg(target_os = "android")]
     let builder = builder.plugin(platform::android::init());
@@ -71,62 +81,9 @@ pub fn run() {
                 Ok(())
             })
             .build())
-        .setup(|app| {
+        .setup(|_app| {
             #[cfg(not(target_os = "android"))]
-            {
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_icon(tauri::include_image!("icons/128x128.png"))?;
-            }
-            commands::bundle_launch::dispatch(app.handle(), std::env::args().collect());
-            let proxy_recovery_ready = match commands::sysproxy::recover_stale_proxy() {
-                Ok(()) => true,
-                Err(error) => {
-                    #[cfg(target_os = "macos")]
-                    { eprintln!("macOS 系统代理恢复待处理：{error}"); false }
-                    #[cfg(not(target_os = "macos"))]
-                    { return Err(std::io::Error::other(error).into()); }
-                }
-            };
-            let dns_app = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                commands::dns_adapter::auto_recover_dns_on_startup().await;
-                use tauri::Emitter;
-                let _ = dns_app.emit("procweaver-dns-guard-changed", ());
-            });
-            commands::process_watcher::init_watcher_on_startup();
-            tauri::async_runtime::spawn(external_proxy::restore());
-            tauri::async_runtime::spawn(commands::geo::run_scheduler());
-            tauri::async_runtime::spawn(commands::profile::run_profile_scheduler());
-            let monitor_app = app.handle().clone();
-            tauri::async_runtime::spawn(routing_overrides::tracker::run(move |change| {
-                use tauri::Emitter;
-                let _ = monitor_app.emit("procweaver-processes-changed", change);
-            }));
-            tauri::async_runtime::spawn(capture::run());
-            app_lifecycle::setup(app)?;
-            let preferences = commands::settings::get_general_settings();
-            let is_direct_launch = std::env::args().any(|a| a == "--direct" || a == "--shim" || a == "--quick");
-            if (!proxy_recovery_ready || preferences.as_ref().map_or(true, |s| !s.silent_start)) && !is_direct_launch { app_lifecycle::show(app.handle()); }
-            if function_mode::core_features_enabled() && proxy_recovery_ready {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(error) = commands::process::start_core(None, handle.state()).await {
-                        eprintln!("自动运行核心失败：{error}");
-                        app_lifecycle::show(&handle);
-                    }
-                });
-            }
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    if !function_mode::core_features_enabled() { continue; }
-                    if let Err(e) = commands::process::monitor_core(handle.state()).await {
-                        eprintln!("内核监控失败：{e}");
-                    }
-                }
-            });
-            }
+            desktop_startup::setup(_app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -134,6 +91,10 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" && !shutdown::ready() {
                     api.prevent_close();
+                    if !desktop_startup::started() {
+                        window.app_handle().exit(0);
+                        return;
+                    }
                     let settings = commands::settings::get_general_settings().unwrap_or_default();
                     match settings.close_action.as_str() {
                         "minimize" => {
@@ -151,7 +112,18 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            #[cfg(not(target_os = "android"))]
+            desktop_startup::get_first_use_status,
+            #[cfg(target_os = "android")]
+            get_first_use_status,
+            #[cfg(not(target_os = "android"))]
+            desktop_startup::confirm_first_use,
+            #[cfg(not(target_os = "android"))]
+            desktop_startup::exit_first_use,
+            #[cfg(not(target_os = "android"))]
+            desktop_startup::save_guide_progress,
             function_mode::get_function_mode,
             process_capture::get_process_capture,
             process_capture::set_process_capture,
@@ -171,6 +143,7 @@ pub fn run() {
             commands::bundle_launch::launch_bundle_app,
             commands::bundle_launch::get_bundle_entry_states,
             commands::bundle_launch::take_bundle_launch_requests,
+            commands::bundle_launch::take_bundle_capture_warning,
             commands::bundle_launch::choose_bundle_executable,
             commands::bundle_launch::inspect_bundle_stale_connections,
             commands::bundle_launch::reset_bundle_stale_connections,
@@ -178,8 +151,11 @@ pub fn run() {
             commands::bundle_shortcuts::change_bundle_shortcut,
             commands::business_bundles::get_business_bundles,
             commands::business_bundles::save_business_bundles,
+            commands::business_bundles::mount_repository_business_bundle,
+            commands::business_bundles::delete_business_bundle,
             commands::routing_overrides::get_routing_overrides,
             commands::routing_overrides::save_routing_overrides,
+            commands::routing_overrides::confirm_bundle_hot_reset,
             commands::routing_overrides::get_process_tree,
             commands::routing_overrides::choose_routing_executable,
             commands::routing_overrides::diagnose_routing_dns,
@@ -304,13 +280,29 @@ pub fn run() {
             app_lifecycle::execute_tray_menu_action,
             app_lifecycle::hide_tray_menu,
             app_lifecycle::show_tray_menu,
-        ])
+            ];
+            move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+                #[cfg(not(target_os = "android"))]
+                if !desktop_startup::started() && !matches!(
+                    invoke.message.command(),
+                    "get_first_use_status" | "confirm_first_use" | "exit_first_use"
+                ) {
+                    invoke.resolver.reject("请先阅读并确认首次使用须知");
+                    return true;
+                }
+                handler(invoke)
+            }
+        })
         .on_window_event(|window, event| {
             if window.label() == "tray-menu" {
                 if let tauri::WindowEvent::Focused(false) = event {
                     let _ = window.hide();
                 }
             } else if window.label() == "main" {
+                #[cfg(not(target_os = "android"))]
+                if !desktop_startup::started() {
+                    return;
+                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     let settings = crate::commands::settings::get_general_settings().unwrap_or_default();
                     match settings.close_action.as_str() {
@@ -339,7 +331,7 @@ pub fn run() {
         .run(|app_handle, event| {
             #[cfg(not(target_os = "android"))]
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                if !shutdown::ready() {
+                if desktop_startup::started() && !shutdown::ready() {
                     api.prevent_exit();
                     shutdown::request(app_handle, code.unwrap_or(0));
                 }

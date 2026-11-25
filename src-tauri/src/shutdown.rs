@@ -18,7 +18,7 @@ pub(crate) fn request(app: &tauri::AppHandle, code: i32) {
         if crate::edition::PROCESS {
             crate::process_capture::stop();
             #[cfg(windows)]
-            let _ = crate::capture::windivert::assets::cleanup_driver_and_service();
+            crate::capture::user_mode::control::stop();
             crate::external_proxy::shutdown();
             crate::external_proxy::diagnostics::shutdown().await;
             PHASE.store(2, Ordering::Release);
@@ -34,8 +34,6 @@ pub(crate) fn request(app: &tauri::AppHandle, code: i32) {
         }).await;
         match result {
             Ok(()) => {
-                #[cfg(windows)]
-                let _ = crate::capture::windivert::assets::cleanup_driver_and_service();
                 crate::external_proxy::shutdown();
                 crate::commands::process_watcher::stop_watcher_loop();
                 crate::commands::health_probe::shutdown();

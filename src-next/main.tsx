@@ -5,18 +5,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
+import { readWindowOpacity } from "./utils/windowOpacity";
 import "./styles/globals.css";
+import "./styles/workbench.css";
 
-// 启动前即时恢复物理透明度与毛玻璃景深 (Zero-FOUC，确保黑曜石安全底垫)
+document.documentElement.style.setProperty("--window-opacity", (readWindowOpacity() / 100).toFixed(2));
+
+// 启动前恢复窗口的毛玻璃景深。
 try {
-  const savedOpacity = localStorage.getItem("procweaver_window_opacity");
-  if (savedOpacity) {
-    const val = parseFloat(savedOpacity);
-    const safeVal = isNaN(val) || val < 0.85 ? "0.95" : savedOpacity;
-    document.documentElement.style.setProperty("--window-opacity", safeVal);
-  } else {
-    document.documentElement.style.setProperty("--window-opacity", "0.95");
-  }
   const savedBlur = localStorage.getItem("procweaver_window_blur");
   if (savedBlur) {
     document.documentElement.style.setProperty("--window-blur", `${savedBlur}px`);
@@ -26,11 +22,12 @@ try {
 }
 
 // --------------------------------------------------------------------------
-// 全局桌面环境安全加固: 彻底屏蔽 WebView2 原生右键上下文菜单与危险快捷键
+// 桌面快捷键和右键菜单处理，显式标记的文本控件保留原生编辑菜单。
 // --------------------------------------------------------------------------
 window.addEventListener(
   "contextmenu",
   (e) => {
+    if (e.target instanceof Element && e.target.closest("[data-native-context-menu]")) return;
     e.preventDefault();
   },
   { capture: true }

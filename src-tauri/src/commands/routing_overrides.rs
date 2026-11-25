@@ -9,7 +9,30 @@ pub async fn get_routing_overrides() -> Result<View, String> {
     }).await.map_err(|_| "读取分流状态任务失败")?
 }
 #[tauri::command]
-pub async fn save_routing_overrides(config: Overrides, selections: Vec<Selection>) -> Result<View, String> { service::save(config, selections).await }
+pub async fn save_routing_overrides(_window: tauri::WebviewWindow, config: Overrides, selections: Vec<Selection>) -> Result<View, String> {
+    let view = service::save(config, selections).await?;
+    #[cfg(windows)]
+    if let Some(notice) = &view.hot_reset {
+        use tauri::Emitter;
+        let _ = _window.emit_to(_window.label(), "procweaver-bundle-hot-reset", notice);
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+pub async fn confirm_bundle_hot_reset(ticket: String, refresh: bool) -> Result<serde_json::Value, String> {
+    #[cfg(windows)]
+    {
+        crate::function_mode::require_full()?;
+        let result = service::hot_reset::confirm(ticket, refresh).await?;
+        serde_json::to_value(result).map_err(|_| "旧连接刷新结果格式无效".into())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (ticket, refresh);
+        Err("当前系统不支持刷新业务包旧连接".into())
+    }
+}
 #[tauri::command]
 pub async fn get_process_tree() -> Result<Vec<ProcessEntry>, String> {
     tauri::async_runtime::spawn_blocking(|| {

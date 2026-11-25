@@ -1,6 +1,6 @@
 [package]
 name = "proc-weaver"
-version = "2.3.4"
+version = "3.0.0"
 license = "AGPL-3.0-only"
 description = "Modern Proxy Client powered by Mihomo and Tauri"
 authors = ["ProcWeaver Team"]
@@ -38,6 +38,7 @@ hyper = { version = "=1.11.1", features = ["server", "client", "http1"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
 http-body-util = "=0.1.5"
 base64 = "=0.22.1"
+percent-encoding = "=2.3.2"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -54,4 +55,4 @@ libc = "=0.2.189"
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 winreg = "0.52"
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Cryptography", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
-windows = { version = "=0.61.3", features = ["Win32_System_Wmi", "Win32_System_Com", "Win32_System_Variant", "Win32_Security", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx"] }
+windows = { version = "=0.61.3", features = ["Win32_System_Wmi", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_Security", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_NetworkManagement_WindowsFirewall"] }

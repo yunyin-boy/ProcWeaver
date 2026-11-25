@@ -164,7 +164,7 @@ fn protect(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 退出软件或手动治理：彻底断开并注销 WinDivert 内核服务，清除解压的临时驱动文件
+/// 手动清理命令使用。WinDivert 服务由使用同一驱动的应用共享。
 pub fn cleanup_driver_and_service() -> Result<(), String> {
     #[cfg(windows)]
     {

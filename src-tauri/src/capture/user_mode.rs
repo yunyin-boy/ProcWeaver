@@ -10,6 +10,20 @@ pub const MODE: &str = "user_mode";
 #[path = "hook_control.rs"]
 pub(crate) mod control;
 #[cfg(windows)]
+pub use control::SessionPolicy;
+
+#[cfg(windows)]
+pub fn matches_session(pid: u32, policy: SessionPolicy<'_>, port: u16, action: Option<&str>) -> bool {
+    let process = crate::routing_overrides::native::inspect(pid, 0, String::new());
+    control::matches(pid, process.created_at, policy, port, action == Some("REJECT"))
+}
+
+#[cfg(windows)]
+pub fn previous_proxy_ports(pid: u32) -> Vec<u16> {
+    let process = crate::routing_overrides::native::inspect(pid, 0, String::new());
+    control::previous_proxy_ports(pid, process.created_at)
+}
+#[cfg(windows)]
 struct PendingLease { name: Option<String>, committed: bool }
 #[cfg(windows)]
 impl Drop for PendingLease {
@@ -110,6 +124,24 @@ type PfnPwLaunchProcess = unsafe extern "system" fn(
 ) -> windows_sys::Win32::Foundation::BOOL;
 
 #[cfg(windows)]
+const REJECT_LAUNCHER_EXPORT: &[u8] = b"PwLaunchProcessWithVerifiedReject\0";
+
+#[cfg(windows)]
+pub fn verify_policy_launcher() -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{Foundation::FreeLibrary, System::LibraryLoader::{GetProcAddress, LoadLibraryW}};
+    let dll: Vec<u16> = hook_dll_path(true)?.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        let module = LoadLibraryW(dll.as_ptr());
+        if module.is_null() { return Err("无法加载 Hook 启动组件，未确认策略接入能力".into()); }
+        let supported = GetProcAddress(module, REJECT_LAUNCHER_EXPORT.as_ptr()).is_some();
+        FreeLibrary(module);
+        if !supported { return Err("Hook 组件版本过旧，请更新组件后再启用接管".into()); }
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, test))]
 pub fn launch_with_hook(
     exe: &Path,
     args: &[String],
@@ -119,8 +151,23 @@ pub fn launch_with_hook(
     policy: Option<&crate::routing_overrides::model::BundlePolicy>,
     native_proxy: bool,
 ) -> Result<u32, String> {
+    launch_with_hook_action(exe, args, working_dir, bundle_port, dns_port, policy, native_proxy, None, None)
+}
+
+#[cfg(windows)]
+pub fn launch_with_hook_action(
+    exe: &Path,
+    args: &[String],
+    working_dir: Option<&Path>,
+    bundle_port: u16,
+    dns_port: u16,
+    policy: Option<&crate::routing_overrides::model::BundlePolicy>,
+    native_proxy: bool,
+    action: Option<&str>,
+    session: Option<SessionPolicy<'_>>,
+) -> Result<u32, String> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows_sys::Win32::{Foundation::FreeLibrary, System::LibraryLoader::{GetProcAddress, LoadLibraryW}};
 
     let is_64bit = is_executable_64bit(exe)?;
     let target_dll = hook_dll_path(is_64bit)?;
@@ -129,7 +176,8 @@ pub fn launch_with_hook(
         ensure_hook_dir_acl(parent);
     }
 
-    let mut environment = hook_environment(bundle_port, dns_port, policy, native_proxy)?;
+    let reject = action == Some("REJECT");
+    let environment = hook_environment_with_action(bundle_port, dns_port, policy, native_proxy, action, session)?;
     let mut lease = PendingLease { name: environment.iter().find(|(k, _)| k == "PROCWEAVER_HOOK_CONTROL").map(|(_, v)| v.to_string_lossy().into_owned()), committed: false };
     let mut environment_block = environment_block(&environment);
 
@@ -170,8 +218,13 @@ pub fn launch_with_hook(
     unsafe {
         let h_launcher = LoadLibraryW(launcher_dll_wide.as_ptr());
         if !h_launcher.is_null() {
-            let proc_addr = GetProcAddress(h_launcher, b"PwLaunchProcessWithEnvironment\0".as_ptr());
-            if proc_addr.is_none() { return Err("Hook 组件版本过旧，无法可靠撤销接管；请更新 Hook 组件后重试".into()); }
+            if uses_core_listener(bundle_port) && GetProcAddress(h_launcher, b"PwSuiteDnsVersion\0".as_ptr()).is_none() {
+                FreeLibrary(h_launcher);
+                return Err("Hook 组件缺少套件 DNS 模式支持，请更新 Hook 组件".into());
+            }
+            let export = if reject { REJECT_LAUNCHER_EXPORT }
+                else { b"PwLaunchProcessWithEnvironment\0".as_slice() };
+            let proc_addr = GetProcAddress(h_launcher, export.as_ptr());
             if let Some(fn_ptr) = proc_addr {
                 let pfn: PfnPwLaunchProcess = std::mem::transmute(fn_ptr);
                 let mut pid: u32 = 0;
@@ -183,54 +236,95 @@ pub fn launch_with_hook(
                     environment_block.as_mut_ptr().cast(),
                     &mut pid,
                 );
+                FreeLibrary(h_launcher);
                 if ok != 0 && pid != 0 {
+                    let created_at = check_process_alive_after_launch(pid)?;
+                    if let Some(name) = &lease.name { control::confirm(name, pid, created_at, native_proxy)?; }
                     lease.committed = true;
-                    if let Some(name) = &lease.name { control::confirm(name)?; }
-                    check_process_alive_after_launch(pid)?;
                     return Ok(pid);
                 }
+            } else {
+                FreeLibrary(h_launcher);
+                return Err("Hook 组件版本过旧，无法确认或撤销接管；请更新 Hook 组件后重试".into());
             }
         }
     }
 
+    if reject { return Err("未确认 Hook 网络阻断，启动失败".into()); }
     // Fallback：挂起远程线程方式
-    let result = launch_with_remote_thread_fallback(exe, args, working_dir, bundle_port, dns_port, &target_dll, policy, &mut environment);
-    lease.committed = result.is_ok();
-    if lease.committed {
-        if let Some(name) = &lease.name { control::confirm(name)?; }
-        if let Ok(pid) = result {
-            check_process_alive_after_launch(pid)?;
-        }
-    }
-    result
+    let pid = launch_with_remote_thread_fallback(exe, args, working_dir, &target_dll, &environment)?;
+    let created_at = check_process_alive_after_launch(pid)?;
+    if let Some(name) = &lease.name { control::confirm(name, pid, created_at, native_proxy)?; }
+    lease.committed = true;
+    Ok(pid)
 }
 
 #[cfg(windows)]
-fn check_process_alive_after_launch(pid: u32) -> Result<(), String> {
-    std::thread::sleep(std::time::Duration::from_millis(150));
+fn check_process_alive_after_launch(pid: u32) -> Result<u64, String> {
     unsafe {
         use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
         const STILL_ACTIVE: u32 = 259;
         let h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h_proc.is_null() {
             return Err("受控进程启动后句柄无法打开或进程已过早退出；请确认权限并完全退出旧实例后重试".into());
         }
+        std::thread::sleep(std::time::Duration::from_millis(150));
         let mut exit_code: u32 = 0;
         let ok = GetExitCodeProcess(h_proc, &mut exit_code);
+        let mut created = std::mem::zeroed();
+        let mut exit = std::mem::zeroed();
+        let mut kernel = std::mem::zeroed();
+        let mut user = std::mem::zeroed();
+        let verified = GetProcessTimes(h_proc, &mut created, &mut exit, &mut kernel, &mut user);
         windows_sys::Win32::Foundation::CloseHandle(h_proc);
-        if ok != 0 && exit_code != STILL_ACTIVE {
+        if ok == 0 || exit_code != STILL_ACTIVE {
             return Err("程序启动后立即退出，检测到可能复用了已在后台运行的旧实例；请先完全退出该程序所有旧实例后重新尝试受控接管".into());
         }
+        if verified == 0 { return Err("无法核验受控进程的创建时间".into()); }
+        Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
     }
-    Ok(())
 }
 
 #[cfg(windows)]
+pub fn hook_assets_ready() -> bool {
+    hook_dll_path(true).is_ok() && hook_dll_path(false).is_ok()
+}
+
+/// Resolves a proxy entry from the effective rule's stable binding.
+#[cfg(windows)]
+pub fn process_rule_port(
+    config: &crate::routing_overrides::model::Overrides,
+    rule: &crate::routing_overrides::model::ProcessRule,
+) -> Option<u16> {
+    match crate::routing_overrides::bundles::owner(&rule.id, &config.bundles) {
+        Some(bundle) => (bundle.enabled && bundle.port != 0).then_some(bundle.port),
+        None => config.process_ports.get(&rule.id).copied(),
+    }
+}
+
+#[cfg(all(windows, test))]
 fn hook_environment(port: u16, dns: u16, policy: Option<&crate::routing_overrides::model::BundlePolicy>, native_proxy: bool) -> Result<Vec<(std::ffi::OsString, std::ffi::OsString)>, String> {
+    hook_environment_with_action(port, dns, policy, native_proxy, None, None)
+}
+
+#[cfg(windows)]
+fn hook_environment_with_action(port: u16, dns: u16, policy: Option<&crate::routing_overrides::model::BundlePolicy>, native_proxy: bool, action: Option<&str>, session: Option<SessionPolicy<'_>>) -> Result<Vec<(std::ffi::OsString, std::ffi::OsString)>, String> {
+    use crate::capture::suite_dns::{self, Mode};
     let default = crate::routing_overrides::model::BundlePolicy::default();
     let p = policy.unwrap_or(&default);
+    // Full-edition suite inlets evaluate these settings using the original
+    // destination, for both literal addresses and Hook-generated DNS tokens.
+    let server_filters = uses_core_listener(port);
+    let selected_dns = Mode::for_policy(Some(p));
+    let scoped_dns = server_filters && selected_dns != Mode::SystemNative && scoped_dns_inlet(port, selected_dns);
+    let dns_mode = effective_dns_mode(server_filters, scoped_dns, selected_dns);
+    let native_servers = if server_filters && dns_mode == Mode::SystemNative {
+        suite_dns::system_servers().into_iter().map(|ip| ip.to_string()).collect::<Vec<_>>().join(",")
+    } else {
+        String::new()
+    };
     let mut values: std::collections::BTreeMap<String, (std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
         .filter(|(k, _)| !k.to_string_lossy().to_ascii_uppercase().starts_with("PROCWEAVER_"))
         .map(|(k, v)| (k.to_string_lossy().to_ascii_uppercase(), (k, v))).collect();
@@ -239,10 +333,21 @@ fn hook_environment(port: u16, dns: u16, policy: Option<&crate::routing_override
         ("PROCWEAVER_PROXY_TCP", u8::from(p.proxy_tcp).to_string()), ("PROCWEAVER_BLOCK_IPV6", u8::from(p.block_ipv6).to_string()),
         ("PROCWEAVER_BLOCK_UDP", u8::from(p.block_udp).to_string()), ("PROCWEAVER_PROXY_UDP", u8::from(p.proxy_udp).to_string()),
         ("PROCWEAVER_PROXY_SUBPROCESSES", u8::from(p.proxy_subprocesses).to_string()), ("PROCWEAVER_BYPASS_LAN", u8::from(p.bypass_lan).to_string()),
-        ("PROCWEAVER_DNS_MODE", effective_dns_mode(port, p).into()), ("PROCWEAVER_REMOTE_DNS_REQUIRED", u8::from(remote_dns_required(port)).to_string()),
-        ("PROCWEAVER_PORT_FILTER_MODE", p.port_filter_mode.clone()),
-        ("PROCWEAVER_CUSTOM_PORTS", p.custom_ports.clone()), ("PROCWEAVER_TARGET_FILTER_MODE", p.target_filter_mode.clone()),
-        ("PROCWEAVER_TARGET_RULES", p.target_rules.join(","))] { set(key, value); }
+        ("PROCWEAVER_DNS_MODE", dns_mode.as_str().into()),
+        ("PROCWEAVER_REMOTE_DNS_REQUIRED", u8::from(server_filters && dns_mode != Mode::SystemNative).to_string()),
+        ("PROCWEAVER_CORE_LISTENER", u8::from(server_filters).to_string()),
+        ("PROCWEAVER_SCOPED_DNS", u8::from(scoped_dns).to_string()),
+        ("PROCWEAVER_NATIVE_DNS_SERVERS", native_servers),
+        ("PROCWEAVER_PORT_FILTER_MODE", if server_filters { "all".into() } else { p.port_filter_mode.clone() }),
+        ("PROCWEAVER_CUSTOM_PORTS", if server_filters { String::new() } else { p.custom_ports.clone() }),
+        ("PROCWEAVER_TARGET_FILTER_MODE", if server_filters { "all".into() } else { p.target_filter_mode.clone() }),
+        ("PROCWEAVER_TARGET_RULES", if server_filters { String::new() } else { p.target_rules.join(",") })] { set(key, value); }
+    if let Some(act) = action {
+        set("PROCWEAVER_ACTION", act.to_ascii_uppercase());
+    }
+    if session.is_some() {
+        set("PROCWEAVER_POLICY_RESOLVED", "1".into());
+    }
     let mixed_port = if crate::storage::is_initialized() {
         crate::commands::settings::get_general_settings().map(|s| s.mixed_port).unwrap_or(7890)
     } else {
@@ -252,34 +357,43 @@ fn hook_environment(port: u16, dns: u16, policy: Option<&crate::routing_override
         .into_iter().map(|a| a.port().to_string()).collect::<Vec<_>>().join(",");
     set("PROCWEAVER_SYSTEM_PROXY_PORTS", managed_ports);
 
-    if let Ok(config) = crate::routing_overrides::read() {
+    if let Some(config) = (crate::function_mode::core_features_enabled() && session.is_none_or(|policy| !policy.external))
+        .then(crate::routing_overrides::read).transpose()? {
+        let config = config.effective();
         let mut override_rules = Vec::new();
-        for r in &config.process_rules {
-            if !r.enabled { continue; }
-            let name = std::path::Path::new(&r.match_value).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| r.match_value.clone());
-            let rule_act = match r.action.as_str() {
-                "direct" => "DIRECT".to_string(),
-                "reject" => "REJECT".to_string(),
-                "proxy" => {
-                    if let Some(target) = &r.target {
-                        config.bundles.iter().find(|b| b.main_target.as_ref() == Some(target)).map(|b| b.port.to_string()).unwrap_or_else(|| mixed_port.to_string())
-                    } else {
-                        mixed_port.to_string()
+        // 第一优先级：收集明确规则（path 类型先行，name 类型随后，附带显式 path:/name: 前缀防止后缀与路径碰撞）
+        if config.process_enabled {
+            for kind in ["path", "name"] {
+                for r in config.process_rules.iter().filter(|r| r.enabled && r.match_kind == kind) {
+                    if crate::routing_overrides::bundles::owner(&r.id, &config.bundles).is_some_and(|b| !b.enabled) {
+                        continue;
                     }
+                    let rule_act = match r.action.as_str() {
+                        "direct" => "DIRECT".to_string(),
+                        "reject" => "REJECT".to_string(),
+                        _ if r.target.as_ref().is_some_and(|t| t.name.eq_ignore_ascii_case("DIRECT")) => "DIRECT".to_string(),
+                        _ => process_rule_port(&config, r).ok_or("进程规则入口未分配")?.to_string(),
+                    };
+                    override_rules.push(format!("{kind}:{}={rule_act}", r.match_value.trim().to_ascii_lowercase()));
                 }
-                _ => mixed_port.to_string(),
-            };
-            override_rules.push(format!("{name}={rule_act}"));
+            }
         }
-        for b in &config.bundles {
-            if !b.enabled || b.port == 0 { continue; }
-            let name = std::path::Path::new(&b.main_exe).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| b.main_exe.clone());
-            override_rules.push(format!("{name}={}", b.port));
+        if config.bundles_enabled {
+            for b in &config.bundles {
+                if !b.enabled || b.port == 0 { continue; }
+                let main_path = b.main_exe.trim();
+                if std::path::Path::new(main_path).is_absolute() {
+                    override_rules.push(format!("path:{}={}", main_path.to_ascii_lowercase(), b.port));
+                }
+                let name = std::path::Path::new(main_path).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_else(|| main_path.to_ascii_lowercase());
+                override_rules.push(format!("name:{name}={}", b.port));
+            }
         }
         set("PROCWEAVER_OVERRIDE_RULES", override_rules.join(";"));
     }
-    if crate::function_mode::core_features_enabled() && !crate::external_proxy::routes().iter().any(|b| b.port == port) {
-        set("PROCWEAVER_HOOK_CONTROL", control::create(port)?);
+    let reject = action == Some("REJECT");
+    if port != 0 || reject {
+        set("PROCWEAVER_HOOK_CONTROL", control::create(port, session, reject)?);
         set("PROCWEAVER_HOOK_HOST_PID", std::process::id().to_string());
     }
     if native_proxy {
@@ -289,16 +403,34 @@ fn hook_environment(port: u16, dns: u16, policy: Option<&crate::routing_override
     Ok(values.into_values().collect())
 }
 
-fn remote_dns_required(port: u16) -> bool {
-    !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
+#[cfg(windows)]
+fn uses_core_listener(port: u16) -> bool {
+    port != 0 && !crate::edition::PROCESS && crate::function_mode::core_features_enabled()
         && !crate::external_proxy::routes().iter().any(|route| route.port == port)
 }
 
-fn effective_dns_mode(port: u16, policy: &crate::routing_overrides::model::BundlePolicy) -> &str {
-    // Full-edition names are tokens for the bound outlet, never public DNS queries.
-    // Keep the independent process product's explicit DNS choice unchanged.
-    if remote_dns_required(port) { "fake_ip" }
-    else { &policy.dns_mode }
+#[cfg(windows)]
+fn effective_dns_mode(
+    core_listener: bool, scoped: bool, selected: crate::capture::suite_dns::Mode,
+) -> crate::capture::suite_dns::Mode {
+    use crate::capture::suite_dns::Mode;
+    // Standalone process rules have no suite resolver. Keep their existing protected tokens.
+    if core_listener && !scoped && selected == Mode::SafePure { Mode::FakeIp } else { selected }
+}
+
+#[cfg(windows)]
+fn scoped_dns_inlet(port: u16, mode: crate::capture::suite_dns::Mode) -> bool {
+    if !crate::storage::is_initialized() { return false; }
+    let path = crate::storage::data_dir().join("core_data/config.yaml");
+    let Ok(raw) = std::fs::read_to_string(path) else { return false; };
+    let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&raw) else { return false; };
+    let rule = yaml["listeners"].as_sequence().into_iter().flatten().find_map(|listener| {
+        (listener["port"].as_u64() == Some(u64::from(port)) && listener["listen"].as_str() == Some("127.0.0.1"))
+            .then(|| listener["rule"].as_str()).flatten()
+    });
+    rule.is_some_and(|rule| yaml[crate::routing_overrides::bundles::SANDBOX_DNS].as_sequence().into_iter()
+        .flatten().any(|scope| scope["mode"].as_str() == Some(mode.as_str())
+            && scope["rules"].as_sequence().into_iter().flatten().any(|name| name.as_str() == Some(rule))))
 }
 
 #[cfg(windows)]
@@ -314,11 +446,8 @@ fn launch_with_remote_thread_fallback(
     exe: &Path,
     args: &[String],
     working_dir: Option<&Path>,
-    bundle_port: u16,
-    dns_port: u16,
     dll_path: &Path,
-    policy: Option<&crate::routing_overrides::model::BundlePolicy>,
-    environment: &mut Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<u32, String> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
@@ -370,22 +499,6 @@ fn launch_with_remote_thread_fallback(
     command.args(args);
     command.creation_flags(CREATE_SUSPENDED);
     command.env_clear().envs(environment.iter().map(|(k, v)| (k, v)));
-    command.env("PROCWEAVER_BUNDLE_PORT", bundle_port.to_string());
-    command.env("PROCWEAVER_DNS_PORT", dns_port.to_string());
-
-    let default_policy = crate::routing_overrides::model::BundlePolicy::default();
-    let pol = policy.unwrap_or(&default_policy);
-    command.env("PROCWEAVER_PROXY_TCP", if pol.proxy_tcp { "1" } else { "0" });
-    command.env("PROCWEAVER_BLOCK_IPV6", if pol.block_ipv6 { "1" } else { "0" });
-    command.env("PROCWEAVER_BLOCK_UDP", if pol.block_udp { "1" } else { "0" });
-    command.env("PROCWEAVER_PROXY_UDP", if pol.proxy_udp { "1" } else { "0" });
-    command.env("PROCWEAVER_PROXY_SUBPROCESSES", if pol.proxy_subprocesses { "1" } else { "0" });
-    command.env("PROCWEAVER_BYPASS_LAN", if pol.bypass_lan { "1" } else { "0" });
-    command.env("PROCWEAVER_DNS_MODE", effective_dns_mode(bundle_port, pol));
-    command.env("PROCWEAVER_PORT_FILTER_MODE", &pol.port_filter_mode);
-    command.env("PROCWEAVER_CUSTOM_PORTS", &pol.custom_ports);
-    command.env("PROCWEAVER_TARGET_FILTER_MODE", &pol.target_filter_mode);
-    command.env("PROCWEAVER_TARGET_RULES", pol.target_rules.join(","));
 
     if let Some(dir) = working_dir {
         command.current_dir(dir);
@@ -530,13 +643,16 @@ pub fn launch_with_hook(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn business_dns_preserves_names_without_public_resolution() {
-        for mode in ["safe_pure", "system_native", "fake_ip"] {
-            let policy = crate::routing_overrides::model::BundlePolicy { dns_mode: mode.into(), ..Default::default() };
-            let expected = if !crate::edition::PROCESS && crate::function_mode::core_features_enabled() { "fake_ip" } else { mode };
-            assert_eq!(effective_dns_mode(34998, &policy), expected);
+        use crate::capture::suite_dns::Mode;
+        for mode in [Mode::SafePure, Mode::FakeIp, Mode::SystemNative] {
+            assert_eq!(effective_dns_mode(true, true, mode), mode);
+            assert_eq!(effective_dns_mode(false, false, mode), mode);
         }
+        assert_eq!(effective_dns_mode(true, false, Mode::SafePure), Mode::FakeIp);
+        assert_eq!(effective_dns_mode(true, false, Mode::SystemNative), Mode::SystemNative);
     }
 
     #[test]
@@ -641,7 +757,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let reader = std::thread::spawn(move || { for line in std::io::BufReader::new(stdout).lines() { if tx.send(line.unwrap()).is_err() { break; } } });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "blocked");
-        control::retain_ports(&[]);
+        control::stop();
         child.0.stdin.as_mut().unwrap().write_all(b"continue\n").unwrap();
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "native");
         assert!(child.0.wait().unwrap().success());

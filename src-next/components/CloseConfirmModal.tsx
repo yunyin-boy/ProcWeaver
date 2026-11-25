@@ -110,12 +110,15 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[var(--z-modal,9999)] bg-black/30 dark:bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-120 font-sans select-none"
+      className="workbench-dialog-backdrop fixed inset-0 z-[var(--z-modal,9999)] flex items-center justify-center p-4 font-sans select-none"
       onClick={handleClose}
     >
       <div
-        className="w-full max-w-[420px] bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col p-5 space-y-4 animate-in zoom-in-95 duration-120 text-[var(--text-primary)]"
+        className="workbench-dialog flex max-h-[calc(100dvh-2rem)] w-full max-w-[420px] flex-col space-y-4 overflow-auto p-5 text-[var(--text-primary)]"
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="关闭 ProcWeaver"
       >
         {/* 顶部标题栏与关闭叉号 */}
         <div className="flex items-start justify-between">
@@ -137,6 +140,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({
           <button
             type="button"
             onClick={handleClose}
+              aria-label="关闭对话框"
             className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-bg-hover)] transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

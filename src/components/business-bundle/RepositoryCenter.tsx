@@ -8,7 +8,6 @@ import { bundleProcesses } from "../../utils/bundlePlatform";
 
 interface Props {
   state: RepositorySnapshot;
-  defaultId: string;
   instances: BundleLocalInstance[];
   onRefresh(id?: string): void;
   onReload(): void;
@@ -270,7 +269,6 @@ export function RepositoryCenter(props: Props) {
         open={manager}
         onClose={() => setManager(false)}
         repositories={state.repositories}
-        defaultId={props.defaultId}
         error={state.error}
         onSave={props.onSave}
         onToggle={props.onToggle}

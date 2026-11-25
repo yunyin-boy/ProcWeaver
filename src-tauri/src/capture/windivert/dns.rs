@@ -36,6 +36,18 @@ impl Question {
     pub fn matches_reply(&self, message: &[u8]) -> bool { question(message, true).as_ref() == Some(self) }
 }
 
+/// Answer an already parsed IN AAAA query locally, echoing the client's wire question.
+pub(super) fn blocked_ipv6_reply(query: &[u8], question: &Question) -> Option<Vec<u8>> {
+    if question.record_type != 28 || question.class != 1 {
+        return None;
+    }
+    let mut reply = crate::external_proxy::dns::failure(query, 0);
+    let wire_question = query.get(12..reply.len())?;
+    // Preserve the original case for resolvers that randomize QNAME letters.
+    reply.get_mut(12..)?.copy_from_slice(wire_question);
+    Some(reply)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +68,29 @@ mod tests {
         let compressed = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\xc0\x0c\x00\x01\x00\x01";
         assert!(Question::parse_query(compressed).is_none());
         for length in 0..compressed.len() { assert!(Question::parse_query(&compressed[..length]).is_none()); }
+    }
+
+    #[test]
+    fn blocked_ipv6_reply_returns_empty_noerror_for_aaaa() {
+        let question_wire = b"\x02pW\x07InVaLiD\x00\x00\x1c\x00\x01";
+        let mut query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x01".to_vec();
+        query.extend_from_slice(question_wire);
+        query.extend_from_slice(b"\x00\x00\x29\x04\xd0\x00\x00\x00\x00\x00\x00");
+        let question = Question::parse_query(&query).unwrap();
+        let reply = blocked_ipv6_reply(&query, &question).unwrap();
+
+        assert!(question.matches_reply(&reply));
+        assert_eq!(&reply[..12], b"\x12\x34\x81\x80\x00\x01\x00\x00\x00\x00\x00\x00");
+        assert_eq!(&reply[12..], question_wire);
+    }
+
+    #[test]
+    fn blocked_ipv6_reply_preserves_other_types_and_classes() {
+        for tail in [b"\x00\x01\x00\x01", b"\x00\x41\x00\x01", b"\x00\x1c\x00\x03"] {
+            let mut query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x02pw\x07invalid\x00".to_vec();
+            query.extend_from_slice(tail);
+            let question = Question::parse_query(&query).unwrap();
+            assert!(blocked_ipv6_reply(&query, &question).is_none());
+        }
     }
 }

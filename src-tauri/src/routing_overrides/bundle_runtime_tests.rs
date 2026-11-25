@@ -288,7 +288,7 @@ try {{
         // Pausing preserves stored definitions, but withdraws all bundle inlets.
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenEventW, WaitForSingleObject}};
-        let lease_name=crate::capture::user_mode::control::create(ports[0]).unwrap();
+        let lease_name=crate::capture::user_mode::control::create(ports[0], None, false).unwrap();
         let wide: Vec<u16>=std::ffi::OsStr::new(&lease_name).encode_wide().chain(Some(0)).collect();
         let observed_lease=unsafe { OpenEventW(0x00100000, 0, wide.as_ptr()) };
         assert!(!observed_lease.is_null());

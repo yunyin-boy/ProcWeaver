@@ -11,7 +11,18 @@ const FIRST_PORT: u16 = 45053;
 const PORT_COUNT: u16 = 100;
 
 #[derive(Serialize, Deserialize)]
-struct Plan { movable: bool }
+#[serde(rename_all = "camelCase")]
+struct Plan {
+    movable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bundle_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    bundle_only: bool,
+}
+
+pub(crate) fn bundle_scope(yaml: &Value) -> (Option<&str>, bool) {
+    (yaml[KEY]["bundleDomain"].as_str(), yaml[KEY]["bundleOnly"].as_bool() == Some(true))
+}
 
 pub fn validate_guard(settings: &DnsSettings, guard: bool) -> Result<(), String> {
     if !guard { return Ok(()); }
@@ -46,33 +57,36 @@ fn occupied(yaml: &Value, port: u16) -> bool {
             crate::capture::contains_port(&l["port"], port) || crate::capture::contains_port(&l["ports"], port)))
 }
 
-pub fn compose(raw: &str, config: &crate::routing_overrides::model::Overrides) -> Result<String, String> {
-    let settings = super::dns::get_dns_settings()?;
+pub fn compose(raw: &str, config: &crate::routing_overrides::model::Overrides, settings: &DnsSettings, bundle_domain: Option<&str>, allow_lan: bool) -> Result<String, String> {
     let guard = super::dns_adapter::requires_port_53_guard()?;
-    compose_with(raw, config, &settings, guard, last_port(), super::settings::get_general_settings()?.allow_lan)
+    compose_with(raw, config, settings, guard, last_port(), allow_lan, bundle_domain)
 }
 
-fn compose_with(raw: &str, config: &crate::routing_overrides::model::Overrides, settings: &DnsSettings, guard: bool, last: Option<u16>, allow_lan: bool) -> Result<String, String> {
+fn compose_with(raw: &str, config: &crate::routing_overrides::model::Overrides, settings: &DnsSettings, guard: bool, last: Option<u16>, allow_lan: bool, bundle_domain: Option<&str>) -> Result<String, String> {
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "DNS 运行配置无法解析")?;
     if yaml.get(KEY).is_some() { return Err(format!("订阅包含保留字段 {KEY}")); }
     validate_guard(settings, guard)?;
-    let Some(mode) = settings.listener_mode else {
+    let bundle_dns = bundle_domain.is_some();
+    let has_listener = yaml["dns"]["listen"].as_str().is_some_and(|s| !s.trim().is_empty());
+    let mode = settings.listener_mode.or_else(|| (bundle_dns && !has_listener && !guard).then_some(DnsListenerMode::Auto));
+    if mode.is_none() {
         if guard && (yaml["dns"]["enable"].as_bool() != Some(true)
             || yaml["dns"]["listen"].as_str() != Some("127.0.0.1:53")) {
             return Err("DNS 护航仍在使用 127.0.0.1:53，请先关闭护航再修改监听".into());
         }
-        return Ok(raw.into());
-    };
+        if !bundle_dns { return Ok(raw.into()); }
+    }
     let windivert_guard = super::dns_adapter::is_windivert_dns_guard_active();
     let capture = (config.dns_enabled && config.dns_rules.iter().any(|r| r.enabled)) || windivert_guard;
-    if mode == DnsListenerMode::Off && capture {
+    if mode == Some(DnsListenerMode::Off) && capture {
         return Err("DNS 规则接管需要本地监听，请选择自动或固定模式，或先关闭 DNS 接管规则".into());
     }
     if yaml["dns"].is_null() { yaml["dns"] = Value::Mapping(Default::default()); }
     let existing = yaml["dns"]["listen"].as_str().filter(|s| !s.trim().is_empty())
         .map(super::dns_runtime::parse_listen).transpose()?;
     let movable = match mode {
-        DnsListenerMode::Fixed => {
+        None => false,
+        Some(DnsListenerMode::Fixed) => {
             let mut address = super::dns_runtime::parse_listen(&settings.listen)?;
             if !allow_lan && address.ip().is_unspecified() {
                 address.set_ip(if address.is_ipv4() { std::net::Ipv4Addr::LOCALHOST.into() } else { std::net::Ipv6Addr::LOCALHOST.into() });
@@ -81,23 +95,25 @@ fn compose_with(raw: &str, config: &crate::routing_overrides::model::Overrides, 
             yaml["dns"]["listen"] = address.to_string().into();
             false
         },
-        DnsListenerMode::Off => { yaml["dns"]["listen"] = "".into(); false },
-        DnsListenerMode::Auto if guard => {
+        Some(DnsListenerMode::Off) => { yaml["dns"]["listen"] = "".into(); false },
+        Some(DnsListenerMode::Auto) if guard => {
             if yaml["dns"]["enable"].as_bool() != Some(true) { return Err("DNS 护航需要启用核心 DNS，请先关闭护航或启用 DNS".into()); }
             yaml["dns"]["listen"] = "127.0.0.1:53".into(); false
         },
         // Explicit port 53 and LAN DNS endpoints may have external clients; do not move them.
-        DnsListenerMode::Auto if existing.is_some_and(|a| a.port() == 53 || !a.ip().is_loopback()) => false,
-        DnsListenerMode::Auto if !capture => { yaml["dns"]["listen"] = "".into(); false },
-        DnsListenerMode::Auto => {
+        Some(DnsListenerMode::Auto) if existing.is_some_and(|a| a.port() == 53 || !a.ip().is_loopback()) => false,
+        Some(DnsListenerMode::Auto) if !capture && !bundle_dns => { yaml["dns"]["listen"] = "".into(); false },
+        Some(DnsListenerMode::Auto) => {
             let port = last.into_iter().chain(FIRST_PORT..FIRST_PORT + PORT_COUNT).find(|port|
                 !occupied(&yaml, *port) && !config.bundles.iter().any(|b| b.port == *port)
-                && !(0..config.process_rules.len()).any(|i| 32000usize + i == *port as usize))
+                && !config.process_ports.values().any(|p| p == port))
                 .ok_or("自动 DNS 候选端口均与运行配置冲突，请配置固定端口")?;
             yaml["dns"]["listen"] = format!("127.0.0.1:{port}").into(); true
         },
     };
-    yaml[KEY] = serde_yaml::to_value(Plan { movable }).map_err(|_| "DNS 监听策略无法编码")?;
+    let bundle_only = movable && bundle_dns && !capture;
+    yaml[KEY] = serde_yaml::to_value(Plan { movable, bundle_domain: bundle_domain.map(str::to_owned), bundle_only })
+        .map_err(|_| "DNS 监听策略无法编码")?;
     serde_yaml::to_string(&yaml).map_err(|_| "DNS 监听策略无法生成".into())
 }
 

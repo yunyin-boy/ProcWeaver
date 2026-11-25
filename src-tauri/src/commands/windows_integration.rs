@@ -8,7 +8,7 @@ pub struct Link {
     pub icon: String, pub icon_index: i32, pub description: String,
 }
 #[cfg(windows)]
-pub(super) fn com<T>(action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+pub(crate) fn com<T>(action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     use windows::Win32::System::Com::*;
     let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
     // A caller may already own an STA. ShellLink also works in that apartment.

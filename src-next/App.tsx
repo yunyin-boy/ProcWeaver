@@ -3,7 +3,7 @@
 // 规范溯源: tauri-desktop-layout-typography / ui-surface-elevation-hierarchy
 // ==========================================================================
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { DesktopLayout, NavTab } from "./shell/DesktopLayout";
 import { OverviewView } from "./views/overview/OverviewView";
 import { ProxiesView } from "./views/proxies/ProxiesView";
@@ -16,6 +16,8 @@ import { SettingsView } from "./views/settings/SettingsView";
 import { MiniWidgetView } from "./views/mini/MiniWidgetView";
 import { TrayContextMenuView } from "./views/tray/TrayContextMenuView";
 import { CloseConfirmModal } from "./components/CloseConfirmModal";
+import { ConfirmModal } from "./primitives/ConfirmModal";
+import { Modal } from "./primitives/Modal";
 import { CommandPalette } from "./shell/CommandPalette";
 import { CoreStatusSnapshot } from "./types/core";
 import { BandwidthSnapshot } from "./types/telemetry";
@@ -26,17 +28,106 @@ import { isTauriEnvironment, invokeCommand } from "./services/client";
 import { syncRoutingToCore } from "./services/processRoutingService";
 import { getGeneralSettings } from "./services/settingsService";
 import { syncTrayMenu, syncTrayTraffic, refreshTrayWatchdog } from "./services/trayService";
+import { notifyProfileChanged, PROFILE_CHANGED_EVENT } from "./services/profileService";
+import { saveGuideProgress, type GuideMethod, type GuideProgress } from "./services/firstUseService";
+import { FirstUseGate, FirstUseNoticeContent } from "./views/first-use/FirstUseNotice";
+import { FirstUseGuide } from "./views/first-use/FirstUseGuide";
+
+type Theme = "light" | "dark" | "system";
 
 export const App: React.FC = () => {
-  // 独立托盘微型视口路由拦截 (window=tray-menu)
-  const isTrayMenuWindow = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("window") === "tray-menu";
-  if (isTrayMenuWindow) {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const saved = localStorage.getItem("procweaver_theme");
+    return saved === "dark" || saved === "system" ? saved : "light";
+  });
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const dark = theme === "dark" || (theme === "system" && media.matches);
+      document.documentElement.classList.toggle("dark", dark);
+      document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    };
+    apply();
+    localStorage.setItem("procweaver_theme", theme);
+    if (theme !== "system") return;
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [theme]);
+
+  if (new URLSearchParams(window.location.search).get("window") === "tray-menu") {
     return <TrayContextMenuView />;
   }
+
+  return (
+    <FirstUseGate>
+      {(guide, available) => <DesktopApp initialGuide={guide} firstUseAvailable={available} theme={theme}
+        onToggleTheme={() => setTheme((previous) => previous === "dark" ? "light" : previous === "light" ? "system" : "dark")} />}
+    </FirstUseGate>
+  );
+};
+
+interface DesktopAppProps {
+  initialGuide: GuideProgress;
+  firstUseAvailable: boolean;
+  theme: Theme;
+  onToggleTheme: () => void;
+}
+
+interface HotResetPrompt {
+  ticket: string;
+  bundles: string[];
+  connectionCount: number;
+}
+
+function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: DesktopAppProps) {
   const [currentTab, setCurrentTab] = useState<NavTab>("overview");
   const [notice, setNotice] = useState<string | null>(null);
+  const [captureWarning, setCaptureWarning] = useState<string | null>(null);
+  const [hotResetPrompt, setHotResetPrompt] = useState<HotResetPrompt | null>(null);
+  const [refreshingConnections, setRefreshingConnections] = useState(false);
   const [isCommandOpen, setIsCommandOpen] = useState(false);
+  const [guide, setGuide] = useState(initialGuide);
+  const [savingGuide, setSavingGuide] = useState(false);
+  const [isFirstUseNoticeOpen, setIsFirstUseNoticeOpen] = useState(false);
+  const guideSaveInFlight = useRef(false);
   const { formFactor, setFormFactor, isPinnedTop, togglePinTop } = useWindowFormFactor();
+
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const readWarning = async () => {
+      if (disposed) return;
+      try {
+        const message = await invokeCommand<string | null>("take_bundle_capture_warning");
+        if (message && !disposed) {
+          setCurrentTab("process");
+          setCaptureWarning(message);
+        }
+      } catch (error) {
+        console.warn("[App] 读取启动兼容性提示失败", error);
+      }
+    };
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("procweaver-bundle-capture-warning", readWarning))
+      .then((remove) => {
+        if (disposed) remove();
+        else {
+          unlisten = remove;
+          void readWarning();
+        }
+      })
+      .catch((error) => console.warn("[App] 订阅启动兼容性提示失败", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (captureWarning && formFactor === "mini") void setFormFactor("standard");
+  }, [captureWarning, formFactor, setFormFactor]);
 
   // 全局快捷键监听: Ctrl + K (或 Cmd + K) 呼出纯键盘命令中心
   useEffect(() => {
@@ -50,20 +141,77 @@ export const App: React.FC = () => {
     return () => window.removeEventListener("keydown", handleGlobalKey);
   }, []);
 
-  const showNotice = (msg: string) => {
+  const showNotice = useCallback((msg: string) => {
     setNotice(msg);
     setTimeout(() => {
       setNotice((prev) => (prev === msg ? null : prev));
     }, 2500);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen<{ prompt: HotResetPrompt | null; warning: string | null }>(
+        "procweaver-bundle-hot-reset", ({ payload }) => {
+          if (disposed) return;
+          if (payload.warning) showNotice(`旧连接接管需注意，${payload.warning}`);
+          if (payload.prompt) setHotResetPrompt(payload.prompt);
+        },
+      ))
+      .then((remove) => {
+        if (disposed) remove();
+        else unlisten = remove;
+      })
+      .catch((error) => console.warn("[App] 订阅旧连接接管提示失败", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [showNotice]);
+
+  const confirmHotReset = async (refresh: boolean) => {
+    if (!hotResetPrompt || refreshingConnections) return;
+    const { ticket } = hotResetPrompt;
+    if (refresh) setRefreshingConnections(true);
+    else setHotResetPrompt(null);
+    try {
+      const result = await invokeCommand<{ refreshed: number; failed: number }>(
+        "confirm_bundle_hot_reset", { ticket, refresh },
+      );
+      if (refresh) {
+        showNotice(result.failed
+          ? `已刷新 ${result.refreshed} 条旧连接，${result.failed} 条刷新失败`
+          : result.refreshed ? `已刷新 ${result.refreshed} 条旧连接` : "待刷新连接已结束");
+      }
+    } catch (error) {
+      showNotice(`刷新旧连接失败，${String(error)}`);
+    } finally {
+      setHotResetPrompt((current) => current?.ticket === ticket ? null : current);
+      setRefreshingConnections(false);
+    }
   };
 
-  const [theme, setTheme] = useState<"light" | "dark" | "system">(() => {
-    const saved = localStorage.getItem("procweaver_theme");
-    if (saved === "light" || saved === "dark" || saved === "system") {
-      return saved as "light" | "dark" | "system";
+  const updateGuide = async (next: GuideProgress, tab?: NavTab) => {
+    if (guideSaveInFlight.current) return;
+    guideSaveInFlight.current = true;
+    setSavingGuide(true);
+    try {
+      if (isTauriEnvironment()) await saveGuideProgress(next);
+      setGuide(next);
+      if (tab) setCurrentTab(tab);
+    } catch (error) {
+      showNotice("保存引导进度失败，" + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      guideSaveInFlight.current = false;
+      setSavingGuide(false);
     }
-    return "light";
-  });
+  };
+
+  const chooseGuideMethod = (method: GuideMethod | null) => {
+    void updateGuide({ ...guide, method }, method === "system" ? "overview" : method === "process" ? "process" : undefined);
+  };
 
   const [status, setStatus] = useState<CoreStatusSnapshot>({
     running: false,
@@ -76,41 +224,11 @@ export const App: React.FC = () => {
   });
 
   const [bandwidth, setBandwidth] = useState<BandwidthSnapshot>({
-    uploadRateBytes: 240000,
-    downloadRateBytes: 1850000,
-    uploadTotalBytes: 45210984,
-    downloadTotalBytes: 894312093,
+    uploadRateBytes: 0,
+    downloadRateBytes: 0,
+    uploadTotalBytes: 0,
+    downloadTotalBytes: 0,
   });
-
-  // 主题监听与应用
-  useEffect(() => {
-    const applyTheme = (t: "light" | "dark" | "system") => {
-      let isDark = false;
-      if (t === "dark") {
-        isDark = true;
-      } else if (t === "system") {
-        isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      }
-
-      if (isDark) {
-        document.documentElement.classList.add("dark");
-        document.documentElement.style.colorScheme = "dark";
-      } else {
-        document.documentElement.classList.remove("dark");
-        document.documentElement.style.colorScheme = "light";
-      }
-      localStorage.setItem("procweaver_theme", t);
-    };
-
-    applyTheme(theme);
-
-    if (theme === "system") {
-      const media = window.matchMedia("(prefers-color-scheme: dark)");
-      const listener = () => applyTheme("system");
-      media.addEventListener("change", listener);
-      return () => media.removeEventListener("change", listener);
-    }
-  }, [theme]);
 
   // 初始化获取核心状态并订阅遥测数据流，保底自启核心网络服务
   useEffect(() => {
@@ -286,6 +404,25 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) => listen(PROFILE_CHANGED_EVENT, () => {
+        if (!disposed) notifyProfileChanged();
+      }))
+      .then((remove) => {
+        if (disposed) remove();
+        else unlisten = remove;
+      })
+      .catch((error) => console.warn("[App] 订阅刷新监听失败", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // 核心启停处理
   const handleToggleCore = async (start: boolean) => {
     try {
@@ -339,11 +476,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // 循环切换主题: dark -> light -> system
-  const handleToggleTheme = () => {
-    setTheme((prev) => (prev === "dark" ? "light" : prev === "light" ? "system" : "dark"));
-  };
-
   return (
     <div className="relative h-screen w-screen overflow-hidden">
       <DesktopLayout
@@ -357,7 +489,7 @@ export const App: React.FC = () => {
         memoryUsageBytes={status.memoryUsageBytes}
         bandwidth={bandwidth}
         theme={theme}
-        onToggleTheme={handleToggleTheme}
+        onToggleTheme={onToggleTheme}
         formFactor={formFactor}
         onSetFormFactor={setFormFactor}
         isPinnedTop={isPinnedTop}
@@ -372,6 +504,8 @@ export const App: React.FC = () => {
             status={status}
             bandwidth={bandwidth}
             onSetFormFactor={setFormFactor}
+            onChangeMode={handleChangeMode}
+            onToggleSystemProxy={handleToggleSystemProxy}
             onShowNotice={showNotice}
             onNavigateTab={(tab) => {
               setCurrentTab(tab as NavTab);
@@ -379,8 +513,13 @@ export const App: React.FC = () => {
             }}
           />
         ) : (
-          <div className="relative h-full w-full">
-            <div className={currentTab === "overview" ? "h-full w-full" : "hidden"}>
+          <div className={currentTab === "overview" ? "relative flex flex-1 flex-col" : "relative h-full w-full"}>
+            {!guide.dismissed && (
+              <FirstUseGuide tab={currentTab} status={status} method={guide.method} saving={savingGuide}
+                onChoose={chooseGuideMethod} onNavigate={setCurrentTab}
+                onDismiss={() => void updateGuide({ ...guide, dismissed: true })} />
+            )}
+            <div className={currentTab === "overview" ? "flex flex-1 flex-col" : "hidden"}>
               <OverviewView
                 status={status}
                 bandwidth={bandwidth}
@@ -401,7 +540,11 @@ export const App: React.FC = () => {
             </div>
 
             <div className={currentTab === "process" ? "h-full w-full" : "hidden"}>
-              <ProcessRoutingView onShowNotice={showNotice} />
+              <ProcessRoutingView
+                onShowNotice={showNotice}
+                captureWarning={captureWarning}
+                onCaptureWarningChange={setCaptureWarning}
+              />
             </div>
 
             <div className={currentTab === "profiles" ? "h-full w-full" : "hidden"}>
@@ -414,7 +557,7 @@ export const App: React.FC = () => {
             </div>
 
             <div className={currentTab === "routing" ? "h-full w-full" : "hidden"}>
-              <RulesView onShowNotice={showNotice} />
+              <RulesView routingMode={status.mode} onSwitchToRule={() => handleChangeMode("rule")} onShowNotice={showNotice} />
             </div>
 
             <div className={currentTab === "connections" ? "h-full w-full" : "hidden"}>
@@ -423,18 +566,26 @@ export const App: React.FC = () => {
 
             <div className={currentTab === "logs" ? "h-full w-full" : "hidden"}>
               <LogsView
-                controllerPort={status.controllerPort || 9090}
+                controllerPort={status.controllerPort}
+                visible={currentTab === "logs"}
                 onShowNotice={showNotice}
               />
             </div>
 
             <div className={currentTab === "settings" ? "h-full w-full" : "hidden"}>
-              <SettingsView onShowNotice={showNotice} />
+              <SettingsView onShowNotice={showNotice}
+                onOpenGuide={firstUseAvailable ? () => void updateGuide({ ...guide, dismissed: false }, "overview") : undefined}
+                onOpenFirstUseNotice={firstUseAvailable ? () => setIsFirstUseNoticeOpen(true) : undefined} />
             </div>
           </div>
         )}
       </DesktopLayout>
 
+      {isFirstUseNoticeOpen && (
+        <Modal isOpen title="首次使用须知" wide onClose={() => setIsFirstUseNoticeOpen(false)}>
+          <FirstUseNoticeContent />
+        </Modal>
+      )}
       {/* 全局纯键盘命令浮层 (Top Layer，按 Ctrl+K 唤起) */}
       <CommandPalette
         isOpen={isCommandOpen}
@@ -442,26 +593,38 @@ export const App: React.FC = () => {
         onNavigateTab={(tab) => setCurrentTab(tab as NavTab)}
         onShowNotice={showNotice}
         currentTheme={theme}
-        onToggleTheme={handleToggleTheme}
+        onToggleTheme={onToggleTheme}
       />
 
       {/* 优雅关闭确认模态对话框 (响应点击关闭或系统事件) */}
       <CloseConfirmModal />
+      {hotResetPrompt && (
+        <ConfirmModal
+          isOpen
+          variant="primary"
+          title="刷新旧连接"
+          description={`「${hotResetPrompt.bundles.join("、")}」有 ${hotResetPrompt.connectionCount} 条可切换的 TCP 连接。新规则已生效，刷新会关闭这些连接，由应用自行重连。`}
+          confirmText="刷新旧连接"
+          cancelText="保留旧连接"
+          isLoading={refreshingConnections}
+          onConfirm={() => confirmHotReset(true)}
+          onCancel={() => confirmHotReset(false)}
+        />
+      )}
 
-      {/* 全局 Notice Toast 提示浮层 (Top Layer，居中发丝微高光，智能语义指示灯) */}
       {notice && (() => {
         const isError = notice.includes("失败") || notice.includes("错误") || notice.includes("异常") || notice.includes("拒绝");
         const isWarn = notice.includes("警告") || notice.includes("需注意");
         const dotColor = isError
-          ? "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.6)]"
+          ? "bg-[var(--workbench-danger)]"
           : isWarn
-          ? "bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]"
-          : "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]";
+          ? "bg-[var(--workbench-warning)]"
+          : "bg-[var(--workbench-positive)]";
 
         return (
-          <div className="fixed top-10 left-1/2 -translate-x-1/2 z-[9999] pointer-events-none animate-in fade-in slide-in-from-top-2 duration-150">
-            <div className="flex items-center gap-2 px-4 py-1.5 rounded-full glass-surface border border-[var(--glass-border)] shadow-xl text-[12px] font-medium text-[var(--text-primary)]">
-              <span className={`h-1.5 w-1.5 rounded-full ${dotColor} animate-pulse shrink-0`} />
+          <div role="status" className="pointer-events-none fixed left-1/2 top-12 z-[9999] w-max max-w-[calc(100%_-_1.5rem)] -translate-x-1/2">
+            <div className="workbench-dialog flex items-center gap-2 px-3 py-2 text-xs font-medium text-[var(--text-primary)]">
+              <span className={`size-1.5 shrink-0 rounded-full ${dotColor}`} aria-hidden="true" />
               <span>{notice}</span>
             </div>
           </div>

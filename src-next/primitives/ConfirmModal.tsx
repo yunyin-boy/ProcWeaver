@@ -4,7 +4,7 @@
 // 特性: 彻底替代原生 window.confirm，提供双层毛玻璃、1px微高光、键盘无障碍支持
 // ==========================================================================
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useId, useRef } from "react";
 
 export interface ConfirmModalProps {
   isOpen: boolean;
@@ -30,6 +30,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   onCancel,
 }) => {
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
+  const titleId = useId();
 
   // 键盘快捷键监听：ESC 退出，Enter 确认
   useEffect(() => {
@@ -90,23 +91,23 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/30 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150 select-none"
+      className="workbench-dialog-backdrop fixed inset-0 z-[100] flex items-center justify-center p-4 select-none"
       onClick={onCancel}
     >
       <div
-        className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 p-5 space-y-4 shadow-2xl text-left animate-in zoom-in-95 duration-150"
+        className="workbench-dialog relative max-h-[calc(100dvh-2rem)] w-full max-w-sm space-y-4 overflow-auto p-5 text-left"
         onClick={(e) => e.stopPropagation()}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
       >
-        {/* 顶部微高光发丝线 */}
-        <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent pointer-events-none" />
-
         {/* 头部：图标 + 标题 */}
         <div className="flex items-start gap-3">
-          <div className={`p-2 rounded-xl border shrink-0 ${variantStyles.iconBg}`}>
+          <div className={`p-2 rounded-lg shrink-0 ${variantStyles.iconBg}`}>
             {variantStyles.iconSvg}
           </div>
           <div className="min-w-0 flex-1 pt-0.5">
-            <h4 className="text-sm font-bold text-[var(--text-primary)] tracking-wide">
+            <h4 id={titleId} className="workbench-panel-title">
               {title}
             </h4>
             <div className="text-xs text-[var(--text-secondary)] mt-1.5 leading-relaxed break-words">
@@ -116,12 +117,12 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
         </div>
 
         {/* 底部按钮组 */}
-        <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[var(--glass-border-subtle)]">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
             disabled={isLoading}
-            className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 transition-all cursor-pointer"
+            className="workbench-action"
           >
             {cancelText}
           </button>

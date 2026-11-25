@@ -93,7 +93,7 @@ fn record_name_end(packet: &[u8], mut at: usize, names: &mut std::collections::B
     }
     Err("DNS 记录名称指针过深".into())
 }
-pub(super) fn failure(query: &[u8], code: u8) -> Vec<u8> {
+pub(crate) fn failure(query: &[u8], code: u8) -> Vec<u8> {
     if query.len() < 12 { return vec![]; }
     let mut result = query[..12].to_vec(); result[2] = 0x80 | (query[2] & 1); result[3] = 0x80 | code;
     result[4..12].fill(0);
@@ -125,7 +125,7 @@ fn udp_limit(query: &[u8], q: &Question) -> usize {
         u16::from_be_bytes([rest[3], rest[4]]).clamp(512, 4096) as usize
     } else { 512 }
 }
-pub(super) fn fit_udp(query: &[u8], mut response: Vec<u8>) -> Vec<u8> {
+pub(crate) fn fit_udp(query: &[u8], mut response: Vec<u8>) -> Vec<u8> {
     let Ok(q) = question(query) else { return failure(query, 1); };
     if response.len() > udp_limit(query, &q) {
         let code = response.get(3).copied().unwrap_or(2) & 15;

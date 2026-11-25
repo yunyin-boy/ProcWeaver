@@ -3,15 +3,17 @@
 // 对接指令: get_general_settings, save_general_settings, get_exclusions, save_exclusions, export_config_snapshot, restore_config_snapshot
 // ==========================================================================
 
+import { version as appVersion } from "../../package.json";
 import { invokeCommand, isTauriEnvironment } from "./client";
 import { GeneralSettings, DEFAULT_GENERAL_SETTINGS } from "../types/settings";
 
 const STORAGE_KEY = "procweaver_general_settings";
 
-export async function getGeneralSettings(): Promise<GeneralSettings> {
+export async function getGeneralSettings({ strict = false }: { strict?: boolean } = {}): Promise<GeneralSettings> {
   if (isTauriEnvironment()) {
     try {
       const raw = await invokeCommand<any>("get_general_settings");
+      if (strict && (!raw || typeof raw !== "object")) throw new Error("设置数据不可用");
       let bypassList: string[] = DEFAULT_GENERAL_SETTINGS.bypassList || [];
       try {
         const exclusions = await invokeCommand<any>("get_exclusions");
@@ -56,6 +58,7 @@ export async function getGeneralSettings(): Promise<GeneralSettings> {
         bypassList,
       };
     } catch (e) {
+      if (strict) throw e;
       console.warn("[settingsService] get_general_settings failed:", e);
     }
   }
@@ -132,7 +135,7 @@ export async function exportConfigSnapshot(): Promise<string> {
   // 浏览器仿真快照
   const mockSnapshot = {
     schemaVersion: 1,
-    appVersion: "2.3.4",
+    appVersion,
     platform: "windows",
     createdAt: Math.floor(Date.now() / 1000),
     files: {

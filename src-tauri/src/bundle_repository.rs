@@ -73,7 +73,14 @@ async fn fetch_file(url: reqwest::Url, max_bytes: usize, state: &CoreStateMutex)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 5 || !allowed_url(attempt.url()) { attempt.error("仓库重定向地址无效") } else { attempt.follow() }
         }));
-    if let Some(port) = proxy_port { builder = builder.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).map_err(|_| "本地代理地址无效")?); }
+    if let Some(port) = proxy_port {
+        // The default core selector rejects foreign traffic until an outlet is configured.
+        let has_outlet = crate::routing_overrides::current_source().0 != "default"
+            || !crate::local_nodes::read()?.nodes.is_empty();
+        if has_outlet {
+            builder = builder.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).map_err(|_| "本地代理地址无效")?);
+        }
+    }
     let client = builder.build().map_err(|_| "无法创建仓库网络连接")?;
     let response = client.get(url).header(reqwest::header::ACCEPT, "application/json").send().await.map_err(|_| "无法连接仓库或请求超时，请检查网络")?;
     read_body(response, max_bytes).await

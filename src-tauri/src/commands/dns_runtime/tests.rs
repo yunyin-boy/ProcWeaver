@@ -229,7 +229,7 @@ fn native_dns_startup_reload_and_conflict_are_verified() {
         // rollback. No injected application or adapter write is needed here.
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{OpenEventW, WaitForSingleObject}};
-        let lease = crate::capture::user_mode::control::create(34996).unwrap();
+        let lease = crate::capture::user_mode::control::create(34996, None, false).unwrap();
         let event_name: Vec<u16> = std::ffi::OsStr::new(&lease).encode_wide().chain(Some(0)).collect();
         let observed = unsafe { OpenEventW(0x00100000, 0, event_name.as_ptr()) };
         assert!(!observed.is_null());

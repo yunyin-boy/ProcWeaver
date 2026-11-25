@@ -249,6 +249,10 @@ async fn save_and_restart(mut settings: GeneralSettings, state: &super::process:
             }
         }
     }
+    #[cfg(windows)]
+    if previous.traffic_mode == crate::capture::user_mode::MODE && settings.traffic_mode != previous.traffic_mode {
+        crate::capture::user_mode::control::retain_core(&[], true);
+    }
     Ok(settings)
 }
 

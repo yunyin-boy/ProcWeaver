@@ -27,6 +27,7 @@ static STATS: Mutex<Stats> = Mutex::new(Stats {
     dns: 0,
     unknown: 0,
     failures: 0,
+    recent_connections: Vec::new(),
 });
 static ERROR: Mutex<Option<String>> = Mutex::new(None);
 #[derive(Serialize, Deserialize)]
@@ -158,6 +159,11 @@ fn confirm_blocking(plan: Plan, core_pid: u32) -> Result<(), String> {
             && session.plan.dns_port == plan.dns_port
             && session.plan.dns_domains == plan.dns_domains
             && session.plan.dns_all == plan.dns_all
+            && session.plan.owned_dns == plan.owned_dns
+            && session.plan.sandbox_dns == plan.sandbox_dns
+            && session.plan.dns_modes == plan.dns_modes
+            && session.plan.native_dns_servers == plan.native_dns_servers
+            && session.plan.block_ipv6_owners == plan.block_ipv6_owners
             && session.plan.mixed_port == plan.mixed_port
             && session.plan.managed_endpoints == plan.managed_endpoints
         {
@@ -191,7 +197,7 @@ fn confirm_blocking(plan: Plan, core_pid: u32) -> Result<(), String> {
             let mut pipe = helper::create_server(&name)?;
             let child = Elevated::launch(&own, &nonce)?;
             runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(15), pipe.connect())
+                tokio::time::timeout(Duration::from_secs(30), pipe.connect())
                     .await
                     .map_err(|_| "管理员辅助进程连接超时")?
                     .map_err(|_| "管理员辅助进程连接失败")?;
@@ -444,8 +450,7 @@ async fn serve(parent: u32, created: u64, nonce: &str) -> Result<(), String> {
                         plan.validate()?;
                         let core = core_identity.as_ref().ok_or("核心未绑定")?;
                         validate_core(&plan, core)?;
-                        let has_targets = !plan.targets.is_empty() || !plan.instances.is_empty();
-                        if engine.as_ref().ok_or("接管尚未启动")?.has_targets() != has_targets
+                        if !engine.as_ref().ok_or("接管尚未启动")?.matches_filter(&plan)
                         {
                             let previous = engine.take();
                             tokio::task::spawn_blocking(move || drop(previous))
@@ -482,6 +487,9 @@ async fn serve(parent: u32, created: u64, nonce: &str) -> Result<(), String> {
                             if Identity::inspect(core.pid).as_ref() != Some(core) {
                                 return Err("核心已退出".into());
                             }
+                        }
+                        if let Some(engine) = &engine {
+                            engine.refresh_relay_firewall()?;
                         }
                         Ok(engine.as_ref().map(Engine::stats).unwrap_or_default())
                     }

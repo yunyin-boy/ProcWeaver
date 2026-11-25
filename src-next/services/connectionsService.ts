@@ -1,21 +1,20 @@
-// ==========================================================================
-// ProcWeaver src-next 链接追踪服务层 (Connections Service)
-// 规范溯源: tauri-linear-raycast-ui / typography-dark-mono-optics
-// ==========================================================================
+import type { ConnectionItem, ConnectionsSnapshot } from "../types/connections";
+import { invokeCommand, isTauriEnvironment } from "./client";
 
-import {
-  ConnectionItem,
-  ConnectionsSnapshot,
-} from "../types/connections";
-import { isTauriEnvironment } from "./client";
+export const MAX_CLOSED_CONNECTIONS = 500;
+let history: ConnectionItem[] = [];
+let previousConnections = new Map<string, ConnectionItem>();
+let lastSample: { at: number; download: number; upload: number } | undefined;
+let requestQueue = Promise.resolve();
 
-// 历史连接缓冲池 (最大保留 500 条)
-const MAX_CLOSED_CONNECTIONS = 500;
-let CLOSED_CONNECTIONS_BUFFER: ConnectionItem[] = [];
-let PREV_CONNECTIONS_MAP = new Map<string, ConnectionItem>();
+// 读取与断开共用顺序，避免较早的快照覆盖已确认的断开。
+function enqueueConnectionRequest<T>(action: () => Promise<T>): Promise<T> {
+  const request = requestQueue.then(action);
+  requestQueue = request.then(() => undefined, () => undefined);
+  return request;
+}
 
-// 浏览器开发模式下的保真仿真数据池
-let MOCK_CONNECTIONS_POOL: ConnectionItem[] = [
+let mockConnections: ConnectionItem[] = [
   {
     id: "conn-ai-01",
     metadata: {
@@ -35,7 +34,7 @@ let MOCK_CONNECTIONS_POOL: ConnectionItem[] = [
     upload: 124500,
     download: 3892000,
     start: new Date(Date.now() - 420000).toISOString(),
-    chains: ["OpenAI 官方套件", "香港 01 | 极速专线 [BGP]"],
+    chains: ["香港 01 | 极速专线 [BGP]", "OpenAI 官方套件"],
     rule: "RULE-SET",
     rulePayload: "nb-ai",
     downloadSpeed: 142000,
@@ -60,7 +59,7 @@ let MOCK_CONNECTIONS_POOL: ConnectionItem[] = [
     upload: 84000,
     download: 1920000,
     start: new Date(Date.now() - 180000).toISOString(),
-    chains: ["Cursor 智能套件", "日本 02 | 低延迟游戏专线"],
+    chains: ["日本 02 | 低延迟游戏专线", "Cursor 智能套件"],
     rule: "RULE-SET",
     rulePayload: "nb-ai",
     downloadSpeed: 89000,
@@ -85,7 +84,7 @@ let MOCK_CONNECTIONS_POOL: ConnectionItem[] = [
     upload: 15400,
     download: 8950000,
     start: new Date(Date.now() - 65000).toISOString(),
-    chains: ["开发工具加速", "香港 01 | 极速专线 [BGP]"],
+    chains: ["香港 01 | 极速专线 [BGP]", "开发工具加速"],
     rule: "RULE-SET",
     rulePayload: "nb-github",
     downloadSpeed: 2350000,
@@ -110,7 +109,7 @@ let MOCK_CONNECTIONS_POOL: ConnectionItem[] = [
     upload: 43200,
     download: 24500000,
     start: new Date(Date.now() - 520000).toISOString(),
-    chains: ["流媒体优选", "台湾 01 | 4K流媒体原生"],
+    chains: ["台湾 01 | 4K流媒体原生", "流媒体优选"],
     rule: "RULE-SET",
     rulePayload: "nb-youtube",
     downloadSpeed: 4120000,
@@ -166,284 +165,249 @@ let MOCK_CONNECTIONS_POOL: ConnectionItem[] = [
   },
 ];
 
-// 预填充部分保真历史连接
-if (CLOSED_CONNECTIONS_BUFFER.length === 0) {
-  CLOSED_CONNECTIONS_BUFFER = [
-    {
-      id: "hist-01",
-      metadata: {
-        network: "tcp",
-        type: "HTTPS",
-        sourceIP: "127.0.0.1",
-        sourcePort: "54112",
-        destinationIP: "104.18.33.8",
-        destinationPort: "443",
-        host: "chatgpt.com",
-        dnsMode: "fake-ip",
-        process: "ChatGPT.exe",
-        processPath: "C:\\Program Files\\OpenAI\\ChatGPT.exe",
-        inboundName: "pw-windivert-in",
-        hookTier: "Direct",
-      },
-      upload: 4200,
-      download: 68400,
-      start: new Date(Date.now() - 12000).toISOString(),
-      closedAt: new Date(Date.now() - 10500).toLocaleTimeString(),
-      durationMs: 1500,
-      chains: ["OpenAI 官方套件", "香港 01 | 极速专线 [BGP]"],
-      rule: "RULE-SET",
-      rulePayload: "nb-ai",
-      downloadSpeed: 0,
-      uploadSpeed: 0,
+// 浏览器预览的历史样例。
+const mockHistory: ConnectionItem[] = [
+  {
+    id: "hist-01",
+    metadata: {
+      network: "tcp",
+      type: "HTTPS",
+      sourceIP: "127.0.0.1",
+      sourcePort: "54112",
+      destinationIP: "104.18.33.8",
+      destinationPort: "443",
+      host: "chatgpt.com",
+      dnsMode: "fake-ip",
+      process: "ChatGPT.exe",
+      processPath: "C:\\Program Files\\OpenAI\\ChatGPT.exe",
+      inboundName: "pw-windivert-in",
+      hookTier: "Direct",
     },
-    {
-      id: "hist-02",
-      metadata: {
-        network: "udp",
-        type: "DNS",
-        sourceIP: "127.0.0.1",
-        sourcePort: "53201",
-        destinationIP: "223.5.5.5",
-        destinationPort: "53",
-        host: "dns.alidns.com",
-        dnsMode: "real_ip",
-        process: "System",
-        inboundName: "pw-dns-in",
-        hookTier: "Direct",
-      },
-      upload: 120,
-      download: 240,
-      start: new Date(Date.now() - 34000).toISOString(),
-      closedAt: new Date(Date.now() - 33850).toLocaleTimeString(),
-      durationMs: 150,
-      chains: ["DIRECT"],
-      rule: "IP-CIDR",
-      rulePayload: "223.5.5.5/32",
-      downloadSpeed: 0,
-      uploadSpeed: 0,
+    upload: 4200,
+    download: 68400,
+    start: new Date(Date.now() - 12000).toISOString(),
+    closedAt: new Date(Date.now() - 10500).toISOString(),
+    durationMs: 1500,
+    chains: ["香港 01 | 极速专线 [BGP]", "OpenAI 官方套件"],
+    rule: "RULE-SET",
+    rulePayload: "nb-ai",
+    downloadSpeed: 0,
+    uploadSpeed: 0,
+  },
+  {
+    id: "hist-02",
+    metadata: {
+      network: "udp",
+      type: "DNS",
+      sourceIP: "127.0.0.1",
+      sourcePort: "53201",
+      destinationIP: "223.5.5.5",
+      destinationPort: "53",
+      host: "dns.alidns.com",
+      dnsMode: "real_ip",
+      process: "System",
+      inboundName: "pw-dns-in",
+      hookTier: "Direct",
     },
-    {
-      id: "hist-03",
-      metadata: {
-        network: "tcp",
-        type: "HTTPS",
-        sourceIP: "127.0.0.1",
-        sourcePort: "54180",
-        destinationIP: "140.82.112.4",
-        destinationPort: "443",
-        host: "api.github.com",
-        dnsMode: "fake-ip",
-        process: "cursor.exe",
-        processPath: "C:\\Users\\Admin\\AppData\\Local\\Programs\\cursor\\cursor.exe",
-        inboundName: "pw-windivert-in",
-        hookTier: "IAT",
-      },
-      upload: 1800,
-      download: 14200,
-      start: new Date(Date.now() - 56000).toISOString(),
-      closedAt: new Date(Date.now() - 55200).toLocaleTimeString(),
-      durationMs: 800,
-      chains: ["开发工具加速", "香港 01 | 极速专线 [BGP]"],
-      rule: "RULE-SET",
-      rulePayload: "nb-github",
-      downloadSpeed: 0,
-      uploadSpeed: 0,
+    upload: 120,
+    download: 240,
+    start: new Date(Date.now() - 34000).toISOString(),
+    closedAt: new Date(Date.now() - 33850).toISOString(),
+    durationMs: 150,
+    chains: ["DIRECT"],
+    rule: "IP-CIDR",
+    rulePayload: "223.5.5.5/32",
+    downloadSpeed: 0,
+    uploadSpeed: 0,
+  },
+  {
+    id: "hist-03",
+    metadata: {
+      network: "tcp",
+      type: "HTTPS",
+      sourceIP: "127.0.0.1",
+      sourcePort: "54180",
+      destinationIP: "140.82.112.4",
+      destinationPort: "443",
+      host: "api.github.com",
+      dnsMode: "fake-ip",
+      process: "cursor.exe",
+      processPath: "C:\\Users\\Admin\\AppData\\Local\\Programs\\cursor\\cursor.exe",
+      inboundName: "pw-windivert-in",
+      hookTier: "IAT",
     },
-  ];
+    upload: 1800,
+    download: 14200,
+    start: new Date(Date.now() - 56000).toISOString(),
+    closedAt: new Date(Date.now() - 55200).toISOString(),
+    durationMs: 800,
+    chains: ["香港 01 | 极速专线 [BGP]", "开发工具加速"],
+    rule: "RULE-SET",
+    rulePayload: "nb-github",
+    downloadSpeed: 0,
+    uploadSpeed: 0,
+  },
+];
+
+if (!isTauriEnvironment()) history = mockHistory;
+
+interface CoreConnectionsSnapshot {
+  downloadTotal: number;
+  uploadTotal: number;
+  connections: (Omit<ConnectionItem, "chains"> & { chains: string[] | null })[] | null;
 }
 
-/**
- * 差分沉淀已关闭连接到历史缓冲池
- */
-function processDiffAndRecordClosed(currentConns: ConnectionItem[]) {
-  const currentIds = new Set(currentConns.map((c) => c.id));
-  const newlyClosed: ConnectionItem[] = [];
-
-  PREV_CONNECTIONS_MAP.forEach((item, id) => {
-    if (!currentIds.has(id)) {
-      const startMs = new Date(item.start).getTime();
-      const durationMs = Math.max(0, Date.now() - (isNaN(startMs) ? Date.now() : startMs));
-      newlyClosed.push({
-        ...item,
-        closedAt: new Date().toLocaleTimeString(),
-        durationMs,
-        downloadSpeed: 0,
-        uploadSpeed: 0,
-      });
-    }
-  });
-
-  if (newlyClosed.length > 0) {
-    CLOSED_CONNECTIONS_BUFFER = [...newlyClosed, ...CLOSED_CONNECTIONS_BUFFER].slice(
-      0,
-      MAX_CLOSED_CONNECTIONS
-    );
-  }
-
-  // 更新上一轮映射表
-  const nextMap = new Map<string, ConnectionItem>();
-  currentConns.forEach((c) => nextMap.set(c.id, c));
-  PREV_CONNECTIONS_MAP = nextMap;
-}
-
-/**
- * 获取当前所有活跃连接快照
- */
-export async function fetchActiveConnections(): Promise<ConnectionsSnapshot> {
-  if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const res = await invoke<any>("get_active_connections");
-      if (res && typeof res === "object") {
-        const rawConns: ConnectionItem[] = Array.isArray(res.connections) ? res.connections : [];
-        processDiffAndRecordClosed(rawConns);
-        return {
-          downloadTotal: res.downloadTotal || 0,
-          uploadTotal: res.uploadTotal || 0,
-          connections: rawConns,
-        };
-      }
-    } catch (err) {
-      console.warn("[connectionsService] get_active_connections failed:", err);
-    }
-  }
-
-  // 浏览器开发仿真: 随机产生微量速率跳动与流量累加
-  MOCK_CONNECTIONS_POOL = MOCK_CONNECTIONS_POOL.map((conn) => {
-    const downDelta = Math.floor(Math.random() * 50000);
-    const upDelta = Math.floor(Math.random() * 3000);
+function recordClosed(connections: ConnectionItem[]) {
+  if (!connections.length) return;
+  const now = Date.now();
+  const closedAt = new Date(now).toISOString();
+  const closed = connections.map((item) => {
+    const started = Date.parse(item.start);
     return {
-      ...conn,
-      download: conn.download + downDelta,
-      upload: conn.upload + upDelta,
-      downloadSpeed: conn.downloadSpeed ? Math.max(0, conn.downloadSpeed + (Math.random() * 20000 - 10000)) : 0,
+      ...item, closedAt,
+      durationMs: Number.isFinite(started) ? Math.max(0, now - started) : undefined,
+      downloadSpeed: undefined,
+      uploadSpeed: undefined,
     };
   });
+  history = [...closed, ...history].slice(0, MAX_CLOSED_CONNECTIONS);
+}
 
-  processDiffAndRecordClosed(MOCK_CONNECTIONS_POOL);
+function sampleRate(total: number, previous: number | undefined, seconds: number): number | undefined {
+  return previous !== undefined && total >= previous && seconds > 0
+    ? (total - previous) / seconds
+    : undefined;
+}
 
-  const totalDown = MOCK_CONNECTIONS_POOL.reduce((acc, c) => acc + c.download, 0);
-  const totalUp = MOCK_CONNECTIONS_POOL.reduce((acc, c) => acc + c.upload, 0);
-
-  return {
-    downloadTotal: totalDown,
-    uploadTotal: totalUp,
-    connections: [...MOCK_CONNECTIONS_POOL],
+function collectSnapshot(snapshot: CoreConnectionsSnapshot): ConnectionsSnapshot {
+  const at = performance.now();
+  const seconds = lastSample ? (at - lastSample.at) / 1000 : 0;
+  const connections = (snapshot.connections ?? []).map((item): ConnectionItem => {
+    const previous = previousConnections.get(item.id);
+    return {
+      ...item,
+      chains: item.chains ?? [],
+      downloadSpeed: item.downloadSpeed ?? sampleRate(item.download, previous?.download, seconds),
+      uploadSpeed: item.uploadSpeed ?? sampleRate(item.upload, previous?.upload, seconds),
+    };
+  });
+  const current = new Map(connections.map((item) => [item.id, item]));
+  recordClosed([...previousConnections.values()].filter((item) => !current.has(item.id)));
+  previousConnections = current;
+  const result = {
+    connections,
+    downloadTotal: snapshot.downloadTotal,
+    uploadTotal: snapshot.uploadTotal,
+    downloadSpeed: sampleRate(snapshot.downloadTotal, lastSample?.download, seconds),
+    uploadSpeed: sampleRate(snapshot.uploadTotal, lastSample?.upload, seconds),
   };
+  lastSample = { at, download: snapshot.downloadTotal, upload: snapshot.uploadTotal };
+  return result;
 }
 
-/**
- * 获取沉淀的历史已关闭连接列表 (历史连接)
- */
+let mockDownloadTotal = mockConnections.reduce((sum, item) => sum + item.download, 0);
+let mockUploadTotal = mockConnections.reduce((sum, item) => sum + item.upload, 0);
+
+function sampleMockConnections(): CoreConnectionsSnapshot {
+  mockConnections = mockConnections.map((connection) => {
+    const down = Math.floor((connection.downloadSpeed ?? 0) * (1.3 + Math.random() * 0.4));
+    const up = Math.floor((connection.uploadSpeed ?? 0) * (1.3 + Math.random() * 0.4));
+    mockDownloadTotal += down;
+    mockUploadTotal += up;
+    return { ...connection, download: connection.download + down, upload: connection.upload + up };
+  });
+  return { connections: mockConnections, downloadTotal: mockDownloadTotal, uploadTotal: mockUploadTotal };
+}
+
+export function fetchActiveConnections(): Promise<ConnectionsSnapshot> {
+  return enqueueConnectionRequest(async () => {
+    if (!isTauriEnvironment()) return collectSnapshot(sampleMockConnections());
+    const snapshot = await invokeCommand<CoreConnectionsSnapshot>("get_active_connections");
+    if (!snapshot || (snapshot.connections !== null && !Array.isArray(snapshot.connections))) {
+      throw new Error("核心未返回连接快照");
+    }
+    return collectSnapshot(snapshot);
+  });
+}
+
 export function getClosedConnections(): ConnectionItem[] {
-  return [...CLOSED_CONNECTIONS_BUFFER];
+  return [...history];
 }
 
-/**
- * 清空历史连接缓冲池
- */
 export function clearClosedConnections(): void {
-  CLOSED_CONNECTIONS_BUFFER = [];
+  history = [];
 }
 
-/**
- * 切断单条指定连接
- */
-export async function killConnection(id: string): Promise<boolean> {
-  if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<boolean>("close_connection", { id });
-    } catch (err) {
-      console.warn("[connectionsService] close_connection failed:", err);
-      return false;
+export function killConnection(id: string): Promise<boolean> {
+  return enqueueConnectionRequest(async () => {
+    if (isTauriEnvironment()) {
+      if (!(await invokeCommand<boolean>("close_connection", { id }))) return false;
+    } else {
+      mockConnections = mockConnections.filter((item) => item.id !== id);
     }
-  }
 
-  // 浏览器仿真: 移出连接池并推入历史连接
-  const target = MOCK_CONNECTIONS_POOL.find((c) => c.id === id);
-  if (target) {
-    CLOSED_CONNECTIONS_BUFFER = [
-      {
-        ...target,
-        closedAt: new Date().toLocaleTimeString(),
-        durationMs: Math.max(0, Date.now() - new Date(target.start).getTime()),
-        downloadSpeed: 0,
-        uploadSpeed: 0,
-      },
-      ...CLOSED_CONNECTIONS_BUFFER,
-    ].slice(0, MAX_CLOSED_CONNECTIONS);
-  }
-  MOCK_CONNECTIONS_POOL = MOCK_CONNECTIONS_POOL.filter((c) => c.id !== id);
-  return true;
+    const target = previousConnections.get(id);
+    if (target) recordClosed([target]);
+    previousConnections.delete(id);
+    return true;
+  });
 }
 
-/**
- * 切断所有活跃连接
- */
-export async function killAllConnections(): Promise<boolean> {
-  if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<boolean>("close_all_connections");
-    } catch (err) {
-      console.warn("[connectionsService] close_all_connections failed:", err);
-      return false;
+export function killAllConnections(): Promise<boolean> {
+  return enqueueConnectionRequest(async () => {
+    if (isTauriEnvironment()) {
+      if (!(await invokeCommand<boolean>("close_all_connections"))) return false;
+    } else {
+      mockConnections = [];
     }
-  }
 
-  MOCK_CONNECTIONS_POOL = [];
-  return true;
+    recordClosed([...previousConnections.values()]);
+    previousConnections.clear();
+    return true;
+  });
 }
 
-/**
- * 专业字节与数据量格式化 (保留 2 位小数)
- */
+export function formatAddress(host: string, port: string): string {
+  if (!host) return "—";
+  if (!port || port === "0") return host;
+  const address = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `${address}:${port}`;
+}
+
+export function formatConnectionTarget({ metadata }: ConnectionItem): string {
+  return formatAddress(metadata.host || metadata.destinationIP, metadata.destinationPort);
+}
+
+export function formatConnectionRule({ rule, rulePayload }: ConnectionItem): string {
+  return [rule, rulePayload].filter(Boolean).join(" · ");
+}
+
+export function getConnectionProcess({ metadata }: ConnectionItem): string {
+  return metadata.process || metadata.processPath?.split(/[\\/]/).filter(Boolean).pop() || "未知进程";
+}
+
 export function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0 || !Number.isFinite(bytes)) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/**
- * 实时瞬时速率格式化
- */
 export function formatSpeed(bytesPerSec?: number): string {
-  if (!bytesPerSec || bytesPerSec <= 0 || !Number.isFinite(bytesPerSec)) return "0 B/s";
-  if (bytesPerSec < 1024) return `${Math.round(bytesPerSec)} B/s`;
-  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-  return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
+  return bytesPerSec !== undefined && Number.isFinite(bytesPerSec) ? formatBytes(bytesPerSec) + "/s" : "—";
 }
 
-/**
- * 连接存活持续时间格式化
- */
 export function formatDuration(startTime: string): string {
-  try {
-    const start = new Date(startTime).getTime();
-    const now = Date.now();
-    const diffSec = Math.max(0, Math.floor((now - start) / 1000));
-    if (diffSec < 60) return `${diffSec}秒`;
-    const min = Math.floor(diffSec / 60);
-    const sec = diffSec % 60;
-    if (min < 60) return `${min}分${sec}秒`;
-    const hr = Math.floor(min / 60);
-    return `${hr}时${min % 60}分`;
-  } catch {
-    return "刚刚";
-  }
+  const start = Date.parse(startTime);
+  return Number.isFinite(start) ? formatDurationMs(Math.max(0, Date.now() - start)) : "—";
 }
 
-/**
- * 毫秒级耗时格式化 (供历史连接使用)
- */
 export function formatDurationMs(ms?: number): string {
-  if (!ms || ms <= 0) return "< 10ms";
-  if (ms < 1000) return `${ms}ms`;
-  const sec = (ms / 1000).toFixed(1);
-  if (ms < 60000) return `${sec}秒`;
-  const min = Math.floor(ms / 60000);
-  return `${min}分${Math.floor((ms % 60000) / 1000)}秒`;
+  if (ms === undefined || !Number.isFinite(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)} 毫秒`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} 秒`;
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 60) return `${minutes} 分 ${Math.floor(ms / 1000) % 60} 秒`;
+  return `${Math.floor(minutes / 60)} 时 ${minutes % 60} 分`;
 }

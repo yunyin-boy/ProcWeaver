@@ -92,11 +92,14 @@ export function restoreOrClearProfileOutlets(
         return {
           ...b,
           targetProxy: savedTarget,
+          targetIdentity: b.targetIdentity?.profileId === targetProfileId
+            && b.targetIdentity.name === savedTarget ? b.targetIdentity : undefined,
         };
       }
       return {
         ...b,
-        targetProxy: "Proxy",
+        targetProxy: b.enabled ? "Proxy" : "",
+        targetIdentity: undefined,
       };
     });
     console.log(`[profileOutletMemoryService] 订阅源 [${targetProfileId}] 已自动恢复 ${restoredCount} 个业务包出口`);
@@ -106,7 +109,8 @@ export function restoreOrClearProfileOutlets(
   // 场景 B: 无历史记忆 (新订阅源)，清空专属节点出口，重置为默认 Proxy
   const nextBundles = currentBundles.map((b) => ({
     ...b,
-    targetProxy: "Proxy",
+    targetProxy: b.enabled ? "Proxy" : "",
+    targetIdentity: undefined,
   }));
   console.log(`[profileOutletMemoryService] 订阅源 [${targetProfileId}] 无历史出口记忆，已清空专属节点绑定`);
   return { nextBundles, restoredCount: 0 };

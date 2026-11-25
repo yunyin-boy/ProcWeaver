@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { BundleLocalInstance, BusinessBundleDefinition, BundleFallback, BundleProcessBinding, BundleProcessBindings, BundlePolicy } from "../../types/businessBundle";
-import { PRESET_BUNDLES_CATALOG } from "../../services/bundleStorage";
-import { Pencil, X, RotateCcw, Save, Shield, ChevronDown, ChevronUp } from "lucide-react";
+import { Pencil, X, Save, Shield, ChevronDown, ChevronUp } from "lucide-react";
 import { usePlatform } from "../../context/PlatformContext";
 import { bundleProcesses, validAndroidPackage, matchingBindings, processMembers, processNames, validateProcessBindings } from "../../utils/bundlePlatform";
 import { BundleDiscoveryTools } from "./BundleDiscoveryTools";
@@ -53,21 +52,6 @@ export const EditBundleModal: React.FC<Props> = ({
   if (!isOpen || !bundleInstance) return null;
 
   const currentDef = bundleInstance.definition;
-  const originalPreset = PRESET_BUNDLES_CATALOG.find(
-    (p) => p.packageId === currentDef.packageId
-  );
-
-  const handleResetToPreset = () => {
-    if (!originalPreset) return;
-    setName(originalPreset.packageName);
-    setDescription(originalPreset.description);
-    setMode(originalPreset.mode);
-    setFallback(originalPreset.fallback ?? "rules");
-    setExesText(bundleProcesses(originalPreset, os).map((p) => p.exe).join("\n"));
-    setDomainsText((originalPreset.domains || []).join("\n"));
-    setBindings([]);
-    setPolicy(normalizeBundlePolicy(originalPreset.policy));
-  };
 
   const handleSave = () => {
     const rawExes = processNames(exesText);
@@ -298,21 +282,7 @@ export const EditBundleModal: React.FC<Props> = ({
         </div>
 
         {/* 底部按钮栏 */}
-        <div className="pt-3 flex items-center justify-between border-t border-slate-200 dark:border-slate-800">
-          <div>
-            {originalPreset && (
-              <button
-                type="button"
-                onClick={handleResetToPreset}
-                className="px-3 py-1.5 rounded-lg text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10 cursor-pointer transition flex items-center space-x-1"
-                title="重置为预设库的原始初始定义"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>重置为预设</span>
-              </button>
-            )}
-          </div>
-
+        <div className="pt-3 flex items-center justify-end border-t border-slate-200 dark:border-slate-800">
           <div className="flex items-center space-x-2">
             <button
               type="button"

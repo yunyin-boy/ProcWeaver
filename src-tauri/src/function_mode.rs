@@ -86,7 +86,11 @@ pub async fn set_function_mode(mode: FunctionMode, expected_mode: FunctionMode, 
             else { format!("切换失败，原功能模式保留；网络恢复未完成：{}；原因：{error}", failures.join("；")) });
     }
     PROCESS_ONLY.store(mode == FunctionMode::ProcessProxy, Ordering::Release);
-    if mode == FunctionMode::Full { crate::process_capture::stop(); }
+    if mode == FunctionMode::Full {
+        crate::process_capture::stop();
+        #[cfg(windows)]
+        crate::capture::user_mode::control::retain_external(|_, _| false);
+    }
     crate::commands::geo::function_mode_changed();
     if mode == FunctionMode::ProcessProxy {
         crate::commands::process_watcher::stop_watcher_loop();

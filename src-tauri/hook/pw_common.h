@@ -88,6 +88,9 @@ struct HookPolicy {
     TargetFilterMode target_filter_mode; // 默认 All
     std::vector<std::string> target_rules;
     bool remote_dns_required = false;
+    bool scoped_dns = false;
+    bool core_listener = false;
+    std::vector<std::string> native_dns_servers;
 };
 
 struct HookConfig {
@@ -106,6 +109,8 @@ extern HookTier g_hook_tier;
 
 void LoadHookConfig();
 bool IsHookEnabled();
+bool WaitForRejectReady(HANDLE process, HANDLE ready);
 void ReportHookTier(HookTier tier);
 void ReportChildHookFailed(DWORD pid, const char* name);
 std::string GetCurrentDllDir();
+std::string LookupOverrideRuleAction(const std::string& rules, const std::string& full_path, const std::string& exe_name);

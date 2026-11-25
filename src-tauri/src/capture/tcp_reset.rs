@@ -35,6 +35,7 @@ mod sys {
 
     const AF_INET: u32 = 2;
     const TCP_TABLE_OWNER_PID_ALL: i32 = 5;
+    pub const MIB_TCP_STATE_LISTEN: u32 = 2;
     pub const MIB_TCP_STATE_ESTAB: u32 = 5;
     pub const MIB_TCP_STATE_DELETE_TCB: u32 = 12;
 
@@ -122,7 +123,7 @@ mod sys {
             let offset = data_start + i * row_size;
             if offset + row_size <= buffer.len() {
                 let row_ptr = buffer[offset..].as_ptr() as *const MIB_TCPROW_OWNER_PID;
-                let row = unsafe { *row_ptr };
+                let row = unsafe { row_ptr.read_unaligned() };
                 entries.push(row);
             }
         }
@@ -152,6 +153,53 @@ mod sys {
             Err(format!("SetTcpEntry 失败，错误码: {ret}"))
         }
     }
+}
+
+#[cfg(windows)]
+#[derive(PartialEq, Eq)]
+pub(crate) struct EstablishedTcp {
+    pub pid: u32,
+    pub local: std::net::SocketAddrV4,
+    pub remote: std::net::SocketAddrV4,
+}
+
+#[cfg(windows)]
+pub(crate) fn established_ipv4() -> Result<Vec<EstablishedTcp>, String> {
+    let rows = sys::get_tcp_table_owner_pid()?;
+    let listeners: std::collections::HashSet<_> = rows.iter().filter(|row| row.dw_state == sys::MIB_TCP_STATE_LISTEN)
+        .map(|row| (row.dw_owning_pid, row.dw_local_port as u16, row.dw_local_addr)).collect();
+    Ok(rows.into_iter().filter(|row| {
+        let local = (row.dw_owning_pid, row.dw_local_port as u16);
+        row.dw_state == sys::MIB_TCP_STATE_ESTAB
+            && !listeners.contains(&(local.0, local.1, row.dw_local_addr))
+            && !listeners.contains(&(local.0, local.1, 0))
+    })
+        .map(|row| {
+            let endpoint = |address: u32, port: u32| std::net::SocketAddrV4::new(
+                Ipv4Addr::from(address.to_ne_bytes()), u16::from_be(port as u16),
+            );
+            EstablishedTcp {
+                pid: row.dw_owning_pid,
+                local: endpoint(row.dw_local_addr, row.dw_local_port),
+                remote: endpoint(row.dw_remote_addr, row.dw_remote_port),
+            }
+        }).collect())
+}
+
+#[cfg(windows)]
+pub(crate) fn reset_observed(
+    connection: &EstablishedTcp, owner: &super::windivert::ownership::Identity,
+) -> Result<bool, String> {
+    if !established_ipv4()?.contains(connection)
+        || super::windivert::ownership::Identity::inspect(connection.pid).as_ref() != Some(owner)
+    {
+        return Ok(false);
+    }
+    sys::kill_tcp_entry(
+        u32::from_ne_bytes(connection.local.ip().octets()), u32::from(connection.local.port().to_be()),
+        u32::from_ne_bytes(connection.remote.ip().octets()), u32::from(connection.remote.port().to_be()),
+    )?;
+    Ok(true)
 }
 
 /// 扫描指定 PID 列表名下的存量活跃长连接

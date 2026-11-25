@@ -53,7 +53,7 @@ export const ExclusionsModal: React.FC<ExclusionsModalProps> = ({
 
         <div className="flex items-center justify-between pt-2">
           <span className="text-[11px] text-[var(--text-muted)] font-mono">
-            已生效 {text.split("\n").filter((l) => l.trim()).length} 条规则
+            {text.split("\n").filter((l) => l.trim()).length} 条规则
           </span>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={onClose}>

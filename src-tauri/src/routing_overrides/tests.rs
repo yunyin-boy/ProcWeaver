@@ -1,9 +1,112 @@
 use super::*;
+
+#[test]
+fn standalone_ports_survive_legacy_migration_reorder_and_bundle_pause() {
+    let mut legacy = config();
+    legacy.bundles.push(BundleRoute {
+        id: "suite".into(), name: "suite".into(), main_exe: "suite.exe".into(),
+        enabled: true, main_target: None, dns_target: None, port: 34000,
+        mode: "strict".into(), domains: vec![], fallback: "rules".into(), policy: None,
+    });
+    let mut bundle_rule = rule(r"C:\apps\suite.exe");
+    bundle_rule.id = "bundle-suite-main".into();
+    legacy.process_rules.insert(0, bundle_rule);
+    let rule_id = legacy.process_rules[1].id.clone();
+    let mut mapped = legacy.clone();
+    mapped.assign_process_ports(&legacy).unwrap();
+    assert_eq!(mapped.process_ports[&rule_id], 32001);
+    assert!(!mapped.process_ports.contains_key("bundle-suite-main"));
+
+    let mut updated = mapped.clone();
+    updated.bundles_enabled = false;
+    let new_rule = rule(r"C:\apps\new.exe");
+    let new_id = new_rule.id.clone();
+    updated.process_rules.insert(0, new_rule);
+    updated.process_ports.clear(); // Save uses the server's previous bindings.
+    updated.assign_process_ports(&mapped).unwrap();
+    assert_eq!(updated.process_ports[&rule_id], 32001);
+    assert_ne!(updated.process_ports[&new_id], 32001);
+
+    let raw = crate::capture::compose("rules: []", &updated.effective(), "default", &[]).unwrap();
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+    let plan: crate::capture::Plan = serde_yaml::from_value(yaml["netbox-capture"].clone()).unwrap();
+    assert_eq!(plan.config.process_rules[1].id, rule_id);
+    assert_eq!(plan.ports[1], 32001);
+    assert_eq!(yaml["listeners"][2]["port"].as_u64(), Some(32001));
+
+    let mut replacement = updated.clone();
+    replacement.process_rules.retain(|r| r.id != rule_id);
+    let replacement_rule = rule(r"C:\apps\replacement.exe");
+    let replacement_id = replacement_rule.id.clone();
+    replacement.process_rules.push(replacement_rule);
+    replacement.assign_process_ports(&updated).unwrap();
+    assert_ne!(replacement.process_ports[&replacement_id], 32001);
+    let persisted = serde_json::to_vec(&replacement).unwrap();
+    let previous: Overrides = serde_json::from_slice(&persisted).unwrap();
+    let mut next = previous.clone();
+    let another_rule = rule(r"C:\apps\another.exe");
+    let another_id = another_rule.id.clone();
+    next.process_rules.push(another_rule);
+    next.assign_process_ports(&previous).unwrap();
+    assert!(next.process_ports[&another_id] > previous.process_ports[&replacement_id]);
+}
 use serde_yaml::Value;
 fn rule(path: &str) -> ProcessRule { ProcessRule { id: path.into(), enabled: true, label: path.into(), match_kind: "path".into(), match_value: path.into(), action: "proxy".into(), target: Some(target("node")), include_descendants: true, rule_mode: None } }
 fn target(name: &str) -> Target { Target { profile_id: "default".into(), kind: "node".into(), name: name.into() } }
 fn config() -> Overrides { Overrides { process_enabled: true, process_rules: vec![rule(r"C:\apps\root.exe")], ..Overrides::default() } }
 const RAW: &str = "proxies:\n- {name: node, type: socks5, server: 127.0.0.1, port: 1, udp: false}\nrules: ['DOMAIN,example.net,DIRECT', 'MATCH,DIRECT']\n";
+
+#[cfg(windows)]
+#[test]
+fn cloudcode_dns_upgrades_the_official_bundle_and_uses_its_selected_exit() {
+    const DOMAIN: &str = ANTIGRAVITY_CLOUDCODE_DOMAIN;
+    let bundle = BundleRoute {
+        id: "antigravity-bundle".into(), name: "Antigravity".into(), main_exe: r"C:\Apps\Antigravity.EXE".into(),
+        enabled: true, main_target: Some(target("node")), dns_target: None, port: 34000, mode: "strict".into(),
+        domains: ["google.com", "*.google.com", "cursor.sh", "*.cursor.sh"].into_iter().map(str::to_owned).collect(),
+        fallback: "rules".into(), policy: None,
+    };
+    let original = Overrides { bundles: vec![bundle], ..Default::default() };
+    let mut migrated = normalize(original.clone()).unwrap();
+    if crate::edition::PROCESS {
+        assert!(!migrated.bundles[0].domains.contains(&DOMAIN.to_owned()));
+        return;
+    }
+    assert!(migrated.bundles[0].domains.contains(&DOMAIN.to_owned()));
+    assert!(!migrated.bundles[0].domains.iter().any(|d| d.ends_with("googleapis.com") && d != DOMAIN));
+    assert_eq!(normalize(migrated.clone()).unwrap().bundles[0].domains, migrated.bundles[0].domains);
+    let mut renamed = original;
+    renamed.bundles[0].id = "custom-antigravity".into();
+    assert!(!normalize(renamed).unwrap().bundles[0].domains.contains(&DOMAIN.to_owned()));
+
+    let raw = format!("{RAW}dns: {{enable: true, enhanced-mode: fake-ip, use-system-hosts: false, nameserver: [system], fake-ip-filter: ['*.lan']}}\n");
+    let (base, _) = bundles::materialize(&raw, &migrated, "default").unwrap();
+    let (base, rule) = bundles::prepare_cloudcode_dns(&base, &migrated, "default").unwrap().unwrap();
+    assert!(composer::matches_domain(DOMAIN, &rule));
+    assert!(!composer::matches_domain(&format!("x.{DOMAIN}"), &rule));
+    assert!(!composer::matches_domain("other.googleapis.com", &rule));
+    let compiled = Overrides { dns_enabled: true, dns_rules: vec![rule.clone()], ..Default::default() };
+    let yaml: Value = serde_yaml::from_str(&composer::compose(&base, &compiled, "default", &[]).unwrap()).unwrap();
+    let group = bundles::group("antigravity-bundle", "main");
+    assert_eq!(yaml[bundles::SELECTIONS][group.as_str()], "node");
+    assert_eq!(yaml["dns"]["fake-ip-filter"], serde_yaml::to_value([DOMAIN, "*.lan"]).unwrap());
+    assert_eq!(yaml["dns"]["nameserver-policy"]["rule-set:procweaver-dns-override-0"], format!("https://1.1.1.1/dns-query#{group}"));
+    assert_eq!(yaml["rule-providers"]["procweaver-dns-override-0"]["payload"], serde_yaml::to_value([DOMAIN]).unwrap());
+
+    let rule_mode = raw.replace("fake-ip-filter:", "fake-ip-filter-mode: rule, fake-ip-filter:");
+    let (rule_mode, _) = bundles::prepare_cloudcode_dns(&rule_mode, &migrated, "default").unwrap().unwrap();
+    let yaml: Value = serde_yaml::from_str(&rule_mode).unwrap();
+    assert_eq!(yaml["dns"]["fake-ip-filter"][0], format!("DOMAIN,{DOMAIN},real-ip"));
+    let whitelist = raw.replace("fake-ip-filter:", "fake-ip-filter-mode: whitelist, fake-ip-filter:");
+    assert!(bundles::prepare_cloudcode_dns(&whitelist, &migrated, "default").unwrap().is_none());
+    assert!(bundles::prepare_cloudcode_dns(&raw.replace("enable: true", "enable: false"), &migrated, "default").unwrap().is_none());
+    let mut explicit = migrated.clone();
+    explicit.dns_enabled = true;
+    explicit.dns_rules.push(DnsRule { id: "manual-suffix".into(), domain_kind: "suffix".into(), domain: "googleapis.com".into(), ..rule });
+    assert!(bundles::prepare_cloudcode_dns(&raw, &explicit, "default").unwrap().is_none());
+    migrated.bundles_enabled = false;
+    assert!(bundles::prepare_cloudcode_dns(&raw, &migrated, "default").unwrap().is_none());
+}
 
 #[cfg(windows)]
 #[test]
@@ -933,6 +1036,97 @@ fn test_generic_interpreter_does_not_derive_system_browser_but_explicit_browser_
         effective.process_rules.iter().any(|r| r.match_value == "msedge.exe"),
         "显式配置的浏览器规则必须正常保留并生效"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn sandbox_existing_rules_require_and_use_the_bound_outlet() {
+    if crate::edition::PROCESS { return; }
+    let mut config: Overrides = serde_json::from_value(serde_json::json!({
+        "schemaVersion": 1, "revision": 0, "processEnabled": false, "dnsEnabled": false,
+        "bundles": [{"id": "qa", "name": "QA", "mainExe": "qa.exe", "enabled": true,
+            "mainTarget": null, "dnsTarget": null, "port": 34100, "mode": "sandbox",
+            "fallback": "direct", "domains": ["old.example.test"], "policy": {"useExistingRules": true}}],
+        "processRules": [{"id": "bundle-qa-main", "enabled": true, "label": "QA", "matchKind": "name",
+            "matchValue": "qa.exe", "action": "proxy", "target": null, "includeDescendants": true}],
+        "dnsRules": []
+    })).unwrap();
+    assert_eq!(normalize(config.clone()).unwrap_err(), "业务包启用前须绑定出口");
+    let mut legacy = config.clone();
+    legacy.pause_unbound_existing_rule_bundles();
+    let legacy = normalize(legacy).unwrap();
+    assert!(!legacy.bundles[0].enabled);
+    assert!(legacy.bundles[0].uses_existing_rules());
+    assert!(legacy.process_rules.is_empty());
+
+    config.bundles[0].main_target = Some(target("qa-selected"));
+    config.process_rules[0].target = Some(target("qa-selected"));
+    config = normalize(config).unwrap();
+    let effective = config.effective();
+    assert!(effective.process_enabled);
+    assert!(effective.bundles[0].domains.is_empty());
+    assert_eq!(config.bundles[0].domains, ["old.example.test"]);
+    assert_eq!(config.bundles[0].fallback, "direct");
+
+    let raw = r#"
+proxies:
+  - {name: qa-original, type: http, server: 127.0.0.1, port: 8123}
+  - {name: qa-selected, type: http, server: 127.0.0.1, port: 8124}
+proxy-groups:
+  - {name: qa-direct, type: select, proxies: [DIRECT]}
+  - {name: domestic-choice, type: select, proxies: [DIRECT, qa-original]}
+  - {name: domestic-parent, type: select, proxies: [domestic-choice, qa-selected]}
+rules:
+  - SUB-RULE,(DOMAIN-SUFFIX,example.test),regional
+  - DOMAIN,proxied.example.net,qa-original
+  - IP-CIDR,192.0.2.0/24,qa-original,no-resolve,src
+  - DOMAIN-SUFFIX,domestic.example.net,domestic-parent
+  - MATCH,DIRECT
+sub-rules:
+  regional:
+    - 'DOMAIN-REGEX,^a{2,3}\.example\.test$,qa-original'
+    - DOMAIN,reject.example.test,REJECT
+    - DOMAIN,drop.example.test,REJECT-DROP
+    - DOMAIN,skip.example.test,PASS
+    - DOMAIN,direct.example.test,DIRECT
+    - DOMAIN,alias.example.test,qa-direct
+"#;
+    let (raw, mapped) = bundles::materialize(raw, &effective, "default").unwrap();
+    let outlet = bundles::group("qa", "main");
+    assert_eq!(mapped.process_rules[0].target.as_ref().unwrap().name, outlet);
+    let raw = bundles::compose_existing_rules(&raw, &mapped).unwrap();
+    let normal: Value = serde_yaml::from_str(&raw).unwrap();
+    assert_eq!(normal["rules"][1].as_str(), Some("DOMAIN,proxied.example.net,qa-original"));
+    let root = bundles::existing_rules_name(&mapped.bundles[0]);
+    let nested = format!("{root}-0");
+    let rules = normal["sub-rules"][root.as_str()].as_sequence().unwrap();
+    assert_eq!(rules[0].as_str().unwrap(), format!("SUB-RULE,(DOMAIN-SUFFIX,example.test),{nested}"));
+    assert_eq!(rules[1].as_str().unwrap(), format!("DOMAIN,proxied.example.net,{outlet}"));
+    assert_eq!(rules[2].as_str().unwrap(), format!("IP-CIDR,192.0.2.0/24,{outlet},no-resolve,src"));
+    let domestic = bundles::group("qa", "rule-0");
+    assert_eq!(rules[3].as_str().unwrap(), format!("DOMAIN-SUFFIX,domestic.example.net,{domestic}"));
+    let selector = normal["proxy-groups"].as_sequence().unwrap().iter()
+        .find(|group| group["name"].as_str() == Some(domestic.as_str())).unwrap();
+    assert_eq!(selector["proxies"], serde_yaml::to_value(["REJECT", outlet.as_str(), "DIRECT"]).unwrap());
+    let nested_rules = normal["sub-rules"][nested.as_str()].as_sequence().unwrap();
+    assert_eq!(nested_rules[0].as_str().unwrap(), format!(r"DOMAIN-REGEX,^a{{2,3}}\.example\.test$,{outlet}"));
+    assert_eq!(&nested_rules[1..], &normal["sub-rules"]["regional"].as_sequence().unwrap()[1..]);
+
+    let raw = public_mode::compose(&raw, "direct").unwrap();
+    let path = composer::compose(&raw, &mapped, "default", &[]).unwrap();
+    let path: Value = serde_yaml::from_str(&path).unwrap();
+    assert_eq!(path["rules"][1].as_str().unwrap(), format!("SUB-RULE,(PROCESS-NAME,qa.exe),{root}"));
+    assert_eq!(path["rules"][3].as_str(), Some("MATCH,DIRECT"));
+
+    let owned = composer::compose_owned(&raw, &mapped, "default").unwrap();
+    let mut owned: Value = serde_yaml::from_str(&owned).unwrap();
+    assert_eq!(&owned["rules"].as_sequence().unwrap()[1..], rules);
+    assert_eq!(owned[bundles::SELECTIONS][outlet.as_str()].as_str(), Some("qa-selected"));
+    owned["listeners"] = Value::Sequence(vec![]);
+    bundles::add_listeners(&mut owned, &mapped, &Value::Null, &[Value::from("MATCH,DIRECT")]).unwrap();
+    let entry_rules = owned["sub-rules"][bundles::listener("qa").as_str()].as_sequence().unwrap();
+    assert_eq!(entry_rules[0].as_str(), Some("NETWORK,UDP,REJECT"));
+    assert!(entry_rules.ends_with(rules));
 }
 
 #[test]

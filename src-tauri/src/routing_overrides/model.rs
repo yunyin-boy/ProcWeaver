@@ -49,6 +49,8 @@ pub struct BundlePolicy {
     pub disallow_proxy_args: bool,
     #[serde(default = "default_stale_connection_strategy")]
     pub stale_connection_strategy: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_existing_rules: bool,
 }
 
 fn default_true() -> bool { true }
@@ -74,6 +76,7 @@ impl Default for BundlePolicy {
             target_rules: Vec::new(),
             disallow_proxy_args: false,
             stale_connection_strategy: default_stale_connection_strategy(),
+            use_existing_rules: false,
         }
     }
 }
@@ -91,6 +94,32 @@ pub struct BundleRoute {
 }
 fn default_bundle_fallback() -> String { "rules".into() }
 
+impl BundleRoute {
+    pub(crate) fn uses_existing_rules(&self) -> bool {
+        !crate::edition::PROCESS && self.mode == "sandbox"
+            && self.policy.as_ref().is_some_and(|policy| policy.use_existing_rules)
+    }
+
+    pub(super) fn follows_system_proxy(&self) -> bool {
+        self.enabled && self.mode == "sandbox" && self.fallback == "system" && !self.uses_existing_rules()
+    }
+
+    pub(super) fn is_unbound_existing_rules_bundle(&self) -> bool {
+        self.enabled && self.uses_existing_rules() && self.main_target.is_none()
+    }
+}
+
+#[cfg(windows)]
+pub(crate) const ANTIGRAVITY_CLOUDCODE_DOMAIN: &str = "daily-cloudcode-pa.googleapis.com";
+
+#[cfg(windows)]
+impl BundleRoute {
+    pub(crate) fn is_official_antigravity(&self) -> bool {
+        self.id == "antigravity-bundle" && self.main_exe.rsplit(['/', '\\']).next()
+            .is_some_and(|exe| exe.eq_ignore_ascii_case("antigravity.exe"))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Overrides {
@@ -99,12 +128,62 @@ pub struct Overrides {
     pub process_enabled: bool, pub dns_enabled: bool,
     pub process_rules: Vec<ProcessRule>, pub dns_rules: Vec<DnsRule>,
     #[serde(default)] pub bundles: Vec<BundleRoute>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub process_ports: std::collections::BTreeMap<String, u16>,
+    #[serde(default = "first_process_port")] pub next_process_port: u16,
     #[serde(default = "first_bundle_port")] pub next_bundle_port: u16,
     #[serde(default)] pub retain_foreign_targets: bool,
 }
 fn first_bundle_port() -> u16 { 34000 }
+fn first_process_port() -> u16 { 32000 }
 fn default_bundles_enabled() -> bool { true }
 impl Overrides {
+    /// Keep each rule's listener across edits. A running app can retain an
+    /// injected proxy argument after its rule is removed, so retire its port.
+    pub(crate) fn assign_process_ports(&mut self, previous: &Self) -> Result<(), String> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let ports = first_process_port()..first_bundle_port();
+        let mut old = previous.process_ports.clone();
+        let mut reserved = BTreeSet::new();
+        for port in old.values() {
+            if !ports.contains(port) || !reserved.insert(*port) {
+                return Err("进程规则入口绑定无效".into());
+            }
+        }
+        if old.is_empty() {
+            // Legacy listeners were numbered after applying the feature gates.
+            let effective = previous.effective();
+            for (index, rule) in effective.process_rules.iter().enumerate() {
+                if rule.enabled && super::bundles::owner(&rule.id, &previous.bundles).is_none() {
+                    let port = ports.start + index as u16;
+                    reserved.insert(port);
+                    old.insert(rule.id.clone(), port);
+                }
+            }
+        }
+        let mut next = previous.next_process_port.max(ports.start);
+        if let Some(&last) = reserved.last() {
+            next = next.max(last + 1);
+        }
+        let mut bindings = BTreeMap::new();
+        for rule in &self.process_rules {
+            if super::bundles::owner(&rule.id, &self.bundles).is_some() { continue; }
+            let port = match old.get(&rule.id) {
+                Some(&port) => port,
+                None => {
+                    if !ports.contains(&next) { return Err("没有可用的进程规则入口编号".into()); }
+                    let port = next;
+                    next += 1;
+                    port
+                }
+            };
+            bindings.insert(rule.id.clone(), port);
+        }
+        self.process_ports = bindings;
+        self.next_process_port = next;
+        Ok(())
+    }
+
     /// Filter only the effective Android plan; stored desktop definitions survive.
     pub fn without_bundles(&self) -> Self {
         let mut config = self.clone();
@@ -114,6 +193,23 @@ impl Overrides {
         config.bundles_enabled = false;
         config
     }
+
+    pub(crate) fn pause_unbound_existing_rule_bundles(&mut self) {
+        if !self.bundles.iter().any(BundleRoute::is_unbound_existing_rules_bundle) { return; }
+        self.process_rules.retain(|rule| {
+            !super::bundles::owner(&rule.id, &self.bundles)
+                .is_some_and(BundleRoute::is_unbound_existing_rules_bundle)
+        });
+        self.dns_rules.retain(|rule| {
+            !super::bundles::dns_owner(&rule.id, &self.bundles)
+                .is_some_and(BundleRoute::is_unbound_existing_rules_bundle)
+        });
+        for bundle in self.bundles.iter_mut().filter(|bundle| bundle.is_unbound_existing_rules_bundle()) {
+            bundle.enabled = false;
+            bundle.dns_target = None;
+        }
+    }
+
     /// 暂停仅影响运行计划，保存的单包状态、规则与绑定保持不变。
     pub fn effective(&self) -> Self {
         #[cfg(target_os = "android")]
@@ -132,6 +228,13 @@ impl Overrides {
                 // domain-capable UDP path is available, keep this runtime blocked.
                 bundle.policy.get_or_insert_with(BundlePolicy::default).block_udp = true;
             }
+        }
+        config.dns_rules.retain(|rule| !super::bundles::dns_owner(&rule.id, &self.bundles)
+            .is_some_and(BundleRoute::uses_existing_rules));
+        for bundle in config.bundles.iter_mut().filter(|bundle| bundle.uses_existing_rules()) {
+            bundle.dns_target = None;
+            bundle.domains.clear();
+            bundle.fallback = default_bundle_fallback();
         }
         // Manual feature switches and the bundle master are independent gates.
         if !self.process_enabled { config.process_rules.retain(|r| owned(&r.id)); }
@@ -152,7 +255,8 @@ impl Overrides {
 }
 impl Default for Overrides {
     fn default() -> Self { Self { bundles_enabled: true, retain_foreign_targets: false, schema_version: 1, revision: 0, process_enabled: false,
-        dns_enabled: false, process_rules: vec![], dns_rules: vec![], bundles: vec![], next_bundle_port: first_bundle_port() } }
+        dns_enabled: false, process_rules: vec![], dns_rules: vec![], bundles: vec![],
+        process_ports: Default::default(), next_process_port: first_process_port(), next_bundle_port: first_bundle_port() } }
 }
 
 pub fn safe_atom(value: &str) -> bool {
@@ -198,6 +302,12 @@ pub fn normalize(mut config: Overrides) -> Result<Overrides, String> {
             if !domain(pattern.strip_prefix("*.").unwrap_or(pattern)) { return Err("业务包域名无效，请使用纯域名、*.域名或 Punycode".into()); }
         }
         bundle.domains.sort(); bundle.domains.dedup();
+        #[cfg(windows)]
+        if !crate::edition::PROCESS && bundle.is_official_antigravity()
+            && bundle.domains == ["*.cursor.sh", "*.google.com", "cursor.sh", "google.com"]
+        {
+            bundle.domains.insert(3, ANTIGRAVITY_CLOUDCODE_DOMAIN.into());
+        }
     }
     let mut ids = std::collections::HashSet::new();
     let mut matches = std::collections::HashSet::new();

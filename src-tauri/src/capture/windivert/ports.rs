@@ -4,7 +4,7 @@ use super::{ownership::Identity, plan::{Entry, Plan, KEY}};
 use serde_yaml::Value;
 use std::{collections::BTreeSet, net::{TcpListener, UdpSocket}};
 
-pub(super) fn owned(port: u16, pid: u32, protocol: u8) -> bool {
+pub(crate) fn owned(port: u16, pid: u32, protocol: u8) -> bool {
     pid != 0 && super::owner::lookup(super::packet::Flow {
         source: ([127, 0, 0, 1], port).into(),
         destination: ([0, 0, 0, 0], 0).into(), protocol,

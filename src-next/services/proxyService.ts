@@ -359,6 +359,7 @@ export function addLocalCustomNode(rawLink: string, customAlias?: string): Local
             upserts: drafts,
             deletes: [],
           });
+          window.dispatchEvent(new Event("netbox-route-changed"));
         }
       } catch (err) {
         console.warn("[proxyService] sync local node to Rust backend warning:", err);
@@ -554,7 +555,8 @@ export async function switchGroupProxy(groupName: string, proxyName: string): Pr
       const { invoke } = await import("@tauri-apps/api/core");
       
       // 1. 切换目标单组
-      await invoke("switch_mihomo_proxy", { group: groupName, proxy: proxyName });
+      const switched = await invoke<boolean>("switch_mihomo_proxy", { group: groupName, proxy: proxyName });
+      if (!switched) return false;
 
       // 若当前操作的是订阅原生主组（如“节点选择”），尝试同步保持底层合成 PROXY 组选项一致
       if (groupName !== "PROXY") {
@@ -604,6 +606,7 @@ export async function testSingleDelay(
   const targetUrl = testUrl || getSpeedtestUrl();
 
   if (isTauriEnvironment()) {
+    let delay = -1;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       const res = await invoke<number | null>("test_mihomo_delay", {
@@ -611,13 +614,10 @@ export async function testSingleDelay(
         url: targetUrl,
         timeout: 4000,
       });
-      if (typeof res === "number" && res >= 0) {
-        return res;
-      }
-      return -1;
-    } catch (e) {
-      return -1;
-    }
+      if (typeof res === "number" && res >= 0) delay = res;
+    } catch {}
+    window.dispatchEvent(new CustomEvent("procweaver-node-tested", { detail: { name: proxyName, delay } }));
+    return delay;
   }
 
   // 纯浏览器模拟

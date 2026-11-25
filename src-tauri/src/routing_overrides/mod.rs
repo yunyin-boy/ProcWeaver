@@ -6,6 +6,9 @@ pub mod native;
 pub mod bundles;
 pub mod public_mode;
 pub mod foreign_targets;
+pub(crate) mod filters;
+#[cfg(windows)]
+pub(crate) mod hot_reset;
 mod target_cache;
 #[cfg(test)] mod tests;
 #[cfg(test)] mod bundle_runtime_tests;
@@ -22,17 +25,31 @@ pub(crate) fn reset_system_proxy_observation() {
 }
 pub fn set_applied(revision: u64, generation: u64) { *APPLIED.lock().unwrap_or_else(|p| p.into_inner()) = Some((revision, generation)); }
 fn path() -> std::path::PathBuf { crate::storage::data_dir().join("config/routing-overrides.json") }
-pub fn read() -> Result<Overrides, String> {
+fn read_saved() -> Result<Overrides, String> {
     match std::fs::read(path()) {
-        Ok(bytes) => {
-            let config: Overrides = serde_json::from_slice(&bytes).map_err(|_| "进程 / DNS 规则损坏，请恢复备份，未覆盖原文件")?;
-            #[cfg(target_os = "android")]
-            let config = config.without_bundles();
-            normalize(config)
-        },
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "进程 / DNS 规则损坏，请恢复备份，未覆盖原文件".into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Overrides::default()),
         Err(_) => Err("无法读取进程 / DNS 规则".into()),
     }
+}
+
+pub(crate) fn unbound_existing_rule_bundles() -> Vec<String> {
+    read_saved().map(|config| config.bundles.into_iter()
+        .filter(BundleRoute::is_unbound_existing_rules_bundle)
+        .map(|bundle| bundle.id).collect()).unwrap_or_default()
+}
+
+pub fn read() -> Result<Overrides, String> {
+    let config = read_saved()?;
+    #[cfg(target_os = "android")]
+    let config = config.without_bundles();
+    let mut config = config;
+    config.pause_unbound_existing_rule_bundles();
+    let mut config = normalize(config)?;
+    if cfg!(windows) {
+        config.assign_process_ports(&config.clone())?;
+    }
+    Ok(config)
 }
 pub fn current_source() -> (String, std::path::PathBuf) {
     profile::read_profiles_index().into_iter().find(|p| p.is_selected)
@@ -44,7 +61,7 @@ pub fn prepare(raw: &str, config: &Overrides, profile_id: &str) -> Result<String
 }
 pub fn prepare_with_nodes(raw: &str, config: &Overrides, profile_id: &str, nodes: &crate::local_nodes::Store) -> Result<String, String> {
     validate_business_capture(config)?;
-    let follows_system = !cfg!(target_os = "android") && config.bundles_enabled && config.bundles.iter().any(|b| b.enabled && b.mode == "sandbox" && b.fallback == "system");
+    let follows_system = !cfg!(target_os = "android") && config.bundles_enabled && config.bundles.iter().any(BundleRoute::follows_system_proxy);
     let enabled = if follows_system { crate::commands::sysproxy::get_system_proxy_status()? } else { false };
     prepare_plan(raw, config, profile_id, enabled, nodes, None)
 }
@@ -59,7 +76,7 @@ pub(crate) async fn reconcile_system_proxy(status: &crate::commands::sysproxy::S
     let enabled = status.enabled();
     if *SYSTEM_PROXY_ROUTED.lock().map_err(|_| "系统代理分流状态锁不可用")? == Some(enabled) { return Ok(()); }
     let config = read()?;
-    if config.bundles_enabled && config.bundles.iter().any(|b| b.enabled && b.mode == "sandbox" && b.fallback == "system") {
+    if config.bundles_enabled && config.bundles.iter().any(BundleRoute::follows_system_proxy) {
         let (id, source) = current_source();
         let raw = std::fs::read_to_string(source).map_err(|_| "读取系统代理联动配置失败")?;
         let prepared = prepare_with_system_proxy(&raw, &config, &id, enabled)?;
@@ -115,6 +132,22 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     manual.process_rules.retain(|r| bundles::owner(&r.id, &config.bundles).is_none());
     let manual_derived: Vec<_> = state.derived.iter().filter(|r| bundles::owner(&r.id, &config.bundles).is_none()).cloned().collect();
 
+    #[cfg(windows)]
+    let dns_settings = crate::commands::dns::get_dns_settings()?;
+    #[cfg(windows)]
+    let bundle_dns = if !crate::edition::PROCESS && instance_routing
+        && dns_settings.listener_mode != Some(crate::commands::dns::DnsListenerMode::Off)
+    {
+        bundles::prepare_cloudcode_dns(&base, config, profile_id)?
+    } else { None };
+    #[cfg(windows)]
+    let base = if let Some((prepared, dns_rule)) = &bundle_dns {
+        if !manual.dns_enabled { manual.dns_rules.clear(); }
+        manual.dns_enabled = true;
+        manual.dns_rules.push(dns_rule.clone());
+        prepared.clone()
+    } else { base };
+
     // 严密控制规则入栈顺序：后插入 0..0 者位于 rules 最终序列更顶层
     let manual_base = base.clone();
     let compose_base = |manual: &Overrides, owned: bool| -> Result<String, String> {
@@ -147,7 +180,8 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
         let raw=if config.process_enabled {composer::safety(&raw)?}else{raw};
         composer::ensure_bt_pt_and_proxy_group(&raw)
     };
-    let base = public_mode::compose(&finish(&base)?, &general.run_mode)?;
+    let base = bundles::compose_existing_rules(&finish(&base)?, config)?;
+    let base = public_mode::compose(&base, &general.run_mode)?;
     #[cfg(windows)]
     let mut owner_policies = std::collections::BTreeMap::new();
     #[cfg(windows)]
@@ -181,12 +215,13 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     let base = composer::safety_guard(&base)?;
     bundles::validate_remote_names(&base, config)?;
     #[cfg(windows)]
-    let base = crate::commands::dns_listener::compose(&base, config)?;
+    let base = crate::commands::dns_listener::compose(&base, config, &dns_settings,
+        bundle_dns.as_ref().map(|(_, rule)| rule.domain.as_str()), general.allow_lan)?;
     let base = crate::capture::compose(&base, config, profile_id, &fallback)?;
     #[cfg(windows)]
     let base = if general.traffic_mode == crate::capture::windivert::plan::MODE {
         crate::capture::windivert::plan::compose_with_policies(&base, config, &owner_policies)?
-    } else { base };
+    } else { crate::capture::windivert::plan::compose_suite_dns(&base, config)? };
     #[cfg(target_os = "android")]
     if general.allow_lan {
         let mut yaml: serde_yaml::Value = serde_yaml::from_str(&base).map_err(|_| "运行配置无效")?;
@@ -213,7 +248,7 @@ pub async fn reapply(config: &Overrides) -> Result<(), String> {
 pub(crate) async fn change_system_proxy(enable: bool, change: impl FnOnce() -> Result<bool, String>) -> Result<bool, String> {
     if !process::ACTIVE.load(Ordering::SeqCst) { return change(); }
     let config = read()?;
-    if !config.bundles_enabled || !config.bundles.iter().any(|b| b.enabled && b.mode == "sandbox" && b.fallback == "system") {
+    if !config.bundles_enabled || !config.bundles.iter().any(BundleRoute::follows_system_proxy) {
         return change();
     }
     let old = std::fs::read_to_string(crate::storage::data_dir().join("core_data/config.yaml")).map_err(|_| "读取系统代理切换前的运行配置失败")?;
@@ -239,8 +274,7 @@ pub(crate) async fn change_system_proxy(enable: bool, change: impl FnOnce() -> R
 pub async fn apply_runtime(prepared: &str) -> Result<(), String> {
     if !process::ACTIVE.load(Ordering::SeqCst) {
         let target = crate::storage::data_dir().join("core_data/config.yaml");
-        let _ = crate::storage::replace_atomic(&target, prepared.as_bytes());
-        return Ok(());
+        return crate::storage::replace_atomic(&target, prepared.as_bytes());
     }
     #[cfg(windows)]
     let resolved = crate::commands::dns_listener::resolve_for_apply(prepared, process::PID.load(Ordering::SeqCst)).await?;
@@ -310,6 +344,9 @@ pub struct View {
     pub running: bool, pub applied_revision: Option<u64>, pub applied_generation: Option<u64>,
     pub unavailable_rules: Vec<String>,
     pub preserved_targets: Vec<Target>,
+    #[cfg(windows)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hot_reset: Option<hot_reset::Notice>,
 }
 pub fn view() -> Result<View, String> {
     let config = read()?; let (id, source) = current_source();
@@ -321,7 +358,9 @@ pub fn view() -> Result<View, String> {
     let mut available = targets.clone();
     if config.retain_foreign_targets { available.extend(foreign_targets::available(&preserved_targets)); }
     let effective = config.effective();
-    let mut unavailable_rules: Vec<_> = effective.process_rules.iter().filter(|r| r.enabled && r.action == "proxy" && r.target.as_ref().is_none_or(|t| !available.contains(t))).map(|r| r.id.clone()).collect();
+    let mut unavailable_rules: Vec<_> = effective.process_rules.iter()
+        .filter(|r| r.enabled && r.action == "proxy" && r.target.as_ref().is_none_or(|t| !available.contains(t)))
+        .map(|r| r.id.clone()).collect();
     unavailable_rules.extend(effective.dns_rules.iter().filter(|r| r.enabled && !available.contains(&r.target)).map(|r| r.id.clone()));
     unavailable_rules.extend(effective.bundles.iter().filter(|b| b.enabled && [&b.main_target, &b.dns_target].into_iter().flatten().any(|t| !available.contains(t))).map(|b| format!("bundle:{}",b.id)));
     let mut tracking = tracker::status(&config);
@@ -332,7 +371,13 @@ pub fn view() -> Result<View, String> {
     }
     let running = process::ACTIVE.load(Ordering::SeqCst);
     let applied = if running { *APPLIED.lock().unwrap_or_else(|p| p.into_inner()) } else { None };
-    Ok(View { target_labels, traffic_driver: crate::capture::smart_arbiter::get_active_driver_name(), capture: crate::capture::status(), config, targets, preserved_targets, tracking, running, applied_revision: applied.map(|p| p.0), applied_generation: applied.map(|p| p.1), unavailable_rules })
+    Ok(View {
+        target_labels, traffic_driver: crate::capture::smart_arbiter::get_active_driver_name(), capture: crate::capture::status(),
+        config, targets, preserved_targets, tracking, running,
+        applied_revision: applied.map(|p| p.0), applied_generation: applied.map(|p| p.1), unavailable_rules,
+        #[cfg(windows)]
+        hot_reset: None,
+    })
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -343,8 +388,46 @@ pub async fn save(config: Overrides, selections: Vec<Selection>) -> Result<View,
     let _lock = process::LIFECYCLE.lock().await;
     crate::function_mode::require_full()?;
     let old = read()?;
+    let _notice = save_locked(config, selections, old).await?;
+    let view = view()?;
+    #[cfg(windows)]
+    let view = View { hot_reset: _notice.hot_reset, ..view };
+    Ok(view)
+}
+
+/// Remove the saved route and its owned rules while the caller holds LIFECYCLE.
+pub(crate) async fn remove_bundle_locked(instance_id: &str) -> Result<(), String> {
+    let old = read()?;
+    if !old.bundles.iter().any(|bundle| bundle.id == instance_id) {
+        return Ok(());
+    }
+    crate::function_mode::require_full()?;
+    let mut next = old.clone();
+    next.bundles.retain(|bundle| bundle.id != instance_id);
+    next.process_rules.retain(|rule| {
+        !bundles::owner(&rule.id, &old.bundles).is_some_and(|bundle| bundle.id == instance_id)
+    });
+    next.dns_rules.retain(|rule| {
+        !bundles::dns_owner(&rule.id, &old.bundles).is_some_and(|bundle| bundle.id == instance_id)
+    });
+    save_locked(next, Vec::new(), old).await.map(drop)
+}
+
+#[derive(Default)]
+struct SaveNotice {
+    #[cfg(windows)]
+    hot_reset: Option<hot_reset::Notice>,
+}
+
+async fn save_locked(config: Overrides, selections: Vec<Selection>, old: Overrides) -> Result<SaveNotice, String> {
     if config.revision != old.revision { return Err("规则已被其他页面修改，请重新加载后再保存".into()); }
     let mut config = normalize(config)?;
+    #[cfg(windows)]
+    for bundle in config.bundles.iter().filter(|bundle| bundle.enabled
+        || !old.bundles.iter().any(|previous| previous.id == bundle.id && previous.policy == bundle.policy))
+    {
+        filters::validate_bundle(bundle)?;
+    }
     crate::external_proxy::check_core_conflicts(&config)?;
     let active = current_source().0;
     let preserved = foreign_targets::saved_bindings(&old, &active);
@@ -352,6 +435,9 @@ pub async fn save(config: Overrides, selections: Vec<Selection>) -> Result<View,
         return Err("新出口不属于当前订阅，也不是已有保留绑定，请选择当前订阅出口重新绑定".into());
     }
     bundles::assign_ports(&mut config, &old)?;
+    if cfg!(windows) {
+        config.assign_process_ports(&old)?;
+    }
     if selections.len() > 256 { return Err("一次最多选择 256 个进程".into()); }
     if !selections.is_empty() || (config.effective().process_enabled && config.effective().process_rules.iter().any(|r| r.enabled && r.include_descendants)) {
         let processes = native::snapshot()?;
@@ -365,6 +451,8 @@ pub async fn save(config: Overrides, selections: Vec<Selection>) -> Result<View,
     }
     config.revision = old.revision.checked_add(1).ok_or("规则修订号已耗尽")?;
     let old_runtime = if process::ACTIVE.load(Ordering::SeqCst) { Some(std::fs::read_to_string(crate::storage::data_dir().join("core_data/config.yaml")).map_err(|_| "读取恢复配置失败")?) } else { None };
+    #[cfg(windows)]
+    let hot_reset = hot_reset::snapshot(&old, &config, old_runtime.as_deref()).await;
     // Removing/disabling bundle rules while offline must not require a Mihomo
     // executable. New effective rules still take the existing validation path.
     let removal_only = !process::ACTIVE.load(Ordering::SeqCst)
@@ -381,8 +469,28 @@ pub async fn save(config: Overrides, selections: Vec<Selection>) -> Result<View,
     }
     set_applied(config.revision, tracker::status(&config).generation);
     #[cfg(windows)] {
-        let ports: Vec<_> = config.effective().bundles.iter().filter(|b| b.enabled).map(|b| b.port).collect();
-        crate::capture::user_mode::control::retain_ports(&ports);
+        let eff = config.effective();
+        let mut ports: Vec<_> = eff.bundles.iter().filter(|b| b.enabled).map(|b| b.port).collect();
+        if eff.process_enabled {
+            for r in &eff.process_rules {
+                if r.enabled && r.action == "proxy"
+                    && !r.target.as_ref().is_some_and(|target| target.name.eq_ignore_ascii_case("DIRECT"))
+                    && bundles::owner(&r.id, &eff.bundles).is_none()
+                {
+                    if let Some(p) = crate::capture::user_mode::process_rule_port(&eff, r) {
+                        ports.push(p);
+                    }
+                }
+            }
+        }
+        let previous = old.effective();
+        let active_reject = |effective: &Overrides, rule: &ProcessRule| {
+            effective.process_enabled && rule.enabled && rule.action == "reject"
+                && !bundles::owner(&rule.id, &effective.bundles).is_some_and(|bundle| !bundle.enabled)
+        };
+        let withdrawn = previous.process_rules.iter().filter(|rule| active_reject(&previous, rule))
+            .any(|rule| !eff.process_rules.iter().any(|next| next == rule && active_reject(&eff, next)));
+        crate::capture::user_mode::control::retain_core(&ports, withdrawn);
         if old.bundles_enabled && !config.bundles_enabled {
             let mut errors = Vec::new();
             let closed = tokio::time::timeout(std::time::Duration::from_secs(10), crate::commands::mihomo_api::close_withdrawn_bundle_connections(&old)).await
@@ -396,6 +504,8 @@ pub async fn save(config: Overrides, selections: Vec<Selection>) -> Result<View,
             }
             if !errors.is_empty() { return Err(format!("业务规则与接管已撤销，但清理尚未全部确认：{}；请正常重启相关应用", errors.join("；"))); }
         }
+        Ok(SaveNotice { hot_reset: hot_reset::applied(hot_reset).await })
     }
-    view()
+    #[cfg(not(windows))]
+    Ok(SaveNotice::default())
 }

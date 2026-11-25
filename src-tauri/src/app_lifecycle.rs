@@ -1080,7 +1080,7 @@ pub fn show_tray_menu(app: tauri::AppHandle) {
     }
 }
 
-pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+pub fn setup(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let tray_icon = tauri::include_image!("icons/32x32.png");
 
     let mut builder = TrayIconBuilder::with_id("procweaver")
@@ -1089,7 +1089,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .show_menu_on_left_click(false);
 
     if !crate::function_mode::core_features_enabled() {
-        builder = builder.menu(&process_menu(app.handle())?);
+        builder = builder.menu(&process_menu(app)?);
     }
 
     builder
@@ -1124,7 +1124,7 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
 
-    let app_handle = app.handle().clone();
+    let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = get_tray_payload(app_handle).await;
     });

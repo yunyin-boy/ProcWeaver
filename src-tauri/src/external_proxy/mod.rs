@@ -5,7 +5,7 @@ mod server;
 mod secrets;
 mod transport;
 mod udp;
-mod dns;
+pub(crate) mod dns;
 mod probe;
 mod sniff;
 pub(crate) mod diagnostics;
@@ -258,6 +258,7 @@ fn launch_route(b: &Bundle, enabled: bool) -> crate::routing_overrides::model::B
             target_filter_mode: "all".into(),
             target_rules: vec![],
             stale_connection_strategy: "prompt".into(),
+            use_existing_rules: false,
         })
     });
     crate::routing_overrides::model::BundleRoute { id: b.id.clone(), name: b.name.clone(), main_exe: b.main_exe.clone(), enabled: b.enabled && enabled, main_target: None, dns_target: None, port: b.port, mode: b.mode.clone(), domains: b.domains.clone(), fallback: "direct".into(), policy }
@@ -347,7 +348,14 @@ pub async fn apply_external_bundles(revision: u64, bundles: Vec<Bundle>, enabled
         Err(_) => crate::routing_overrides::model::Overrides::default(),
     };
     if crate::function_mode::core_features_enabled() { validate_core_separation(&config, &core)?; }
-    runtime.apply(config).await
+    let view = runtime.apply(config).await?;
+    #[cfg(windows)]
+    {
+        let config = runtime.config();
+        crate::capture::user_mode::control::retain_external(|id, port| config.enabled
+            && config.bundles.iter().any(|bundle| bundle.enabled && bundle.id == id && bundle.port == port));
+    }
+    Ok(view)
 }
 #[tauri::command]
 pub async fn test_external_proxy(endpoint_id: String, host: String, port: u16, protocol: Option<String>, query_name: Option<String>, timeout_ms: Option<u64>) -> Result<String, String> {

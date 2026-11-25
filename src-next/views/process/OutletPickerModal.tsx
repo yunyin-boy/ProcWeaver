@@ -6,7 +6,6 @@
 // ==========================================================================
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { cleanProxyOptions } from "../../services/processRoutingService";
 
 export interface OutletPickerModalProps {
   isOpen: boolean;
@@ -46,20 +45,15 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<RegionTab>("all");
-  const [selectedProxy, setSelectedProxy] = useState<string>(currentProxy || "Proxy");
+  const [selectedProxy, setSelectedProxy] = useState(currentProxy);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // 清洗并去重所有可用代理出站
   const cleanedList = useMemo(() => {
-    const rawCleaned = cleanProxyOptions(availableProxies);
     const set = new Set<string>();
     const list: Array<{ value: string; label: string; isGroup: boolean; region: RegionTab }> = [];
 
-    // 固定置顶项：Proxy (遵循核心规则与主代理)
-    const fixedTop: string[] = ["Proxy"];
-    const allCandidates = Array.from(new Set([...fixedTop, ...rawCleaned.map((c) => c.value)]));
-
-    for (const item of allCandidates) {
+    for (const item of availableProxies) {
       if (!item || set.has(item)) continue;
       const trimmed = item.trim();
       const upper = trimmed.toUpperCase();
@@ -72,7 +66,7 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
 
       const lower = item.toLowerCase();
       let region: RegionTab = "other";
-      if (item === "Proxy" || lower.includes("auto") || lower.includes("自动") || lower.includes("selector")) {
+      if (upper === "PROXY" || lower.includes("auto") || lower.includes("自动") || lower.includes("selector")) {
         region = "common";
       } else if (/香港|九龙|hk|hongkong/i.test(item)) {
         region = "hk";
@@ -84,7 +78,7 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
         region = "sg";
       }
 
-      const isGroup = item === "Proxy" || lower.includes("auto") || lower.includes("自动");
+      const isGroup = upper === "PROXY" || lower.includes("auto") || lower.includes("自动");
 
       list.push({
         value: item,
@@ -96,11 +90,12 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
 
     return list;
   }, [availableProxies]);
+  const canConfirm = cleanedList.some(({ value }) => value === selectedProxy);
 
   // 当弹窗打开时，重置搜索并同步初始选中项
   useEffect(() => {
     if (isOpen) {
-      setSelectedProxy(currentProxy || "Proxy");
+      setSelectedProxy(currentProxy);
       setSearchQuery("");
       setActiveTab("all");
       const timer = setTimeout(() => {
@@ -138,7 +133,7 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
         onClose();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (selectedProxy) {
+        if (canConfirm) {
           onConfirm(selectedProxy);
           onClose();
         }
@@ -147,12 +142,12 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, selectedProxy, onConfirm, onClose]);
+  }, [isOpen, canConfirm, selectedProxy, onConfirm, onClose]);
 
   if (!isOpen) return null;
 
   const handleConfirmAction = () => {
-    if (!selectedProxy) return;
+    if (!canConfirm) return;
     onConfirm(selectedProxy);
     onClose();
   };
@@ -165,11 +160,14 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/30 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150 select-none"
+      className="workbench-dialog-backdrop fixed inset-0 z-[150] flex items-center justify-center p-3 sm:p-4 select-none"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-xl rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 shadow-2xl p-5 text-left flex flex-col gap-3.5 max-h-[86vh] animate-in zoom-in-95 duration-150"
+        className="workbench-dialog relative flex max-h-[90dvh] w-full max-w-xl flex-col gap-3.5 overflow-y-auto p-4 text-left sm:p-5"
+        role="dialog"
+        aria-label="绑定专用出口"
+        aria-modal="true"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 顶部微高光发丝线 */}
@@ -220,7 +218,7 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="搜索节点名称、地区、协议（如 香港、日本、BGP、DIRECT）..."
+            placeholder="搜索节点名称、地区或协议"
             className="w-full pl-9 pr-8 py-2 text-xs rounded-xl bg-black/5 dark:bg-white/5 border border-[var(--glass-border-subtle)] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-blue-500/50 transition"
           />
           {searchQuery && (
@@ -264,8 +262,10 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
               <svg className="w-8 h-8 opacity-40 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <span>未检索到匹配的出口节点</span>
-              <span className="text-[10px] opacity-70">请调整搜索关键词或切换分类标签</span>
+              <span>{cleanedList.length ? "未检索到匹配的出口节点" : "当前没有可用出口"}</span>
+              <span className="text-[10px] opacity-70">
+                {cleanedList.length ? "请调整搜索关键词或切换分类标签" : "请先添加或切换到有可用出口的订阅"}
+              </span>
             </div>
           ) : (
             filteredList.map((item) => {
@@ -273,23 +273,28 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
               const isCurrentlyBound = currentProxy === item.value;
 
               return (
-                <div
+                <button
                   key={item.value}
+                  type="button"
+                  aria-pressed={isSelected}
                   onClick={() => setSelectedProxy(item.value)}
                   onDoubleClick={() => handleItemDoubleClick(item.value)}
-                  className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs cursor-pointer transition-all border ${
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+                  }}
+                  className={`group flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
                     isSelected
-                      ? "bg-blue-500/15 border-blue-500/50 text-[var(--text-primary)] shadow-sm"
-                      : "border-transparent hover:bg-black/5 dark:hover:bg-white/5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                      ? "bg-[var(--workbench-selected)] text-[var(--workbench-accent)]"
+                      : "text-[var(--text-secondary)] hover:bg-[var(--workbench-hover)]"
                   }`}
                 >
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
+                  <span className="flex items-center gap-2.5 min-w-0 flex-1 mr-2">
                     {/* 单选圈 / 对勾 */}
-                    <div
-                      className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 transition-colors ${
+                    <span
+                      className={`w-3.5 h-3.5 rounded-full flex items-center justify-center shrink-0 transition-colors ${
                         isSelected
-                          ? "border-blue-500 bg-blue-500 text-white"
-                          : "border-[var(--glass-border-medium)] group-hover:border-[var(--text-muted)]"
+                          ? "bg-[var(--workbench-accent-solid)] text-white"
+                          : "bg-[var(--workbench-surface)]"
                       }`}
                     >
                       {isSelected && (
@@ -297,16 +302,16 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                         </svg>
                       )}
-                    </div>
+                    </span>
 
                     {/* 节点名称 */}
                     <span className="font-medium truncate tracking-tight text-[11px]">
                       {item.value}
                     </span>
-                  </div>
+                  </span>
 
                   {/* 状态徽标 */}
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="flex items-center gap-1.5 shrink-0">
                     {item.isGroup ? (
                       <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20">
                         策略组
@@ -322,8 +327,8 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
                         当前使用
                       </span>
                     )}
-                  </div>
-                </div>
+                  </span>
+                </button>
               );
             })
           )}
@@ -334,8 +339,8 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
           <div className="min-w-0 flex-1 pr-3">
             <div className="text-[11px] text-[var(--text-muted)] flex items-center gap-1.5">
               <span className="shrink-0">待绑定:</span>
-              <span className="font-semibold text-[var(--text-primary)] truncate max-w-[220px]" title={selectedProxy}>
-                {selectedProxy || "未选择"}
+              <span className="font-semibold text-[var(--text-primary)] truncate max-w-[220px]" title={canConfirm ? selectedProxy : undefined}>
+                {canConfirm ? selectedProxy : "未选择"}
               </span>
               <span className="text-[10px] text-[var(--text-muted)] hidden sm:inline opacity-75 shrink-0">
                 (支持双击快速应用)
@@ -347,15 +352,15 @@ export const OutletPickerModal: React.FC<OutletPickerModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-1.5 text-xs font-semibold rounded-xl border border-[var(--glass-border-subtle)] bg-black/5 dark:bg-white/5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--glass-border-medium)] transition cursor-pointer"
+              className="workbench-action"
             >
               取消
             </button>
             <button
               type="button"
               onClick={handleConfirmAction}
-              disabled={!selectedProxy}
-              className="px-4 py-1.5 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/25 transition cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!canConfirm}
+              className="workbench-action workbench-action-primary"
             >
               确认更换出口
             </button>

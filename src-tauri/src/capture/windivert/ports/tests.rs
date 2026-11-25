@@ -20,8 +20,11 @@ fn relocate(raw: &str, ports: &[u16]) -> String {
     assert_eq!(plan.entries.len(), ports.len());
     for (entry, port) in plan.entries.iter_mut().zip(ports) {
         let name = format!("pw-wd-{}", entry.id().unwrap());
+        let name_v6 = format!("{name}-v6");
         for listener in yaml["listeners"].as_sequence_mut().unwrap() {
-            if listener["name"].as_str() == Some(&name) { listener["port"] = (*port).into(); }
+            if matches!(listener["name"].as_str(), Some(n) if n == name || n == name_v6) {
+                listener["port"] = (*port).into();
+            }
         }
         for target in &mut plan.targets { if target.owner == entry.owner && target.port == entry.port { target.port = *port; } }
         entry.port = *port;

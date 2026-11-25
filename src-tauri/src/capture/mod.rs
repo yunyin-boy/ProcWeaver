@@ -7,6 +7,8 @@ pub mod local_proxy;
 #[cfg(windows)]
 pub mod packet;
 #[cfg(windows)]
+pub(crate) mod suite_dns;
+#[cfg(windows)]
 pub mod windivert;
 use crate::routing_overrides::{model::*, tracker::ProcessEntry};
 use serde::{Deserialize, Serialize};
@@ -115,6 +117,34 @@ pub struct Status {
     pub unclassified: u64,
     pub last_error: Option<String>,
     pub recent_errors: Vec<ConnectionError>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub recent_connections: Vec<ConnectionEvidence>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionEvidence {
+    pub connection_id: u64,
+    pub time_ms: u64,
+    pub pid: u32,
+    pub process_name: String,
+    pub rule_owner: Option<String>,
+    pub entry_port: Option<u16>,
+    pub destination: String,
+    pub protocol: String,
+    pub stage: String,
+    pub outcome: ConnectionOutcome,
+    pub error_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_upstream: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionOutcome {
+    Attributed,
+    Relayed,
+    Failed,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,6 +171,7 @@ static STATUS: Mutex<Status> = Mutex::new(Status {
     unclassified: 0,
     last_error: None,
     recent_errors: Vec::new(),
+    recent_connections: Vec::new(),
 });
 #[allow(dead_code)]
 pub(super) fn is_normal_close(error: &std::io::Error) -> bool {
@@ -210,13 +241,19 @@ pub fn status() -> Status {
         s.active = actual.active;
         s.tcp_connections = actual.tcp; s.udp_packets = actual.udp; s.dns_queries = actual.dns;
         s.unclassified = actual.unknown; s.failures = actual.failures;
+        s.recent_connections = actual.recent_connections;
         if let Some(error) = windivert::session::error() { s.active=false; s.last_error=Some(error.clone()); s.message=error; }
         else if s.active { s.message="WinDivert 已接管明确进程的新 TCP / UDP 连接；未知归属沿用原链路，域名规则依赖核心识别".into(); }
     }
     #[cfg(windows)]
     if crate::commands::settings::get_general_settings().is_ok_and(|v| v.traffic_mode == user_mode::MODE) {
-        s.active = true;
-        s.message = "用户态强接管模式已就绪；由业务包卡片启动的应用将自动注入 Hook，免驱动并使用真实 DNS 解析".into();
+        let ready = user_mode::hook_assets_ready();
+        s.active = ready;
+        s.message = if ready {
+            "用户态强接管模式已就绪；请通过应用卡片或规则行的【启动】按钮受控启动程序以注入 Hook".into()
+        } else {
+            "缺少 Hook 注入组件（pw_hook64.dll / pw_hook32.dll），用户态 Hook 无法注入".into()
+        };
     }
     s
 }
@@ -263,11 +300,40 @@ pub(crate) fn current_instance_plan(yaml: &Value) -> Result<windivert::plan::Pla
 pub async fn confirm_runtime_for_core(raw: &str, _core_pid:u32) -> Result<(), String> {
     let yaml: Value = serde_yaml::from_str(raw).map_err(|_| "接管计划无效")?;
     #[cfg(windows)]
-    if crate::commands::settings::get_general_settings()?.traffic_mode == windivert::plan::MODE {
-        let plan = current_instance_plan(&yaml)?;
-        windivert::session::confirm(plan,_core_pid).await?;
-        let mut s=STATUS.lock().unwrap_or_else(|p|p.into_inner()); s.active=true;s.transitioning=false;
-        return Ok(());
+    {
+        use crate::routing_overrides::bundles::SANDBOX_DNS;
+        let settings = crate::commands::settings::get_general_settings()?;
+        let scopes = yaml[SANDBOX_DNS].as_sequence();
+        if let Some(scopes) = scopes.filter(|scopes| !scopes.is_empty()) {
+            let port = settings.controller_port;
+            let client = crate::commands::mihomo_api::controller_client()
+                .timeout(std::time::Duration::from_secs(2)).build().map_err(|_| "核心连接失败")?;
+            let version: serde_json::Value = client.get(format!("http://127.0.0.1:{port}/version"))
+                .send().await.map_err(|_| "无法核验核心的沙盒 DNS 支持")?
+                .error_for_status().map_err(|_| "核心拒绝沙盒 DNS 能力核验")?
+                .json().await.map_err(|_| "核心能力响应无效")?;
+            if version[SANDBOX_DNS].as_bool() != Some(true) {
+                return Err("当前核心缺少沙盒纯净 DNS 支持，请使用此版本配套的 Mihomo 核心".into());
+            }
+            if scopes.iter().any(|scope| scope["preserve_target_ip"].as_bool() == Some(true))
+                && version["procweaver-suite-filters"].as_bool() != Some(true)
+            {
+                return Err("当前核心缺少套件目标过滤支持，请使用此版本配套的 Mihomo 核心".into());
+            }
+            if scopes.iter().any(|scope| scope["mode"].is_string())
+                && version["procweaver-suite-dns"].as_bool() != Some(true)
+            {
+                return Err("当前核心缺少套件 DNS 模式支持，请使用此版本配套的 Mihomo 核心".into());
+            }
+        }
+        if settings.traffic_mode == windivert::plan::MODE {
+            let plan = current_instance_plan(&yaml)?;
+            windivert::session::confirm(plan, _core_pid).await?;
+            let mut status = STATUS.lock().unwrap_or_else(|p| p.into_inner());
+            status.active = true;
+            status.transitioning = false;
+            return Ok(());
+        }
     }
     if yaml["netbox-capture"].is_null() { stop(); return Ok(()); }
     let plan: Plan = serde_yaml::from_value(yaml["netbox-capture"].clone()).map_err(|_| "接管计划无效")?;
@@ -305,8 +371,10 @@ pub fn compose(raw: &str, config: &Overrides, profile_id: &str, fallback: &[Valu
     let exclusions = crate::commands::exclusions::get_exclusions()?;
     let prefix = crate::commands::exclusions::compose("rules: []", &exclusions)?;
     let prefix: Value = serde_yaml::from_str(&prefix).map_err(|_| "排除规则无效")?;
-    let ports: Vec<u16> = (0..config.process_rules.len())
-        .map(|i| 32000 + i as u16)
+    let mut active = config.clone();
+    active.assign_process_ports(config)?;
+    let ports: Vec<u16> = active.process_rules.iter()
+        .map(|rule| active.process_ports.get(&rule.id).copied().unwrap_or_default())
         .collect();
     let mut occupied: Vec<u16> = [
         "port",
@@ -332,8 +400,8 @@ pub fn compose(raw: &str, config: &Overrides, profile_id: &str, fallback: &[Valu
             .enumerate()
             .filter(|(_, r)| r.enabled && crate::routing_overrides::bundles::owner(&r.id, &config.bundles).is_none())
         {
-            let name = format!("netbox-capture-{i}");
             let port = ports[i];
+            let name = format!("netbox-capture-{port}");
             if occupied.contains(&port)
                 || listeners.iter().any(|l| {
                     l["name"].as_str() == Some(&name)
@@ -397,7 +465,6 @@ pub fn compose(raw: &str, config: &Overrides, profile_id: &str, fallback: &[Valu
             return Err("DNS 接管端口与已有监听冲突".into());
         }
     }
-    let mut active = config.clone();
     active.process_enabled = process_active;
     active.dns_enabled = dns_active;
     yaml["netbox-capture"] = serde_yaml::to_value(Plan {

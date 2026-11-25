@@ -13,7 +13,7 @@ const RAW: &str = "mixed-port: 7890\ndns:\n  enable: true\n  listen: '127.0.0.1:
 
 fn plan(raw: &str, config: &Overrides, mode: Option<DnsListenerMode>, guard: bool, last: Option<u16>) -> Result<Value, String> {
     let settings = DnsSettings { listener_mode: mode, ..Default::default() };
-    serde_yaml::from_str(&compose_with(raw, config, &settings, guard, last, false)?).map_err(|e| e.to_string())
+    serde_yaml::from_str(&compose_with(raw, config, &settings, guard, last, false, None)?).map_err(|e| e.to_string())
 }
 
 #[test]
@@ -66,11 +66,48 @@ fn guard_port_53_and_lan_are_never_silently_moved() {
 fn fixed_listener_obeys_lan_boundary() {
     let config = Overrides::default();
     let mut settings = DnsSettings { listener_mode: Some(DnsListenerMode::Fixed), ..Default::default() };
-    let yaml: Value = serde_yaml::from_str(&compose_with(RAW, &config, &settings, false, None, false).unwrap()).unwrap();
+    let yaml: Value = serde_yaml::from_str(&compose_with(RAW, &config, &settings, false, None, false, None).unwrap()).unwrap();
     assert_eq!(yaml["dns"]["listen"], "127.0.0.1:1053");
     settings.listen = "192.0.2.5:1053".into();
-    assert!(compose_with(RAW, &config, &settings, false, None, false).is_err());
-    assert!(compose_with(RAW, &config, &settings, false, None, true).is_ok());
+    assert!(compose_with(RAW, &config, &settings, false, None, false, None).is_err());
+    assert!(compose_with(RAW, &config, &settings, false, None, true, None).is_ok());
+}
+
+#[test]
+fn cloudcode_dns_activates_only_the_required_auto_capture_scope() {
+    use crate::capture::windivert::plan::{self, Plan};
+    use crate::routing_overrides::model::{BundleRoute, ANTIGRAVITY_CLOUDCODE_DOMAIN as DOMAIN};
+    let config = Overrides { bundles: vec![BundleRoute {
+        id: "antigravity-bundle".into(), name: "Antigravity".into(), main_exe: "antigravity.exe".into(),
+        enabled: true, main_target: None, dns_target: None, port: 34000, mode: "strict".into(),
+        domains: vec!["*.google.com".into(), DOMAIN.into()], fallback: "rules".into(), policy: None,
+    }], ..Default::default() };
+    let prepare = |mode, raw, domain| {
+        let settings = DnsSettings { listener_mode: mode, listen: "127.0.0.1:1053".into(), ..Default::default() };
+        let raw = compose_with(raw, &config, &settings, false, None, false, domain).unwrap();
+        let raw = plan::compose_with_policies(&raw, &config, &Default::default()).unwrap();
+        let yaml: Value = serde_yaml::from_str(&raw).unwrap();
+        serde_yaml::from_value::<Plan>(yaml[plan::KEY].clone()).unwrap()
+    };
+    let no_listen = RAW.replace("  listen: '127.0.0.1:1053'\n", "");
+    for mode in [Some(DnsListenerMode::Auto), None] {
+        let plan = prepare(mode, &no_listen, Some(DOMAIN));
+        assert_eq!(plan.dns_port_for(DOMAIN), Some(FIRST_PORT));
+        for host in ["x.daily-cloudcode-pa.googleapis.com", "other.googleapis.com", "www.google.com"] {
+            assert_eq!(plan.dns_port_for(host), None, "{host}");
+        }
+    }
+    let fixed = prepare(Some(DnsListenerMode::Fixed), RAW, Some(DOMAIN));
+    assert_eq!(fixed.dns_port_for(DOMAIN), Some(1053));
+    assert_eq!(fixed.dns_port_for("www.google.com"), Some(1053));
+    let original = prepare(None, RAW, Some(DOMAIN));
+    assert_eq!(original.dns_port_for(DOMAIN), Some(1053));
+    assert_eq!(original.dns_port_for("www.google.com"), Some(1053));
+    let unsupported = prepare(Some(DnsListenerMode::Fixed), RAW, None);
+    assert_eq!(unsupported.dns_port_for(DOMAIN), None);
+    assert_eq!(unsupported.dns_port_for("www.google.com"), Some(1053));
+    let off = prepare(Some(DnsListenerMode::Off), RAW, None);
+    assert!(!off.has_dns());
 }
 
 #[test]

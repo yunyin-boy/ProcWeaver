@@ -38,7 +38,8 @@ function loadInitialCache(): ExitIpHealthInfo | null {
 }
 
 export function getCachedExitHealth(): ExitIpHealthInfo | null {
-  return loadInitialCache();
+  const cached = loadInitialCache();
+  return cached ? { ...cached, stale: true } : null;
 }
 
 export async function fetchExitIpHealth(proxyPort?: number): Promise<ExitIpHealthInfo> {
@@ -47,6 +48,7 @@ export async function fetchExitIpHealth(proxyPort?: number): Promise<ExitIpHealt
       const raw = await invokeCommand<RustIpHealthInfo>("check_ip_health", {
         proxyPort: proxyPort || undefined,
       });
+      if (!raw.ip) return getCachedExitHealth() ?? { ip: "", country: "", asn: "" };
 
       const asnDesc = raw.asOrganization
         ? `AS${raw.asn ?? ""} (${raw.asOrganization})`
@@ -55,12 +57,12 @@ export async function fetchExitIpHealth(proxyPort?: number): Promise<ExitIpHealt
         : "未知 ASN";
 
       const info: ExitIpHealthInfo = {
-        ip: raw.ip || "127.0.0.1",
+        ip: raw.ip,
         country: raw.country || "未知位置",
         city: raw.city,
         asn: asnDesc,
-        fraudScore: typeof raw.fraudScore === "number" ? raw.fraudScore : 0,
-        isResidential: Boolean(raw.isResidential),
+        fraudScore: typeof raw.fraudScore === "number" ? raw.fraudScore : undefined,
+        isResidential: typeof raw.isResidential === "boolean" ? raw.isResidential : undefined,
         firstPacketMs: raw.firstPacketMs,
         testedAt: Date.now(),
       };
@@ -75,15 +77,8 @@ export async function fetchExitIpHealth(proxyPort?: number): Promise<ExitIpHealt
     } catch (err) {
       console.warn("[exitHealthService] check_ip_health failed in Tauri:", err);
       // 容灾平滑降级：若存在历史缓存快照，返回历史快照保证界面不空白、不崩溃
-      const fallback = loadInitialCache() || {
-        ip: "待检测",
-        country: "本地/直连",
-        asn: "正在建立出口网络",
-        fraudScore: 0,
-        isResidential: false,
-        testedAt: Date.now(),
-      };
-      return fallback;
+      const cached = loadInitialCache();
+      return cached ? { ...cached, stale: true } : { ip: "", country: "", asn: "" };
     }
   }
 

@@ -4,6 +4,39 @@ fn event(endpoint: u64, pid: u32) -> Event { Event { kind:Kind::Bind, timestamp:
     local:"0.0.0.0:45678".parse().unwrap(), remote:"0.0.0.0:0".parse().unwrap(), protocol:17 } }
 fn resolve(index: &Index) -> Option<Owner> { index.resolve("192.0.2.1:45678".parse().unwrap(), "192.0.2.53:53".parse().unwrap(), 17, 20, |pid| Some(identity(pid))) }
 #[test]
+fn dns_reply_follows_late_udp_connect_but_never_reused_socket() {
+    let mut index = Index::default();
+    let mut update = event(1, 42);
+    index.apply(update.clone(), Some(identity(42))).unwrap();
+    let original = resolve(&index).unwrap();
+    let local = "192.0.2.1:45678".parse().unwrap();
+    let remote = "192.0.2.53:53".parse().unwrap();
+    let current = |index: &Index| index.current_udp_flow(&original, local, remote, |pid| Some(identity(pid)));
+    assert!(current(&index));
+
+    update.kind = Kind::Connect;
+    update.timestamp += 1;
+    update.remote = remote;
+    index.apply(update.clone(), Some(identity(42))).unwrap();
+    assert!(current(&index));
+    assert!(!index.current_udp_flow(&original, local, "192.0.2.54:53".parse().unwrap(), |pid| Some(identity(pid))));
+    index.apply(event(2, 43), Some(identity(43))).unwrap();
+    assert!(!current(&index));
+
+    update.kind = Kind::Close;
+    update.timestamp += 1;
+    index.apply(update.clone(), None).unwrap();
+    update.kind = Kind::Connect;
+    update.timestamp += 1;
+    index.apply(update, Some(identity(42))).unwrap();
+    let mut closed_competitor = event(2, 43);
+    closed_competitor.kind = Kind::Close;
+    closed_competitor.timestamp += 1;
+    index.apply(closed_competitor, None).unwrap();
+    assert!(resolve(&index).is_some());
+    assert!(!current(&index));
+}
+#[test]
 fn udp_shared_socket_unverified_owner_and_pid_reuse_are_not_guessed() {
     let mut index = Index::default(); index.apply(event(1, 42), Some(identity(42))).unwrap();
     assert_eq!(resolve(&index).unwrap().identity.pid, 42);

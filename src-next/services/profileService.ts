@@ -7,6 +7,7 @@
 
 import { invokeCommand, isTauriEnvironment } from "./client";
 import { ProfileItem, AddProfileParams, ImportProfileParams } from "../types/profile";
+import type { RoutingView } from "../../src/types/routingOverrides";
 import {
   archiveProfileOutlets,
   restoreOrClearProfileOutlets,
@@ -19,6 +20,11 @@ import {
 } from "./processRoutingService";
 
 const MOCK_PROFILES_KEY = "procweaver_mock_profiles_next";
+export const PROFILE_CHANGED_EVENT = "procweaver-profile-changed";
+
+export function notifyProfileChanged(): void {
+  window.dispatchEvent(new Event(PROFILE_CHANGED_EVENT));
+}
 
 function getMockProfiles(): ProfileItem[] {
   const raw = localStorage.getItem(MOCK_PROFILES_KEY);
@@ -98,30 +104,36 @@ export async function getProfiles(): Promise<ProfileItem[]> {
 export async function addProfile(params: AddProfileParams): Promise<ProfileItem> {
   if (isTauriEnvironment()) {
     try {
-      return await invokeCommand<ProfileItem>("add_profile", {
+      const added = await invokeCommand<ProfileItem>("add_profile", {
         name: params.name,
         url: params.url,
+        autoUpdateInterval: params.autoUpdateInterval,
       });
+      notifyProfileChanged();
+      return added;
     } catch (e) {
       console.warn("[profileService] add_profile failed:", e);
       throw e;
     }
   }
+  const source = new URL(params.url);
+  if (!source.hostname) throw new Error("请填写有效的订阅链接地址");
   await new Promise((r) => setTimeout(r, 300));
   const list = getMockProfiles();
   const newItem: ProfileItem = {
     id: `profile-${Date.now()}`,
-    name: params.name || "新建订阅方案",
+    name: params.name.trim() || source.hostname,
     url: params.url,
     filePath: `data/config/profiles/profile-${Date.now()}.yaml`,
     updatedAt: new Date().toISOString(),
     nodeCount: 24,
     isSelected: list.length === 0,
-    autoUpdateInterval: params.autoUpdateInterval || 24,
+    autoUpdateInterval: params.autoUpdateInterval ?? 0,
     lastUpdatedAtSeconds: Math.floor(Date.now() / 1000),
   };
   list.unshift(newItem);
   saveMockProfiles(list);
+  notifyProfileChanged();
   return newItem;
 }
 
@@ -129,10 +141,12 @@ export async function addProfile(params: AddProfileParams): Promise<ProfileItem>
 export async function importProfileContent(params: ImportProfileParams): Promise<ProfileItem> {
   if (isTauriEnvironment()) {
     try {
-      return await invokeCommand<ProfileItem>("import_profile_content", {
+      const added = await invokeCommand<ProfileItem>("import_profile_content", {
         name: params.name,
         content: params.content,
       });
+      notifyProfileChanged();
+      return added;
     } catch (e) {
       console.warn("[profileService] import_profile_content failed:", e);
       throw e;
@@ -153,11 +167,11 @@ export async function importProfileContent(params: ImportProfileParams): Promise
   };
   list.unshift(newItem);
   saveMockProfiles(list);
+  notifyProfileChanged();
   return newItem;
 }
 
-/** 在线拉取刷新单个订阅 */
-export async function updateProfile(id: string): Promise<ProfileItem> {
+async function refreshProfile(id: string): Promise<ProfileItem> {
   if (isTauriEnvironment()) {
     try {
       return await invokeCommand<ProfileItem>("update_profile", { id });
@@ -176,10 +190,30 @@ export async function updateProfile(id: string): Promise<ProfileItem> {
   return list[index];
 }
 
-/** 并发全量刷新所有远程订阅 */
-export async function updateAllProfiles(profiles: ProfileItem[]): Promise<void> {
+/** 在线拉取刷新单个订阅 */
+export async function updateProfile(id: string): Promise<ProfileItem> {
+  const updated = await refreshProfile(id);
+  notifyProfileChanged();
+  return updated;
+}
+
+export interface ProfileBatchUpdateResult {
+  updatedCount: number;
+  failedProfiles: Pick<ProfileItem, "id" | "name">[];
+}
+
+/** 刷新所有远程订阅并返回失败的订阅。 */
+export async function updateAllProfiles(profiles: ProfileItem[]): Promise<ProfileBatchUpdateResult> {
   const targets = profiles.filter((p) => Boolean(p.url && p.url.trim()));
-  await Promise.allSettled(targets.map((p) => updateProfile(p.id)));
+  const results = await Promise.allSettled(targets.map((p) => refreshProfile(p.id)));
+  const failedProfiles = results.flatMap((result, index) => {
+    if (result.status === "fulfilled") return [];
+    const { id, name } = targets[index];
+    return [{ id, name }];
+  });
+  const updatedCount = targets.length - failedProfiles.length;
+  if (updatedCount > 0) notifyProfileChanged();
+  return { updatedCount, failedProfiles };
 }
 
 /** 激活切换当前配置方案 */
@@ -216,6 +250,7 @@ export async function selectProfile(id: string): Promise<boolean> {
         console.warn("[profileService] 恢复或清空新订阅分流出口警告:", restoreErr);
       }
 
+      if (success) notifyProfileChanged();
       return success;
     } catch (e) {
       console.warn("[profileService] select_profile failed:", e);
@@ -226,7 +261,17 @@ export async function selectProfile(id: string): Promise<boolean> {
   const list = getMockProfiles();
   const updated = list.map((p) => ({ ...p, isSelected: p.id === id }));
   saveMockProfiles(updated);
+  notifyProfileChanged();
   return true;
+}
+
+export async function getProfileBoundBundleNames(id: string): Promise<string[]> {
+  if (!isTauriEnvironment()) return [];
+  const { config } = await invokeCommand<RoutingView>("get_routing_overrides");
+  return (config.bundles ?? [])
+    .filter((bundle) => bundle.enabled
+      && (bundle.mainTarget?.profileId === id || bundle.dnsTarget?.profileId === id))
+    .map((bundle) => bundle.name);
 }
 
 /** 删除订阅源 */
@@ -234,8 +279,10 @@ export async function deleteProfile(id: string): Promise<boolean> {
   if (isTauriEnvironment()) {
     try {
       const success = await invokeCommand<boolean>("delete_profile", { id });
-      // 级联物理销毁已删除订阅源的出口记忆归档
-      removeProfileOutlets(id);
+      if (success) {
+        removeProfileOutlets(id);
+        notifyProfileChanged();
+      }
       return success;
     } catch (e) {
       console.warn("[profileService] delete_profile failed:", e);
@@ -247,6 +294,7 @@ export async function deleteProfile(id: string): Promise<boolean> {
   const updated = list.filter((p) => p.id !== id);
   saveMockProfiles(updated);
   removeProfileOutlets(id);
+  notifyProfileChanged();
   return true;
 }
 
@@ -324,10 +372,12 @@ rules:
 export async function saveProfileContent(id: string, content: string): Promise<ProfileItem> {
   if (isTauriEnvironment()) {
     try {
-      return await invokeCommand<ProfileItem>("save_profile_content", {
+      const updated = await invokeCommand<ProfileItem>("save_profile_content", {
         id,
         content,
       });
+      notifyProfileChanged();
+      return updated;
     } catch (e) {
       console.warn("[profileService] save_profile_content failed:", e);
       throw e;
@@ -339,6 +389,7 @@ export async function saveProfileContent(id: string, content: string): Promise<P
   if (index === -1) throw new Error("订阅不存在");
   list[index].updatedAt = new Date().toISOString();
   saveMockProfiles(list);
+  notifyProfileChanged();
   return list[index];
 }
 

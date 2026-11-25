@@ -4,6 +4,7 @@
 //           sync_geo_resource, sync_all_geo_resources
 // ==========================================================================
 
+import { version as appVersion } from "../../package.json";
 import { invokeCommand, isTauriEnvironment } from "./client";
 import {
   MihomoCoreDetail,
@@ -25,19 +26,15 @@ export async function checkAppUpdate(): Promise<AppUpdateInfo> {
   // 浏览器开发预览模拟数据
   await new Promise((r) => setTimeout(r, 700));
   return {
-    currentVersion: "V2.3.4",
-    latestVersion: "v2.4.0",
-    hasUpdate: true,
-    releaseName: "ProcWeaver v2.4.0 绿色便携发布版",
-    releaseNotes:
-      "- 重塑桌面挂件视口与双层液态毛玻璃拟态架构\n- 深度优化明亮模式白瓷高对比度排版体系\n- 完善系统首选项更新中心与便携式全自动无损更新\n- 升级 Mihomo 内核自适应路由与规则引擎",
-    publishedAt: "2026-11-06T12:00:00Z",
-    downloadUrl:
-      "https://github.com/jojhaa/ProcWeaver/releases/download/v2.4.0/ProcWeaver_v2.4.0_x64_Portable.zip",
-    assetName: "ProcWeaver_v2.4.0_x64_Portable.zip",
-    assetSizeBytes: 18874368,
-    assetSizeFormatted: "18.0 MB",
-    htmlUrl: "https://github.com/jojhaa/ProcWeaver/releases/tag/v2.4.0",
+    currentVersion: `v${appVersion}`,
+    latestVersion: `v${appVersion}`,
+    hasUpdate: false,
+    releaseName: "",
+    releaseNotes: "",
+    publishedAt: "",
+    assetSizeBytes: 0,
+    assetSizeFormatted: "",
+    htmlUrl: "https://github.com/jojhaa/ProcWeaver/releases",
     repoUrl: "https://github.com/jojhaa/ProcWeaver",
   };
 }
@@ -58,7 +55,7 @@ export async function downloadAppUpdate(
     }
   }
   await new Promise((r) => setTimeout(r, 1200));
-  return `C:\\Users\\Administrator\\.update_cache\\${fileName}`;
+  return `C:\\Users\\Example\\.update_cache\\${fileName}`;
 }
 
 export async function installAppUpdate(archivePath: string): Promise<boolean> {
@@ -168,24 +165,28 @@ const DEFAULT_CORE_DETAIL: MihomoCoreDetail = {
   startedAt: Math.floor(Date.now() / 1000) - 3600,
 };
 
-export async function getMihomoCoreDetail(): Promise<MihomoCoreDetail> {
+export async function getMihomoCoreDetail({ strict = false }: { strict?: boolean } = {}): Promise<MihomoCoreDetail> {
   if (isTauriEnvironment()) {
     try {
       const data = await invokeCommand<MihomoCoreDetail>("get_mihomo_core_detail");
       if (data) return data;
+      if (strict) throw new Error("核心状态不可用");
     } catch (e) {
+      if (strict) throw e;
       console.warn("[maintenanceService] get_mihomo_core_detail failed:", e);
     }
   }
   return { ...DEFAULT_CORE_DETAIL };
 }
 
-export async function getGeoConfig(): Promise<GeoConfig> {
+export async function getGeoConfig({ strict = false }: { strict?: boolean } = {}): Promise<GeoConfig> {
   if (isTauriEnvironment()) {
     try {
       const data = await invokeCommand<GeoConfig>("get_geo_config");
       if (data) return data;
+      if (strict) throw new Error("数据库列表不可用");
     } catch (e) {
+      if (strict) throw e;
       console.warn("[maintenanceService] get_geo_config failed:", e);
     }
   }

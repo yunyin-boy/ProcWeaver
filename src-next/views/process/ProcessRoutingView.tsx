@@ -4,16 +4,19 @@
 // 架构特性: 子 Tab 结构 (业务规则包 / 自定义进程 / 实时活跃进程)
 // ==========================================================================
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   ProcessBundleItem,
   ProcessRuleItem,
   LiveProcessItem,
   ProcessRoutingState,
   ProcessTrafficDriver,
+  ProcessCaptureEvidence,
+  CaptureConnectionEvidence,
 } from "../../types/processRouting";
 import {
   fetchProcessRoutingState,
+  fetchProcessRoutingEvidence,
   saveProcessRoutingState,
   switchProcessDriver,
   elevateAdmin,
@@ -21,7 +24,7 @@ import {
   createBundle,
   updateBundleInstance,
   deleteBundle,
-  resetBundleToDefault,
+  mountRepositoryPackage,
   fetchProcessRules,
   addProcessRule,
   updateProcessRule,
@@ -31,27 +34,40 @@ import {
   validateAndParsePwPack,
   importBundleItem,
   exportBundleToPwPack,
-  cleanProxyOptions,
   syncRoutingToCore,
   launchBundleApp,
+  fetchEntryStates,
+  EntryStatusItem,
 } from "../../services/processRoutingService";
 import { fetchProxiesData } from "../../services/proxyService";
+import { invokeCommand, isTauriEnvironment } from "../../services/client";
+import { PROFILE_CHANGED_EVENT } from "../../services/profileService";
+import type { RoutingTarget } from "../../../src/types/routingOverrides";
+import type { RepositoryPackage } from "../../../src/types/bundleRepository";
 
 import { ProcessToolbar, ProcessSubTab } from "./ProcessToolbar";
 import { BundleCard } from "./BundleCard";
 import { ProcessRuleRow } from "./ProcessRuleRow";
+import { CaptureDiagnostics } from "./CaptureDiagnostics";
 import { LiveProcessList } from "./LiveProcessList";
 import { AddProcessRuleModal } from "./AddProcessRuleModal";
 import { ProcessBundleModal, BundleFormData } from "./ProcessBundleModal";
-import { OfficialBundleModal } from "./OfficialBundleModal";
+import { GithubBundleModal } from "./GithubBundleModal";
 import { OutletPickerModal } from "./OutletPickerModal";
+import { Button } from "../../primitives/Button";
 import { ConfirmModal } from "../../primitives/ConfirmModal";
 
 interface ProcessRoutingViewProps {
   onShowNotice?: (msg: string) => void;
+  captureWarning: string | null;
+  onCaptureWarningChange: (message: string | null) => void;
 }
 
-export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNotice }) => {
+export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
+  onShowNotice,
+  captureWarning,
+  onCaptureWarningChange,
+}) => {
   // 1. 全局分流总控状态
   const [state, setState] = useState<ProcessRoutingState>({
     bundlesEnabled: false,
@@ -60,7 +76,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
     engineMode: "app_proxy",
     activeDriverName: "app_proxy",
     isAdmin: false,
-    activeProcessCount: 0,
+    matchedProcessCount: 0,
     totalBundleCount: 0,
     totalRuleCount: 0,
   });
@@ -80,7 +96,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
 
   // 4. 模态弹窗开关 (统一进程分流/业务套件弹窗)
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showOfficialModal, setShowOfficialModal] = useState(false);
+  const [showGithubModal, setShowGithubModal] = useState(false);
   const [bundleToDelete, setBundleToDelete] = useState<ProcessBundleItem | null>(null);
   const [isDeletingBundle, setIsDeletingBundle] = useState(false);
   const [outletPickerBundle, setOutletPickerBundle] = useState<ProcessBundleItem | null>(null);
@@ -93,50 +109,81 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
     mode: "create",
     bundle: null,
   });
-
-  // 装载官方预设业务规则包
-  const handleInstallOfficialPreset = async (preset: ProcessBundleItem) => {
-    if (bundles.some((b) => b.id === preset.id || b.name === preset.name)) {
-      onShowNotice?.(`业务套件 [${preset.name}] 已在列表中`);
-      return;
+  const [entryStatusMap, setEntryStatusMap] = useState<Record<string, EntryStatusItem>>({});
+  const [unavailableOutlets, setUnavailableOutlets] = useState<string[]>([]);
+  const [captureEvidence, setCaptureEvidence] = useState<ProcessCaptureEvidence>();
+  const entryRefresh = useRef(0);
+  const [restartPrompt, setRestartPrompt] = useState<{
+    id: string;
+    name: string;
+    message: string;
+    confirmation: string;
+  } | null>(null);
+  const [isRestartConfirming, setIsRestartConfirming] = useState(false);
+  const proxyLoad = useRef(0);
+  const refreshAvailableProxies = useCallback(async () => {
+    const request = ++proxyLoad.current;
+    try {
+      if (isTauriEnvironment()) {
+        const view = await invokeCommand<{ targets: RoutingTarget[]; unavailableRules: string[] }>("get_routing_overrides");
+        if (request !== proxyLoad.current) return;
+        setAvailableProxies(view.targets.map(({ name }) => name));
+        setUnavailableOutlets(view.unavailableRules ?? []);
+      } else {
+        const snapshot = await fetchProxiesData();
+        if (request === proxyLoad.current) setAvailableProxies(Object.keys(snapshot.proxies));
+      }
+    } catch (error) {
+      if (request === proxyLoad.current) setAvailableProxies([]);
+      console.warn("[ProcessRoutingView] 读取可绑定出口失败", error);
     }
-    const updated = await createBundle({
-      name: preset.name,
-      description: preset.description,
-      mainExe: preset.mainExe,
-      exes: [...preset.exes],
-      enabled: true,
-      targetProxy: "",
-      mode: preset.mode,
-      fallback: preset.fallback,
-      domains: [...preset.domains],
-      policy: { ...preset.policy },
-    });
+  }, []);
+
+  const refreshEntryStates = useCallback(
+    async (bundleList: ProcessBundleItem[], ruleList: ProcessRuleItem[]) => {
+      const refresh = ++entryRefresh.current;
+      const ids = [
+        ...bundleList.filter((b) => b.enabled).map((b) => b.id),
+        ...ruleList.filter((r) => r.enabled).map((r) => r.id),
+      ];
+      if (!ids.length) {
+        setEntryStatusMap({});
+        return;
+      }
+      const items = await fetchEntryStates(ids);
+      if (refresh !== entryRefresh.current) return;
+      const nextMap: Record<string, EntryStatusItem> = {};
+      for (const item of items) {
+        nextMap[item.instanceId] = item;
+      }
+      setEntryStatusMap(nextMap);
+    },
+    []
+  );
+
+  const handleMountRepositoryPackage = async (item: RepositoryPackage) => {
+    const updated = await mountRepositoryPackage(item);
     setBundles(updated);
     setState((prev) => ({ ...prev, totalBundleCount: updated.length }));
+    onShowNotice?.("规则包已挂载，待绑定出口");
   };
 
   // 5. 初始化加载大盘全量数据
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [routingState, bundleList, ruleList, liveList, proxySnap] = await Promise.all([
+      const [routingState, bundleList, ruleList, liveList] = await Promise.all([
         fetchProcessRoutingState(),
         fetchBundles(),
         fetchProcessRules(),
         fetchLiveProcesses(),
-        fetchProxiesData(),
+        refreshAvailableProxies(),
       ]);
 
       setState(routingState);
       setBundles(bundleList);
       setRules(ruleList);
       setLiveProcesses(liveList);
-
-      // 提取并严格清洗所有可用出站节点和主要策略组 (剔除系统内部保留字)
-      const cleaned = cleanProxyOptions(proxySnap.proxies || {});
-      const proxyNames = cleaned.map((c) => c.value);
-      setAvailableProxies(proxyNames);
 
       // 启动自愈核验：核对底层 routing-overrides.json 中的真实出口绑定，避免默认占位覆盖底层实际配置
       try {
@@ -160,14 +207,74 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
       } catch (syncErr: any) {
         console.warn("[ProcessRoutingView] initial syncRoutingToCore auto-heal warning:", syncErr);
       }
+
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [refreshAvailableProxies]);
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+    const handleProfileChange = () => { void refreshAvailableProxies(); };
+    window.addEventListener("netbox-profile-changed", handleProfileChange);
+    window.addEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
+    return () => {
+      ++proxyLoad.current;
+      window.removeEventListener("netbox-profile-changed", handleProfileChange);
+      window.removeEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
+    };
+  }, [loadData, refreshAvailableProxies]);
+
+  useEffect(() => {
+    if (isLoading || isPending) return;
+    const watchCapture = state.engineMode === "windivert_v1";
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const refresh = async () => {
+      if (document.visibilityState === "visible") {
+        await Promise.all([
+          refreshEntryStates(bundles, rules),
+          watchCapture && fetchProcessRoutingEvidence().then((snapshot) => {
+            if (cancelled) return;
+            setCaptureEvidence(snapshot?.capture);
+            if (snapshot) {
+              setState((prev) => ({
+                ...prev,
+                matchedProcessCount: snapshot.matchedProcessCount,
+                activeDriverName: snapshot.activeDriverName,
+                driverActive: snapshot.activeDriverName === "windivert",
+              }));
+            }
+          }),
+        ]);
+      }
+      if (watchCapture && !cancelled) timer = setTimeout(refresh, 5000);
+    };
+
+    if (!watchCapture) setCaptureEvidence(undefined);
+    void refresh();
+    return () => {
+      cancelled = true;
+      ++entryRefresh.current;
+      clearTimeout(timer);
+    };
+  }, [bundles, rules, state.engineMode, state.processEnabled, state.bundlesEnabled, isLoading, isPending, refreshEntryStates]);
+
+  const captureByOwner = useMemo(() => {
+    const evidence = new Map<string, CaptureConnectionEvidence>();
+    if (state.engineMode === "windivert_v1") {
+      for (const event of captureEvidence?.recentConnections ?? []) {
+        if (event.ruleOwner && !evidence.has(event.ruleOwner)) evidence.set(event.ruleOwner, event);
+      }
+    }
+    return evidence;
+  }, [captureEvidence, state.engineMode]);
+
+  const captureOwnerLabels = useMemo(() => new Map([
+    ...bundles.map((bundle) => ["bundle:" + bundle.id, bundle.name] as const),
+    ...rules.map((rule) => ["rule:" + rule.id, rule.label] as const),
+  ]), [bundles, rules]);
 
   // 监听全局分流总控变更事件，保持多视图多组件实时一致
   useEffect(() => {
@@ -206,13 +313,19 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
   };
 
   // 6.1 切换进程分流驱动 (选项 A: 沉浸紧凑毛玻璃下拉，不加 TUN)
-  const handleSwitchDriver = async (driver: ProcessTrafficDriver) => {
+  const handleSwitchDriver = async (
+    driver: ProcessTrafficDriver,
+    options?: Parameters<typeof switchProcessDriver>[1],
+  ) => {
+    if (isPending) return;
+    setIsPending(true);
     try {
-      const nextState = await switchProcessDriver(driver);
+      const nextState = await switchProcessDriver(driver, options);
       setState(nextState);
+      if (nextState.engineMode === "windivert_v1") onCaptureWarningChange(null);
       const optName =
         driver === "windivert_v1"
-          ? "WinDivert 内核强锁"
+          ? "WinDivert 驱动"
           : driver === "user_mode"
           ? "用户态 Hook 注入"
           : "纯应用层代理";
@@ -223,6 +336,8 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
       if (onShowNotice) {
         onShowNotice(`切换驱动失败: ${e?.message || e}`);
       }
+    } finally {
+      setIsPending(false);
     }
   };
 
@@ -240,13 +355,29 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
     }
   };
 
-  // 6.3 受控启动业务套件 (Hook 注入启动保障)
-  const handleLaunchBundle = async (bundle: ProcessBundleItem) => {
+  // 6.3/6.4 统一受控启动与非受控旧实例重启闭环
+  const executeControlledLaunch = async (id: string, displayName: string, confirmation?: string | null) => {
     try {
-      const res = await launchBundleApp(bundle.id);
-      if (onShowNotice) {
-        onShowNotice(res?.message || `已成功受控启动业务套件: ${bundle.name}`);
+      const res = await launchBundleApp(id, confirmation);
+      if (res.state === "windivert_required") {
+        onCaptureWarningChange(res.message);
+        return;
       }
+      if (res?.state === "restart_required" && res?.confirmation) {
+        setRestartPrompt({
+          id,
+          name: displayName,
+          message: res.message || `检测到 [${displayName}] 正在运行且尚未受控注入当前出口，是否关闭旧实例并重新启动？`,
+          confirmation: res.confirmation,
+        });
+        return;
+      }
+      if (onShowNotice) {
+        onShowNotice(res?.message || `已成功受控启动: ${displayName}`);
+      }
+      setTimeout(() => {
+        refreshEntryStates(bundles, rules).catch(() => {});
+      }, 600);
     } catch (e: any) {
       if (onShowNotice) {
         onShowNotice(`受控启动失败: ${e?.message || e}`);
@@ -254,30 +385,28 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
     }
   };
 
-  // 6.4 受控启动自定进程规则 (Hook 注入 / WinDivert 透明接管)
+  const handleLaunchBundle = async (bundle: ProcessBundleItem) => {
+    await executeControlledLaunch(bundle.id, bundle.name);
+  };
+
   const handleLaunchRule = async (rule: ProcessRuleItem) => {
-    try {
-      const res = await launchBundleApp(rule.id);
-      if (onShowNotice) {
-        onShowNotice(res?.message || `已成功受控启动进程: ${rule.label}`);
-      }
-    } catch (e: any) {
-      if (onShowNotice) {
-        onShowNotice(`受控启动失败: ${e?.message || e}`);
-      }
-    }
+    await executeControlledLaunch(rule.id, rule.label);
   };
 
   // 7. 业务规则包启停与出口插槽变更
   const handleToggleBundle = async (bundleId: string, enabled: boolean) => {
+    const bundle = bundles.find((item) => item.id === bundleId);
+    if (enabled && bundle && !bundle.targetProxy.trim()) {
+      setOutletPickerBundle(bundle);
+      onShowNotice?.("请先绑定出口，再启用业务规则包。");
+      return;
+    }
+    const enableRouting = enabled && (!state.processEnabled || !state.bundlesEnabled);
     try {
-      const updated = await updateBundleInstance(bundleId, { enabled });
+      const updated = await updateBundleInstance(bundleId, { enabled }, { enableRouting });
       setBundles(updated);
-      // 智能联动：如果用户开启了业务套件且当前总控处于关闭状态，自动点亮总控状态
-      if (enabled && !state.processEnabled) {
-        const nextState = { ...state, processEnabled: true, bundlesEnabled: true };
-        setState(nextState);
-        await saveProcessRoutingState(nextState);
+      if (enableRouting) {
+        setState((prev) => ({ ...prev, processEnabled: true, bundlesEnabled: true }));
       }
       if (onShowNotice) {
         const b = updated.find((item) => item.id === bundleId);
@@ -289,19 +418,22 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
       }
     } catch (e: any) {
       console.error("[ProcessRoutingView] handleToggleBundle error:", e);
-      if (onShowNotice) {
-        onShowNotice(`切换业务规则包失败: ${e?.message || e}`);
-      }
+      onShowNotice?.(`${enabled ? "启用" : "暂停"}业务规则包失败。${e?.message || e}`);
     }
   };
 
   const handleChangeBundleProxy = async (bundleId: string, proxy: string) => {
     try {
       const updated = await updateBundleInstance(bundleId, { targetProxy: proxy });
+      ++entryRefresh.current;
+      setEntryStatusMap((prev) => {
+        const next = { ...prev };
+        delete next[bundleId];
+        return next;
+      });
       setBundles(updated);
-      if (onShowNotice) {
-        onShowNotice(`业务规则包已切换出口: ${proxy}（生效中，建议重启目标应用清理长连接）`);
-      }
+      void refreshAvailableProxies();
+      onShowNotice?.(`已保存出口 ${proxy}。已有长连接可能继续使用原出口，可在目标应用内重连。`);
     } catch (err: any) {
       console.error("[ProcessRoutingView] handleChangeBundleProxy error:", err);
       if (onShowNotice) {
@@ -371,32 +503,36 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
         });
         setBundles(updated);
         if (onShowNotice) {
-          onShowNotice(`业务套件 [${data.name}] 已更新并生效`);
+          onShowNotice(`业务规则包「${data.name}」已保存。`);
         }
       }
     } catch (err: any) {
       console.error("[ProcessRoutingView] handleSaveBundleForm error:", err);
-      if (onShowNotice) {
-        onShowNotice(`保存失败: ${err?.message || err}`);
-      }
+      throw err;
     }
   };
 
   // 7.2 业务规则包安全脱敏导入与导出
   const handleImportBundleFile = async (file: File) => {
+    let text: string;
     try {
-      const text = await file.text();
-      const res = validateAndParsePwPack(text);
-      if (!res.valid || !res.bundle) {
-        onShowNotice?.(`导入失败: ${res.error || "规则包格式不合法"}`);
-        return;
-      }
+      text = await file.text();
+    } catch (err: any) {
+      onShowNotice?.(`规则包文件读取失败。${err?.message || err}`);
+      return;
+    }
+    const res = validateAndParsePwPack(text);
+    if (!res.valid || !res.bundle) {
+      onShowNotice?.(`导入失败。${res.error || "规则包格式不合法"}`);
+      return;
+    }
+    try {
       const updated = await importBundleItem(res.bundle);
       setBundles(updated);
       setState((prev) => ({ ...prev, totalBundleCount: updated.length }));
-      onShowNotice?.(`业务套件 [${res.bundle.name}] 导入成功，已就绪`);
+      onShowNotice?.("规则包已导入，待绑定出口。");
     } catch (err: any) {
-      onShowNotice?.(`规则包读取失败: ${err?.message || err}`);
+      onShowNotice?.(`规则包保存失败。${err?.message || err}`);
     }
   };
 
@@ -415,15 +551,6 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
       });
     } else {
       setShowAddModal(true);
-    }
-  };
-
-  // 7.2 恢复官方出厂默认预设
-  const handleResetBundlePreset = async (bundleId: string) => {
-    const updated = await resetBundleToDefault(bundleId);
-    setBundles(updated);
-    if (onShowNotice) {
-      onShowNotice("已恢复为官方默认预设规则");
     }
   };
 
@@ -514,12 +641,14 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
   }, [liveProcesses, searchQuery]);
 
   return (
-    <div className="space-y-4 pb-12">
-      {/* 顶部主控工具栏与子 Tab 调度器 */}
+    <div className="workbench-view workbench-process">
       <ProcessToolbar
         currentSubTab={subTab}
         onSelectSubTab={setSubTab}
         state={state}
+        bundleCount={bundles.length}
+        ruleCount={rules.length}
+        liveCount={liveProcesses.length}
         onToggleMaster={handleToggleMaster}
         onSwitchDriver={handleSwitchDriver}
         onElevateAdmin={handleElevateAdmin}
@@ -528,36 +657,58 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
         onSearchChange={setSearchQuery}
         onOpenAddModal={handleOpenToolbarAction}
         onImportBundle={handleImportBundleFile}
-        onOpenOfficialModal={() => setShowOfficialModal(true)}
+        onOpenGithubModal={() => setShowGithubModal(true)}
       />
+
+      {captureWarning && (
+        <section className="workbench-panel flex flex-wrap items-center justify-between gap-3 p-3">
+          <div role="alert" className="min-w-0 flex-1 space-y-1 text-xs text-[var(--text-secondary)]">
+            <p className="font-semibold text-[var(--workbench-warning)]">Edge 与当前捕获方式不兼容</p>
+            <p>{captureWarning}</p>
+            <p>捕获方式是全局设置，切换会影响所有进程分流套件。</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => onCaptureWarningChange(null)}>
+              关闭
+            </Button>
+            <Button type="button" variant="primary" size="sm" disabled={isPending}
+              onClick={() => void handleSwitchDriver("windivert_v1", { rebuildRules: false })}>
+              切换为 WinDivert
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {state.engineMode === "windivert_v1" && (
+        <CaptureDiagnostics capture={captureEvidence} ownerLabels={captureOwnerLabels} />
+      )}
 
       {/* 视图内容区 */}
       {isLoading ? (
-        <div className="p-12 text-center text-xs text-[var(--text-muted)] animate-pulse">
-          正在加载进程分流规则与应用强锁套件...
+        <div className="p-8 text-center text-xs text-[var(--text-muted)]" role="status">
+          正在加载进程分流规则与业务套件...
         </div>
       ) : (
         <div>
           {/* 子 Tab 1：业务规则包 (Business Bundles) */}
           {subTab === "bundles" && (
             <div className="space-y-3">
-              <div className="px-1 text-xs text-[var(--text-muted)]">
-                官方核心业务套件 (严格遵循脱敏规范，直达进程并强锁专属出口插槽)
-              </div>
-
               {filteredBundles.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[var(--text-muted)] glass-surface rounded-2xl border border-[var(--glass-border-subtle)]">
-                  未找到符合搜索条件的业务规则包
+                <div className="p-8 text-center text-xs text-[var(--text-muted)]">
+                  {searchQuery.trim() ? "未找到符合搜索条件的业务规则包" : "暂无业务规则包"}
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                <section className="workbench-bundle-list" aria-label="业务规则包">
                   {filteredBundles.map((bundle) => (
                     <BundleCard
                       key={bundle.id}
                       bundle={bundle}
-                      isGlobalActive={state.processEnabled && state.driverActive}
+                      isGlobalActive={state.bundlesEnabled && state.driverActive}
+                      entryStatus={entryStatusMap[bundle.id]}
+                      outletUnavailable={unavailableOutlets.includes("bundle:" + bundle.id)}
+                      captureEvidence={captureByOwner.get("bundle:" + bundle.id)}
                       globalStatusHint={
-                        !state.processEnabled
+                        !state.bundlesEnabled
                           ? "进程分流全局总控已暂停，请开启顶栏总控"
                           : state.engineMode === "windivert_v1" && !state.isAdmin
                           ? "WinDivert 驱动需管理员特权，请点击顶栏进行 UAC 提权"
@@ -583,29 +734,35 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
                       onLaunch={handleLaunchBundle}
                     />
                   ))}
-                </div>
+                </section>
               )}
             </div>
           )}
 
           {/* 子 Tab 2：自定义单进程分流 (Custom Process Rules) */}
           {subTab === "rules" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between px-1 text-xs text-[var(--text-muted)]">
-                <span>用户自选程序进程规则列表 (共 {filteredRules.length} 条有效规则)</span>
-                <span className="font-mono text-[10px]">WinDivert 纳管匹配优先级高于默认路由</span>
+            <section className="workbench-panel workbench-rule-table grid gap-2.5 p-3.5" aria-label="自定义进程">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
+                <span>进程规则 · {filteredRules.length} 条</span>
+                <span>WinDivert 纳管匹配优先级高于默认路由</span>
               </div>
 
               {filteredRules.length === 0 ? (
-                <div className="p-8 text-center text-xs text-[var(--text-muted)] glass-surface rounded-2xl border border-[var(--glass-border-subtle)]">
+                <div className="p-6 text-center text-xs text-[var(--text-muted)]">
                   暂无自选进程规则，点击右上角【添加进程规则】新建
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="grid gap-2">
+                  <div className="workbench-process-columns" aria-hidden="true">
+                    <span>匹配进程</span><span>出口与策略</span><span>状态</span><span>操作</span>
+                  </div>
                   {filteredRules.map((rule) => (
                     <ProcessRuleRow
                       key={rule.id}
                       rule={rule}
+                      entryStatus={entryStatusMap[rule.id]}
+                      captureEvidence={captureByOwner.get("rule:" + rule.id)}
+                      isGlobalActive={state.processEnabled && state.driverActive}
                       onToggleEnabled={(enabled) => handleToggleRule(rule.id, enabled)}
                       onDelete={() => handleDeleteRule(rule.id)}
                       onLaunch={handleLaunchRule}
@@ -613,7 +770,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
                   ))}
                 </div>
               )}
-            </div>
+            </section>
           )}
 
           {/* 子 Tab 3：实时活跃联网进程嗅探 (Live Network Processes) */}
@@ -644,16 +801,13 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
         availableProxies={availableProxies}
         onClose={() => setBundleModalState({ isOpen: false, mode: "create", bundle: null })}
         onSave={handleSaveBundleForm}
-        onResetPreset={handleResetBundlePreset}
       />
 
-      {/* 官方业务规则包中心与 GitHub 规则仓库模态窗 */}
-      <OfficialBundleModal
-        isOpen={showOfficialModal}
-        onClose={() => setShowOfficialModal(false)}
+      <GithubBundleModal
+        isOpen={showGithubModal}
+        onClose={() => setShowGithubModal(false)}
         existingBundles={bundles}
-        onInstallPreset={handleInstallOfficialPreset}
-        onShowNotice={onShowNotice}
+        onMount={handleMountRepositoryPackage}
       />
 
       {/* 业务规则包彻底删除微晶确认模态窗 (替代原生 window.confirm) */}
@@ -698,6 +852,32 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({ onShowNo
             handleChangeBundleProxy(outletPickerBundle.id, newProxy);
           }
           setOutletPickerBundle(null);
+        }}
+      />
+
+      {/* 非受控运行中实例确认重启闭环模态弹窗 */}
+      <ConfirmModal
+        isOpen={!!restartPrompt}
+        title={`重启 [${restartPrompt?.name || ""}] 以挂载受控分流？`}
+        description={
+          <>
+            {restartPrompt?.message}
+          </>
+        }
+        confirmText="正常关闭并受控重启"
+        cancelText="保持原状"
+        isLoading={isRestartConfirming}
+        onCancel={() => setRestartPrompt(null)}
+        onConfirm={async () => {
+          if (!restartPrompt) return;
+          const current = restartPrompt;
+          setIsRestartConfirming(true);
+          try {
+            setRestartPrompt(null);
+            await executeControlledLaunch(current.id, current.name, current.confirmation);
+          } finally {
+            setIsRestartConfirming(false);
+          }
         }}
       />
     </div>

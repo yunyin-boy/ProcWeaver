@@ -7,8 +7,9 @@ export interface ExitIpHealthInfo {
   country: string;
   city?: string;
   asn: string;
-  fraudScore: number; // 0 ~ 100 欺诈风控分
-  isResidential: boolean; // 是否家宽
+  fraudScore?: number; // 0 ~ 100 欺诈风控分
+  isResidential?: boolean; // 是否家宽
   firstPacketMs?: number;
   testedAt?: number;
+  stale?: boolean;
 }

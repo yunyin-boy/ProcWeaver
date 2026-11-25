@@ -6,82 +6,35 @@
 // ==========================================================================
 
 import { invokeCommand, isTauriEnvironment } from "./client";
+import type { LaunchOutcome } from "../../src/api/bundleTools";
+import type { RoutingTarget } from "../../src/types/routingOverrides";
+import type { BundleLocalInstance, BundleProcessMember } from "../../src/types/businessBundle";
+import type { RepositoryPackage } from "../../src/types/bundleRepository";
 import {
   ProcessBundleItem,
   ProcessRuleItem,
   LiveProcessItem,
+  ProcessCaptureEvidence,
   ProcessRoutingState,
   ProcessTrafficDriver,
+  usesExistingBundleRules,
 } from "../types/processRouting";
 
 // LocalStorage 缓存持久化 Key
 const STORAGE_BUNDLES_KEY = "procweaver_business_bundles_v2";
 const STORAGE_RULES_KEY = "procweaver_process_rules_v2";
 const STORAGE_STATE_KEY = "procweaver_process_routing_state";
+const ANTIGRAVITY_CLOUDCODE_DOMAIN = "daily-cloudcode-pa.googleapis.com";
+const LEGACY_ANTIGRAVITY_DOMAINS = ["google.com", "*.google.com", "cursor.sh", "*.cursor.sh"];
 
-// ==========================================================================
-// 默认官方业务包池 (严格遵循 AGENTS.md 约定：发布 OpenAI 与 反重力，无任何 Emoji)
-// ==========================================================================
-export const OFFICIAL_PRESET_BUNDLES: ProcessBundleItem[] = [
-  {
-    id: "openai-bundle",
-    name: "OpenAI 官方套件",
-    description: "专为 ChatGPT 桌面端与 Codex 开发接口定制，精准绕过风控",
-    mainExe: "ChatGPT.exe",
-    exes: ["ChatGPT.exe", "OpenAI.exe", "codex-cli.exe"],
-    enabled: false,
-    targetProxy: "",
-    mode: "strict",
-    fallback: "rules",
-    domains: ["openai.com", "chatgpt.com", "*.oaistatic.com", "*.oaiusercontent.com"],
-    policy: {
-      proxyTcp: true,
-      blockIpv6: true,
-      blockUdp: true,
-      proxyUdp: false,
-      proxySubprocesses: true,
-      bypassLan: true,
-      dnsMode: "safe_pure",
-      portFilterMode: "all",
-      customPorts: "",
-      targetFilterMode: "all",
-      targetRules: [],
-      disallowProxyArgs: false,
-      staleConnectionStrategy: "prompt",
-    },
-    updatedAt: "2026-11-06 12:00",
-  },
-  {
-    id: "antigravity-bundle",
-    name: "反重力开发套件",
-    description: "绑定 Google Antigravity、IDE 智能编码与 Cursor 引擎",
-    mainExe: "antigravity.exe",
-    exes: ["antigravity.exe", "cursor.exe", "code.exe"],
-    enabled: false,
-    targetProxy: "",
-    mode: "strict",
-    fallback: "rules",
-    domains: ["google.com", "*.google.com", "cursor.sh", "*.cursor.sh"],
-    policy: {
-      proxyTcp: true,
-      blockIpv6: true,
-      blockUdp: true,
-      proxyUdp: false,
-      proxySubprocesses: true,
-      bypassLan: true,
-      dnsMode: "safe_pure",
-      portFilterMode: "all",
-      customPorts: "",
-      targetFilterMode: "all",
-      targetRules: [],
-      disallowProxyArgs: false,
-      staleConnectionStrategy: "prompt",
-    },
-    updatedAt: "2026-11-06 14:15",
-  },
-];
-
-const DEFAULT_BUNDLES: ProcessBundleItem[] = OFFICIAL_PRESET_BUNDLES;
+function bundleDomains(id: string, exe: string, domains: string[]): string[] {
+  if (id === "antigravity-bundle" && exe.split(/[\\/]/).pop()?.toLowerCase() === "antigravity.exe"
+      && domains.length === LEGACY_ANTIGRAVITY_DOMAINS.length
+      && LEGACY_ANTIGRAVITY_DOMAINS.every((domain) => domains.includes(domain))) {
+    return [...domains, ANTIGRAVITY_CLOUDCODE_DOMAIN];
+  }
+  return domains;
+}
 
 // ==========================================================================
 // 默认自选进程规则
@@ -126,9 +79,6 @@ const mockLiveProcesses: LiveProcessItem[] = [
     pid: 4312,
     name: "chrome.exe",
     path: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    connectionCount: 32,
-    uploadBytes: 1200000,
-    downloadBytes: 8900000,
     isRouted: true,
     matchedRuleName: "Google Chrome",
     matchedProxy: "Proxy",
@@ -137,9 +87,6 @@ const mockLiveProcesses: LiveProcessItem[] = [
     pid: 7120,
     name: "WeChat.exe",
     path: "D:\\Tencent\\WeChat\\WeChat.exe",
-    connectionCount: 4,
-    uploadBytes: 54000,
-    downloadBytes: 88000,
     isRouted: true,
     matchedRuleName: "微信桌面版 (国内直连)",
     matchedProxy: "DIRECT 直连",
@@ -147,37 +94,27 @@ const mockLiveProcesses: LiveProcessItem[] = [
   {
     pid: 19844,
     name: "spotify.exe",
-    path: "C:\\Users\\Administrator\\AppData\\Roaming\\Spotify\\spotify.exe",
-    connectionCount: 8,
-    uploadBytes: 34000,
-    downloadBytes: 4500000,
+    path: "C:\\Users\\Example\\AppData\\Roaming\\Spotify\\spotify.exe",
     isRouted: false,
   },
   {
     pid: 12048,
     name: "steam.exe",
     path: "D:\\Steam\\steam.exe",
-    connectionCount: 5,
-    uploadBytes: 12000,
-    downloadBytes: 15000,
     isRouted: false,
   },
   {
     pid: 23108,
     name: "node.exe",
     path: "C:\\Program Files\\nodejs\\node.exe",
-    connectionCount: 3,
-    uploadBytes: 45000,
-    downloadBytes: 68000,
     isRouted: false,
   },
 ];
 
 // ==========================================================================
-// 核心算法: 准确计算当前系统中被规则命中且存活运行的接管进程实例总数
-// 避免将操作系统所有存活进程 (300+ 个系统基础进程) 误报为“接管中”
+// 统计当前进程快照中匹配已启用规则的进程。
 // ==========================================================================
-export function calcActiveRoutedProcessCount(overrides: any): number {
+export function calcMatchedProcessCount(overrides: any): number {
   if (!overrides?.config) return 0;
   const processEnabled = Boolean(overrides.config.processEnabled);
   const bundlesEnabled = Boolean(overrides.config.bundlesEnabled);
@@ -186,77 +123,32 @@ export function calcActiveRoutedProcessCount(overrides: any): number {
   const entries: any[] = overrides.tracking?.entries || [];
   if (!Array.isArray(entries) || entries.length === 0) return 0;
 
-  // 1. 收集已启用的业务规则包可执行程序名单 (统一小写去重)
-  const activeBundleExes = new Set<string>();
-  if (bundlesEnabled && Array.isArray(overrides.config.bundles)) {
-    for (const b of overrides.config.bundles) {
-      if (b && b.enabled && Array.isArray(b.exes)) {
-        for (const exe of b.exes) {
-          if (exe) {
-            const clean = String(exe).trim().toLowerCase();
-            const fileName = clean.split(/[/\\]/).pop() || clean;
-            activeBundleExes.add(fileName);
-          }
-        }
-      }
+  const bundles: { id: string; enabled: boolean }[] = [...(overrides.config.bundles ?? [])]
+    .sort((a, b) => b.id.length - a.id.length);
+  const windows = typeof navigator !== "undefined" && navigator.platform.startsWith("Win");
+  const pathKey = (value: string) => windows ? value.replace(/\//g, "\\").toLowerCase() : value;
+  const activeRules = [
+    ...(overrides.config.processRules ?? []),
+    ...(overrides.tracking?.derived ?? []),
+  ].filter((rule) => {
+    if (!rule?.enabled || !rule.matchValue) return false;
+    const id = String(rule.id).replace(/^derived:/, "");
+    const owner = bundles.find((bundle) => id.startsWith("bundle-" + bundle.id + "-"));
+    return owner ? bundlesEnabled && owner.enabled : processEnabled;
+  });
+
+  return entries.filter((entry) => entry && activeRules.some((rule) => {
+    if (rule.matchKind === "process-path" || rule.matchKind === "path") {
+      return entry.executablePath && pathKey(entry.executablePath) === pathKey(rule.matchValue);
     }
-  }
-
-  // 2. 收集已启用的自定义规则与子进程派生规则
-  const activeRules: { matchKind: string; matchValue: string }[] = [];
-  if (processEnabled && Array.isArray(overrides.config.processRules)) {
-    for (const r of overrides.config.processRules) {
-      if (r && r.enabled && r.matchValue) {
-        activeRules.push({
-          matchKind: r.matchKind || "name",
-          matchValue: String(r.matchValue).trim().toLowerCase(),
-        });
-      }
-    }
-  }
-  if (Array.isArray(overrides.tracking?.derived)) {
-    for (const r of overrides.tracking.derived) {
-      if (r && r.matchValue) {
-        activeRules.push({
-          matchKind: r.matchKind || "path",
-          matchValue: String(r.matchValue).trim().toLowerCase(),
-        });
-      }
-    }
-  }
-
-  let count = 0;
-  for (const entry of entries) {
-    if (!entry) continue;
-    const exeName = String(entry.name || "").trim().toLowerCase();
-    const exePath = String(entry.executablePath || "").trim().toLowerCase();
-
-    // 优先匹配业务包程序
-    if (activeBundleExes.has(exeName)) {
-      count++;
-      continue;
-    }
-
-    // 匹配自定义进程规则或派生规则
-    const isMatched = activeRules.some((rule) => {
-      if (rule.matchKind === "process-path" || rule.matchKind === "path") {
-        return exePath && (exePath === rule.matchValue || exePath.includes(rule.matchValue));
-      }
-      return exeName === rule.matchValue;
-    });
-
-    if (isMatched) {
-      count++;
-    }
-  }
-
-  return count;
+    return String(entry.name ?? "").toLowerCase() === String(rule.matchValue).toLowerCase();
+  })).length;
 }
 
 // ==========================================================================
 // 1. 获取全局进程分流总控状态与底层分流驱动
 // ==========================================================================
-export async function fetchProcessRoutingState(): Promise<ProcessRoutingState> {
+export async function fetchProcessRoutingState({ strict = false }: { strict?: boolean } = {}): Promise<ProcessRoutingState> {
   if (isTauriEnvironment()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -267,6 +159,7 @@ export async function fetchProcessRoutingState(): Promise<ProcessRoutingState> {
         invoke<boolean>("check_is_admin").catch(() => false),
       ]);
 
+      if (strict && !overrides?.config) throw new Error("进程分流状态不可用");
       let engineMode: ProcessTrafficDriver = "app_proxy";
       if (
         settings?.trafficMode &&
@@ -277,9 +170,10 @@ export async function fetchProcessRoutingState(): Promise<ProcessRoutingState> {
         engineMode = settings.trafficMode;
       }
 
+      const matchedProcessCount = calcMatchedProcessCount(overrides);
       const driverActive =
         activeDriver === "windivert" ||
-        (activeDriver === "user_mode" && calcActiveRoutedProcessCount(overrides) > 0) ||
+        (activeDriver === "user_mode" && matchedProcessCount > 0) ||
         activeDriver === "app_proxy";
 
       return {
@@ -289,11 +183,12 @@ export async function fetchProcessRoutingState(): Promise<ProcessRoutingState> {
         engineMode,
         activeDriverName: activeDriver,
         isAdmin: Boolean(isAdmin),
-        activeProcessCount: calcActiveRoutedProcessCount(overrides),
+        matchedProcessCount,
         totalBundleCount: (overrides?.config?.bundles || []).length,
         totalRuleCount: (overrides?.config?.processRules || []).length,
       };
     } catch (e) {
+      if (strict) throw e;
       console.warn("[processRoutingService] fetchProcessRoutingState fallback", e);
     }
   }
@@ -301,7 +196,10 @@ export async function fetchProcessRoutingState(): Promise<ProcessRoutingState> {
   // 纯浏览器缓存读取
   try {
     const raw = localStorage.getItem(STORAGE_STATE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const cached = JSON.parse(raw);
+      return { ...cached, matchedProcessCount: cached.matchedProcessCount ?? cached.activeProcessCount ?? 0 };
+    }
   } catch {}
 
   return {
@@ -311,14 +209,30 @@ export async function fetchProcessRoutingState(): Promise<ProcessRoutingState> {
     engineMode: "app_proxy",
     activeDriverName: "app_proxy",
     isAdmin: false,
-    activeProcessCount: 0,
-    totalBundleCount: DEFAULT_BUNDLES.length,
+    matchedProcessCount: 0,
+    totalBundleCount: 0,
     totalRuleCount: DEFAULT_RULES.length,
   };
 }
 
+export async function fetchProcessRoutingEvidence(): Promise<{
+  matchedProcessCount: number;
+  activeDriverName: string;
+  capture?: ProcessCaptureEvidence;
+} | null> {
+  if (!isTauriEnvironment()) return null;
+  const overrides = await invokeCommand<any>("get_routing_overrides").catch(() => null);
+  if (!overrides) return null;
+  return {
+    matchedProcessCount: calcMatchedProcessCount(overrides),
+    activeDriverName: overrides.trafficDriver,
+    capture: overrides.capture,
+  };
+}
+
 export async function switchProcessDriver(
-  driver: ProcessTrafficDriver
+  driver: ProcessTrafficDriver,
+  { rebuildRules = true }: { rebuildRules?: boolean } = {},
 ): Promise<ProcessRoutingState> {
   if (isTauriEnvironment()) {
     try {
@@ -333,8 +247,8 @@ export async function switchProcessDriver(
       window.dispatchEvent(new Event("netbox-settings-saved"));
       window.dispatchEvent(new Event("netbox-route-changed"));
 
-      // 切换驱动后立即触发编译与底层下发，确保 WinDivert plan 与 helper 联动
-      await syncRoutingToCore();
+      // 兼容性切换沿用已应用的规则，由核心按新捕获方式重新加载。
+      if (rebuildRules) await syncRoutingToCore();
     } catch (e) {
       console.warn("[processRoutingService] switchProcessDriver failed:", e);
       throw e;
@@ -350,16 +264,39 @@ export async function elevateAdmin(): Promise<void> {
   }
 }
 
-export async function launchBundleApp(instanceId: string): Promise<any> {
+export interface EntryStatusItem {
+  instanceId: string;
+  state: string;
+  message: string;
+  identityState?: string;
+  identityMessage?: string;
+  connectionState?: string;
+  connectionMessage?: string;
+  verifiedOutlet?: string | null;
+  hookTier?: string | null;
+  hookTierReason?: string | null;
+}
+
+export async function launchBundleApp(instanceId: string, confirmation?: string | null): Promise<LaunchOutcome> {
   if (isTauriEnvironment()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke("launch_bundle_app", {
-      request: { instanceId },
-      confirmation: null,
+    return invoke<LaunchOutcome>("launch_bundle_app", {
+      request: { instanceId, shortcutId: null, direct: true },
+      confirmation: confirmation || null,
       prepareOnly: false,
     });
   }
-  return { state: "launched", message: "仿真环境：已受控启动" };
+  return { state: "launched", message: "仿真环境：已受控启动", confirmation: null, entry: "", processCount: 1 };
+}
+
+export async function fetchEntryStates(instanceIds: string[]): Promise<EntryStatusItem[]> {
+  if (!instanceIds.length || !isTauriEnvironment()) return [];
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<EntryStatusItem[]>("get_bundle_entry_states", { instanceIds });
+  } catch {
+    return [];
+  }
 }
 
 // ==========================================================================
@@ -375,65 +312,45 @@ export function toBundleGroupName(bundleId: string, slot = "main"): string {
   return `PW-${hex}-${slot}`;
 }
 
+function resolveRoutingTarget(view: any, targetName?: string): RoutingTarget | null {
+  const targets: RoutingTarget[] = Array.isArray(view.targets) ? view.targets : [];
+  const name = targetName?.trim();
+  if (!name || !targets.length || name.startsWith("PW-") || name.startsWith("本地方案")) return null;
+  const exact = targets.find((target) => target.name === targetName)
+    ?? targets.find((target) => target.name.toLowerCase() === name.toLowerCase());
+  if (exact) return exact;
+  if (["DIRECT", "全球直连", "DIRECT (局域网/国内直连)", "DIRECT 直连"].includes(name.toUpperCase())) {
+    return targets.find((target) => target.name.toUpperCase() === "DIRECT" || target.name === "全球直连")
+      ?? { profileId: targets[0].profileId, kind: "group", name: "DIRECT" };
+  }
+  return null;
+}
+
+interface BundleActivation {
+  bundleId: string;
+  enableRouting: boolean;
+}
+
 export async function syncRoutingToCore(
   targetBundles?: ProcessBundleItem[],
-  targetRules?: ProcessRuleItem[]
+  targetRules?: ProcessRuleItem[],
+  activation?: BundleActivation,
 ): Promise<void> {
   if (!isTauriEnvironment()) return;
 
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const view = await invoke<any>("get_routing_overrides");
-    if (!view || !view.config) return;
+    if (!view?.config) {
+      if (activation) throw new Error("无法读取当前分流配置");
+      return;
+    }
 
     // 1. 取得数据源
     const currentBundles = targetBundles || (await fetchBundles());
     const currentRules = targetRules || (await fetchProcessRules());
 
-    const availableTargets: any[] = Array.isArray(view.targets) ? view.targets : [];
-    const activeProfileId = availableTargets[0]?.profileId || view.config?.processRules?.[0]?.target?.profileId || "default";
-
-    // 出口插槽解析器：严格解析为合规的 RoutingTarget { profileId, kind, name }
-    // 严格绑定原则：按精确的订阅、节点或策略组身份解析，绝不暗中按相似名称或模糊 Auto 组替换
-    const resolveTarget = (targetName?: string) => {
-      if (!targetName || !targetName.trim()) {
-        return null;
-      }
-      const trimmedTarget = targetName.trim();
-      if (trimmedTarget.startsWith("PW-") || trimmedTarget.startsWith("本地方案")) {
-        return null;
-      }
-      if (!availableTargets.length) {
-        return null;
-      }
-
-      // 1. 严格全等匹配 (保留节点名原始大小写与 Emoji)
-      const exact = availableTargets.find((t: any) => t.name === targetName);
-      if (exact) return exact;
-
-      // 2. 忽略大小写精确匹配 (同一节点名字母大小写容差)
-      const caseMatch = availableTargets.find(
-        (t: any) => t.name.toLowerCase() === targetName.toLowerCase()
-      );
-      if (caseMatch) return caseMatch;
-
-      // 3. 用户明确选择直连 (DIRECT)
-      if (
-        trimmedTarget.toUpperCase() === "DIRECT" ||
-        trimmedTarget === "全球直连" ||
-        trimmedTarget === "DIRECT (局域网/国内直连)" ||
-        trimmedTarget === "DIRECT 直连"
-      ) {
-        const directTarget = availableTargets.find(
-          (t: any) => t.name.toUpperCase() === "DIRECT" || t.name === "全球直连"
-        );
-        if (directTarget) return directTarget;
-        return { profileId: activeProfileId, kind: "group", name: "DIRECT" };
-      }
-
-      // 4. 精确绑定原则：找不到原出口时严格返回 null，提示用户重绑，绝不移花接木或猜测替换
-      return null;
-    };
+    const resolveTarget = (name?: string) => resolveRoutingTarget(view, name);
 
     // 2. 编译业务规则包为 BundleRoute 与 第一优先级 ProcessRule (第 0 优先级)
     const compiledBundles: any[] = [];
@@ -442,7 +359,18 @@ export async function syncRoutingToCore(
 
     for (const b of currentBundles) {
       const prev = previousBundles.find((p: any) => p.id === b.id);
-      const mainTarget = resolveTarget(b.targetProxy);
+      const useExistingRules = usesExistingBundleRules(b);
+      const selectedTarget = resolveTarget(b.targetProxy);
+      const saved = b.targetIdentity?.name === b.targetProxy
+        ? b.targetIdentity
+        : prev?.mainTarget?.name === b.targetProxy ? prev.mainTarget : undefined;
+      if (activation?.bundleId === b.id) {
+        if (!selectedTarget || (saved && (saved.profileId !== selectedTarget.profileId
+          || saved.kind !== selectedTarget.kind || saved.name !== selectedTarget.name))) {
+          throw new Error("所绑定的出口已不可用，请重新绑定当前订阅的节点或策略组");
+        }
+      }
+      const mainTarget = saved ?? selectedTarget;
 
       compiledBundles.push({
         id: b.id,
@@ -450,7 +378,7 @@ export async function syncRoutingToCore(
         mainExe: b.mainExe || b.exes[0] || "",
         enabled: b.enabled,
         mainTarget: b.enabled ? mainTarget : null,
-        dnsTarget: b.enabled ? mainTarget : null,
+        dnsTarget: b.enabled && !useExistingRules ? mainTarget : null,
         port: prev?.port || 0,
         mode: b.mode || "strict",
         domains: Array.isArray(b.domains) ? b.domains : [],
@@ -469,45 +397,75 @@ export async function syncRoutingToCore(
           targetRules: Array.isArray(b.policy?.targetRules) ? b.policy.targetRules : [],
           disallowProxyArgs: b.policy?.disallowProxyArgs ?? false,
           staleConnectionStrategy: b.policy?.staleConnectionStrategy || "prompt",
+          useExistingRules: b.policy?.useExistingRules === true,
         },
       });
+    }
 
-      // 展开业务包内的所有进程成员为第 0 优先级进程拦截规则 (WinDivert 强锁)
-      if (b.enabled) {
-        const uniqueExes = Array.from(new Set(b.exes.map((e) => e.trim()).filter(Boolean)));
-        for (const exe of uniqueExes) {
-          const cleanId = exe.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-          bundleProcessRules.push({
-            id: `bundle-${b.id}-${cleanId}`,
-            enabled: true,
-            label: `${b.name} - ${exe}`,
-            matchKind: "name",
-            matchValue: exe,
-            action: "proxy",
-            target: mainTarget,
-            includeDescendants: b.policy?.proxySubprocesses ?? true,
-            ruleMode: b.mode === "strict" ? "strict" : "inherit",
-          });
-        }
+    // 3. 提前收集手动自定单进程规则 (去重保留首条有效规则)
+
+    const seenRootKeys = new Set<string>();
+    const previousRules = new Map<string, RoutingTarget>((view.config.processRules || [])
+      .filter((rule: any) => rule.target)
+      .map((rule: any) => [rule.id, rule.target]));
+    const manualRules = currentRules
+      .filter((r) => !r.id.startsWith("bundle-"))
+      .map((r) => {
+        const previous = previousRules.get(r.id);
+        const target = resolveTarget(r.targetProxy) ?? (previous?.name === r.targetProxy ? previous : null);
+        return {
+          id: r.id,
+          enabled: r.enabled,
+          label: r.label,
+          matchKind: r.matchKind === "process-path" ? "path" : "name",
+          matchValue: r.matchValue,
+          action: r.action,
+          target: r.action === "proxy" ? target : null,
+          includeDescendants: r.includeDescendants,
+          ruleMode: (r as any).ruleMode === "inherit" ? "inherit" : "strict",
+        };
+      })
+      .filter((r) => {
+        if (!r.enabled) return true;
+        const key = `${r.matchKind}:${r.matchValue.trim().toLowerCase()}`;
+        if (seenRootKeys.has(key)) return false;
+        seenRootKeys.add(key);
+        return true;
+      });
+
+    // 重新按启用业务包展开不与显式手动规则或已占用根冲突的进程规则 (第 0 优先级)
+    const manualActiveKeys = new Set<string>(
+      manualRules
+        .filter((r) => r.enabled)
+        .map((r) => `${r.matchKind}:${r.matchValue.trim().toLowerCase()}`)
+    );
+    const bundleSeenKeys = new Set<string>();
+    for (const b of compiledBundles) {
+      if (!b.enabled) continue;
+      const srcBundle = currentBundles.find((item) => item.id === b.id);
+      if (!srcBundle) continue;
+      const uniqueExes = Array.from(new Set(srcBundle.exes.map((e) => e.trim()).filter(Boolean)));
+      for (const exe of uniqueExes) {
+        const key = `name:${exe.toLowerCase()}`;
+        // 若用户显式添加了同名手动规则，或共有 exe 已被先启用的套件占用，则跳过重复项防止 WinDivert plan.rs 根冲突报错
+        if (manualActiveKeys.has(key) || bundleSeenKeys.has(key)) continue;
+        bundleSeenKeys.add(key);
+        const cleanId = exe.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+        bundleProcessRules.push({
+          id: `bundle-${b.id}-${cleanId}`,
+          enabled: true,
+          label: `${b.name} - ${exe}`,
+          matchKind: "name",
+          matchValue: exe,
+          action: "proxy",
+          target: b.mainTarget,
+          includeDescendants: b.policy?.proxySubprocesses ?? true,
+          ruleMode: b.mode === "strict" ? "strict" : "inherit",
+        });
       }
     }
 
-    // 3. 编译用户手动添加的自定单进程规则 (过滤掉 bundle- 开头的项)
-    const manualRules = currentRules
-      .filter((r) => !r.id.startsWith("bundle-"))
-      .map((r) => ({
-        id: r.id,
-        enabled: r.enabled,
-        label: r.label,
-        matchKind: r.matchKind === "process-path" ? "path" : "name",
-        matchValue: r.matchValue,
-        action: r.action,
-        target: r.action === "proxy" ? resolveTarget(r.targetProxy) : null,
-        includeDescendants: r.includeDescendants,
-        ruleMode: (r as any).ruleMode === "inherit" ? "inherit" : "strict",
-      }));
-
-    // 4. 业务包规则排在最前列（第 0 优先级），紧接着是用户自定进程规则
+    // 4. 业务包规则与用户自定进程规则合并（已确保无重复启用根）
     const allProcessRules = [...bundleProcessRules, ...manualRules];
 
     // 5. 组装合规的 RoutingOverrides 配置
@@ -515,8 +473,8 @@ export async function syncRoutingToCore(
     const currentBundlesEnabled = view.config.bundlesEnabled ?? false;
 
     // 尊重总控意图：严禁因列表内存在单项规则而在保存时强行把用户已暂停的总控开关重新打开
-    const shouldEnableBundles = currentBundlesEnabled;
-    const shouldEnableProcess = currentProcessEnabled;
+    const shouldEnableBundles = currentBundlesEnabled || Boolean(activation?.enableRouting);
+    const shouldEnableProcess = currentProcessEnabled || Boolean(activation?.enableRouting);
 
     const nextConfig = {
       ...view.config,
@@ -534,10 +492,12 @@ export async function syncRoutingToCore(
 
     // 6. 双向实时联动 Mihomo 内核策略组：确保运行时内存指针立即指向目标节点
     for (const b of compiledBundles) {
-      if (b.enabled && b.mainTarget?.name) {
+      const saved = b.mainTarget as RoutingTarget | null;
+      const current = resolveTarget(saved?.name);
+      if (b.enabled && saved && current?.profileId === saved.profileId && current.kind === saved.kind) {
         const group = toBundleGroupName(b.id, "main");
         try {
-          await invoke("switch_mihomo_proxy", { group, proxy: b.mainTarget.name });
+          await invoke("switch_mihomo_proxy", { group, proxy: saved.name });
         } catch (switchErr) {
           console.warn(`[processRoutingService] switch_mihomo_proxy for ${group} warning:`, switchErr);
         }
@@ -572,6 +532,8 @@ export async function saveProcessRoutingState(state: ProcessRoutingState): Promi
           new CustomEvent("netbox-process-master-changed", { detail: state.processEnabled })
         );
         window.dispatchEvent(new Event("netbox-route-changed"));
+      } else {
+        throw new Error("当前进程分流配置不可用");
       }
     } catch (err: any) {
       console.warn("[processRoutingService] saveProcessRoutingState failed:", err);
@@ -583,194 +545,254 @@ export async function saveProcessRoutingState(state: ProcessRoutingState): Promi
 // ==========================================================================
 // 2. 业务规则包 CRUD 管理 (对接 Rust: get_business_bundles, save_business_bundles)
 // ==========================================================================
-export async function fetchBundles(): Promise<ProcessBundleItem[]> {
+function decodeBundleInstance(inst: any): ProcessBundleItem {
+  const def = inst.definition || {};
+  const policy = inst.policy || def.policy || {};
+  const members: BundleProcessMember[] = Array.isArray(def.processes) ? def.processes : [];
+  const extraExes: string[] = Array.isArray(def.additionalExes) ? def.additionalExes : [];
+  const exes = [...new Set([...members.map((member) => member.exe), ...extraExes].filter(Boolean))];
+  const mode = (inst.mode || def.mode || "strict") as any;
+  const fallback = (inst.fallback || def.fallback || "rules") as any;
+  const domains = Array.isArray(def.domains) ? def.domains : Array.isArray(inst.domains) ? inst.domains : [];
+
+  const savedTarget = inst.slotTargets?.main;
+  let rawTarget = savedTarget?.name || inst.slotBindings?.main || "";
+  if (rawTarget.startsWith("PW-") || rawTarget.startsWith("本地方案")) {
+    rawTarget = "";
+  }
+
+  return {
+    id: inst.instanceId,
+    packageId: def.packageId,
+    repositoryOrigin: inst.repositoryOrigin,
+    name: def.packageName || "未命名业务包",
+    description: def.description || "",
+    icon: def.icon || "📦",
+    mainExe: members.find((member) => member.role === "main")?.exe || exes[0] || "",
+    exes,
+    enabled: Boolean(inst.enabled) && (mode !== "sandbox" || policy.useExistingRules !== true || Boolean(rawTarget.trim())),
+    targetProxy: rawTarget,
+    targetIdentity: rawTarget && savedTarget?.profileId
+      && (savedTarget.kind === "node" || savedTarget.kind === "group") ? savedTarget : undefined,
+    mode: mode === "sandbox" ? "sandbox" : "strict",
+    fallback: fallback === "system" || fallback === "direct" ? fallback : "rules",
+    domains: bundleDomains(inst.instanceId, exes[0] || "", domains),
+    policy: {
+      proxyTcp: policy.proxyTcp ?? true,
+      blockIpv6: policy.blockIpv6 ?? true,
+      blockUdp: policy.blockUdp ?? true,
+      proxyUdp: policy.proxyUdp ?? false,
+      proxySubprocesses: policy.proxySubprocesses ?? true,
+      bypassLan: policy.bypassLan ?? true,
+      dnsMode:
+        policy.dnsMode === "fake_ip"
+          ? "fake_ip"
+          : policy.dnsMode === "system_native" || policy.dnsMode === "system"
+          ? "system_native"
+          : "safe_pure",
+      portFilterMode: policy.portFilterMode || "all",
+      customPorts: policy.customPorts || "",
+      targetFilterMode: policy.targetFilterMode || "all",
+      targetRules: Array.isArray(policy.targetRules) ? policy.targetRules : [],
+      disallowProxyArgs: Boolean(policy.disallowProxyArgs),
+      useExistingRules: policy.useExistingRules === true,
+      staleConnectionStrategy:
+        policy.staleConnectionStrategy === "auto_reset" || policy.staleConnectionStrategy === "auto_close"
+          ? "auto_reset"
+          : policy.staleConnectionStrategy === "ignore" || policy.staleConnectionStrategy === "keep"
+          ? "ignore"
+          : "prompt",
+    },
+    updatedAt: inst.updatedAt ? new Date(inst.updatedAt).toLocaleDateString() : undefined,
+  };
+}
+
+function readCachedBundles(): ProcessBundleItem[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_BUNDLES_KEY);
+    if (raw) {
+      const bundles: ProcessBundleItem[] = JSON.parse(raw);
+      return bundles.map((bundle) => ({
+        ...bundle,
+        enabled: bundle.enabled && (!usesExistingBundleRules(bundle) || Boolean(bundle.targetProxy?.trim())),
+        domains: bundleDomains(bundle.id, bundle.mainExe, bundle.domains ?? []),
+      }));
+    }
+  } catch {}
+
+  return [];
+}
+
+export async function fetchBundles({ strict = false }: { strict?: boolean } = {}): Promise<ProcessBundleItem[]> {
   if (isTauriEnvironment()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const list = await invoke<any[]>("get_business_bundles");
+      const list = await invoke<any[] | null>("get_business_bundles");
       // 核心修复：只要后端返回了合规数组定义（包括空数组 []），直接采纳，严禁自动回退默认包
       if (Array.isArray(list)) {
-        return list.map((inst) => {
-          const def = inst.definition || {};
-          const policy = inst.policy || def.policy || {};
-          const exes = (def.processes || []).map((p: any) => p.exe || "");
-          const mode = (inst.mode || def.mode || "strict") as any;
-          const fallback = (inst.fallback || def.fallback || "rules") as any;
-          const domains = Array.isArray(def.domains) ? def.domains : Array.isArray(inst.domains) ? inst.domains : [];
-
-          let rawTarget = inst.slotTargets?.main?.name || inst.slotBindings?.main || "";
-          if (rawTarget.startsWith("PW-") || rawTarget.startsWith("本地方案")) {
-            rawTarget = "";
-          }
-
-          return {
-            id: inst.instanceId,
-            name: def.packageName || "未命名业务包",
-            description: def.description || "",
-            icon: def.icon || "📦",
-            mainExe: exes[0] || "",
-            exes,
-            enabled: Boolean(inst.enabled),
-            targetProxy: rawTarget,
-            mode: mode === "sandbox" ? "sandbox" : "strict",
-            fallback: fallback === "system" || fallback === "direct" ? fallback : "rules",
-            domains,
-            policy: {
-              proxyTcp: policy.proxyTcp ?? true,
-              blockIpv6: policy.blockIpv6 ?? true,
-              blockUdp: policy.blockUdp ?? true,
-              proxyUdp: policy.proxyUdp ?? false,
-              proxySubprocesses: policy.proxySubprocesses ?? true,
-              bypassLan: policy.bypassLan ?? true,
-              dnsMode:
-                policy.dnsMode === "fake_ip"
-                  ? "fake_ip"
-                  : policy.dnsMode === "system_native" || policy.dnsMode === "system"
-                  ? "system_native"
-                  : "safe_pure",
-              portFilterMode: policy.portFilterMode || "all",
-              customPorts: policy.customPorts || "",
-              targetFilterMode: policy.targetFilterMode || "all",
-              targetRules: Array.isArray(policy.targetRules) ? policy.targetRules : [],
-              disallowProxyArgs: Boolean(policy.disallowProxyArgs),
-              staleConnectionStrategy:
-                policy.staleConnectionStrategy === "auto_reset" || policy.staleConnectionStrategy === "auto_close"
-                  ? "auto_reset"
-                  : policy.staleConnectionStrategy === "ignore" || policy.staleConnectionStrategy === "keep"
-                  ? "ignore"
-                  : "prompt",
-            },
-            updatedAt: inst.updatedAt ? new Date(inst.updatedAt).toLocaleDateString() : undefined,
-          };
-        });
+        return list.map(decodeBundleInstance);
       }
+      // 尚无后端文件时，读取旧版保存过的本地业务包。
+      if (strict && list !== null) throw new Error("业务规则包列表不可用");
     } catch (e) {
+      if (strict) throw e;
       console.warn("[processRoutingService] get_business_bundles failed:", e);
     }
   }
 
-  try {
-    const raw = localStorage.getItem(STORAGE_BUNDLES_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-
-  return DEFAULT_BUNDLES;
+  return readCachedBundles();
 }
 
-export async function saveBundles(bundles: ProcessBundleItem[]): Promise<void> {
-  localStorage.setItem(STORAGE_BUNDLES_KEY, JSON.stringify(bundles));
+type BundleSaveIntent = { draftId: string } | { activation: BundleActivation };
+
+function serializeBundle(b: ProcessBundleItem, inst?: any) {
+  const prevDef = inst?.definition || {};
+  const prevProcesses = Array.isArray(prevDef.processes) ? prevDef.processes : [];
+
+  // 构造合规的 processes 数组
+  const nextProcesses = b.exes.map((exe) => {
+    const found = prevProcesses.find(
+      (p: any) => p.exe?.toLowerCase() === exe.toLowerCase()
+    );
+    return (
+      found || {
+        exe,
+        role: exe.toLowerCase() === b.mainExe.toLowerCase() ? "main" : "worker",
+        description: "自定进程成员",
+        includeDescendants: b.policy.proxySubprocesses,
+      }
+    );
+  });
+
+  const cleanTarget = (b.targetProxy && !b.targetProxy.startsWith("PW-") && !b.targetProxy.startsWith("本地方案")) ? b.targetProxy : "";
+  const savedTarget = b.targetIdentity?.name === cleanTarget
+    ? b.targetIdentity : { kind: "node", name: cleanTarget };
+  const slotTarget = cleanTarget ? savedTarget : null;
+
+  if (inst) {
+    // 更新已有实例定义与出口插槽
+    return {
+      ...inst,
+      enabled: b.enabled,
+      mode: b.mode,
+      fallback: b.fallback,
+      domains: b.domains,
+      slotBindings: {
+        ...inst.slotBindings,
+        main: cleanTarget || null,
+      },
+      slotTargets: {
+        ...inst.slotTargets,
+        main: slotTarget,
+      },
+      definition: {
+        ...prevDef,
+        packageName: b.name,
+        description: b.description,
+        mode: b.mode,
+        fallback: b.fallback,
+        domains: b.domains,
+        processes: nextProcesses,
+        additionalExes: b.exes,
+        policy: { ...b.policy },
+      },
+      policy: {
+        ...(inst.policy || prevDef.policy || {}),
+        ...b.policy,
+      },
+      isModified: true,
+      updatedAt: Date.now(),
+    };
+  } else {
+    // 新增自定义套件定义
+    return {
+      instanceId: b.id,
+      ...(b.repositoryOrigin ? { repositoryOrigin: b.repositoryOrigin } : {}),
+      enabled: b.enabled,
+      mode: b.mode,
+      fallback: b.fallback,
+      domains: b.domains,
+      slotBindings: {
+        main: cleanTarget || null,
+      },
+      slotTargets: {
+        main: slotTarget,
+      },
+      definition: {
+        packageId: b.packageId || b.id,
+        packageName: b.name,
+        description: b.description,
+        version: "1.0.0",
+        author: "User Custom",
+        mode: b.mode,
+        fallback: b.fallback,
+        domains: b.domains,
+        processes: nextProcesses,
+        slots: [
+          {
+            slotId: "main",
+            label: "核心出口插槽",
+            description: "主出站代理",
+          },
+        ],
+        policy: { ...b.policy },
+      },
+      policy: { ...b.policy },
+      isModified: true,
+      updatedAt: Date.now(),
+    };
+  }
+}
+
+export async function saveBundles(bundles: ProcessBundleItem[], intent?: BundleSaveIntent): Promise<void> {
   if (isTauriEnvironment()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const rawInstances = await invoke<any[]>("get_business_bundles");
+      const rawInstances = await invoke<any[] | null>("get_business_bundles");
       const instances = Array.isArray(rawInstances) ? rawInstances : [];
       const existingMap = new Map(instances.map((inst) => [inst.instanceId, inst]));
 
       // 核心修复：以当前前台传入的 bundles 为唯一真理源进行映射构造
       // 凡是不在 bundles 中的项已被用户彻底物理删除，绝不再塞回 nextInstances
-      const nextInstances = bundles.map((b) => {
-        const inst = existingMap.get(b.id);
-        const prevDef = inst?.definition || {};
-        const prevProcesses = Array.isArray(prevDef.processes) ? prevDef.processes : [];
-
-        // 构造合规的 processes 数组
-        const nextProcesses = b.exes.map((exe) => {
-          const found = prevProcesses.find(
-            (p: any) => p.exe?.toLowerCase() === exe.toLowerCase()
-          );
-          return (
-            found || {
-              exe,
-              role: exe.toLowerCase() === b.mainExe.toLowerCase() ? "main" : "worker",
-              description: "自定进程成员",
-              includeDescendants: b.policy.proxySubprocesses,
-            }
-          );
-        });
-
-        const cleanTarget = (b.targetProxy && !b.targetProxy.startsWith("PW-") && !b.targetProxy.startsWith("本地方案")) ? b.targetProxy : "";
-
-        if (inst) {
-          // 更新已有实例定义与出口插槽
-          return {
-            ...inst,
-            enabled: b.enabled,
-            mode: b.mode,
-            fallback: b.fallback,
-            domains: b.domains,
-            slotBindings: {
-              ...inst.slotBindings,
-              main: cleanTarget,
-            },
-            slotTargets: {
-              ...inst.slotTargets,
-              main: cleanTarget ? {
-                kind: "node",
-                name: cleanTarget,
-              } : null,
-            },
-            definition: {
-              ...prevDef,
-              packageName: b.name,
-              description: b.description,
-              mode: b.mode,
-              fallback: b.fallback,
-              domains: b.domains,
-              processes: nextProcesses,
-              additionalExes: b.exes,
-              policy: { ...b.policy },
-            },
-            policy: {
-              ...(inst.policy || prevDef.policy || {}),
-              ...b.policy,
-            },
-            isModified: true,
-            updatedAt: Date.now(),
-          };
-        } else {
-          // 新增自定义套件定义
-          return {
-            instanceId: b.id,
-            enabled: b.enabled,
-            mode: b.mode,
-            fallback: b.fallback,
-            domains: b.domains,
-            slotBindings: {
-              main: b.targetProxy,
-            },
-            slotTargets: {
-              main: {
-                kind: "node",
-                name: b.targetProxy,
-              },
-            },
-            definition: {
-              packageId: b.id,
-              packageName: b.name,
-              description: b.description,
-              version: "1.0.0",
-              author: "User Custom",
-              mode: b.mode,
-              fallback: b.fallback,
-              domains: b.domains,
-              processes: nextProcesses,
-              slots: [
-                {
-                  slotId: "main",
-                  label: "核心出口插槽",
-                  description: "主出站代理",
-                },
-              ],
-              policy: { ...b.policy },
-            },
-            policy: { ...b.policy },
-            isModified: true,
-            updatedAt: Date.now(),
-          };
-        }
-      });
-
+      const draftId = intent && "draftId" in intent ? intent.draftId : undefined;
+      const activation = intent && "activation" in intent ? intent.activation : undefined;
+      const changedId = draftId ?? activation?.bundleId;
+      const changedBundle = changedId ? bundles.find((bundle) => bundle.id === changedId) : undefined;
+      let nextInstances;
+      if (Array.isArray(rawInstances) && changedBundle) {
+        const instance = serializeBundle(changedBundle, existingMap.get(changedId));
+        nextInstances = existingMap.has(changedId)
+          ? instances.map((saved) => saved.instanceId === changedId ? instance : saved)
+          : [...instances, instance];
+      } else {
+        nextInstances = bundles.map((bundle) => serializeBundle(bundle, existingMap.get(bundle.id)));
+      }
       await invoke("save_business_bundles", { instances: nextInstances });
+      if (!draftId) {
+        try {
+          await syncRoutingToCore(bundles, undefined, activation);
+        } catch (error) {
+          if (activation) {
+            try {
+              const previous = existingMap.get(activation.bundleId);
+              const saved = nextInstances.find((instance) => instance.instanceId === activation.bundleId);
+              const latest = await invoke<any[]>("get_business_bundles");
+              if (!latest?.some((instance) => instance.instanceId === activation.bundleId
+                && instance.updatedAt === saved?.updatedAt)) {
+                throw new Error("业务包已被其他操作改变");
+              }
+              await invoke("save_business_bundles", {
+                instances: previous
+                  ? latest.map((instance) => instance.instanceId === activation.bundleId ? previous : instance)
+                  : latest.filter((instance) => instance.instanceId !== activation.bundleId),
+              });
+            } catch (restore) {
+              throw new Error(`${error}。恢复业务包原配置失败，${restore}`);
+            }
+          }
+          throw error;
+        }
+      }
       window.dispatchEvent(new Event("netbox-route-changed"));
       window.dispatchEvent(new Event("procweaver-route-changed"));
     } catch (e: any) {
@@ -778,9 +800,8 @@ export async function saveBundles(bundles: ProcessBundleItem[]): Promise<void> {
       throw new Error(typeof e === "string" ? e : e?.message || "业务规则包实例持久化失败");
     }
 
-    // 核心修复：立即执行底层 WinDivert 过滤驱动与 Mihomo 进程路由编译同步
-    await syncRoutingToCore(bundles, undefined);
   }
+  localStorage.setItem(STORAGE_BUNDLES_KEY, JSON.stringify(bundles));
 }
 
 export async function createBundle(
@@ -794,39 +815,63 @@ export async function createBundle(
     updatedAt: new Date().toLocaleDateString(),
   };
   const next = [...current, fullBundle];
-  await saveBundles(next);
+  const intent = fullBundle.enabled && usesExistingBundleRules(fullBundle)
+    ? { activation: { bundleId: id, enableRouting: false } } : undefined;
+  await saveBundles(next, intent);
   return next;
-}
-
-export async function resetBundleToDefault(bundleId: string): Promise<ProcessBundleItem[]> {
-  const preset = OFFICIAL_PRESET_BUNDLES.find((p) => p.id === bundleId);
-  if (!preset) return fetchBundles();
-  return updateBundleInstance(bundleId, {
-    name: preset.name,
-    description: preset.description,
-    mainExe: preset.mainExe,
-    exes: [...preset.exes],
-    mode: preset.mode,
-    fallback: preset.fallback,
-    domains: [...preset.domains],
-    policy: { ...preset.policy },
-  });
 }
 
 export async function updateBundleInstance(
   bundleId: string,
-  updates: Partial<ProcessBundleItem>
+  updates: Partial<ProcessBundleItem>,
+  options: { enableRouting?: boolean } = {},
 ): Promise<ProcessBundleItem[]> {
   const current = await fetchBundles();
-  const next = current.map((b) => (b.id === bundleId ? { ...b, ...updates } : b));
-  await saveBundles(next);
+  const previous = current.find((bundle) => bundle.id === bundleId);
+  if (!previous) throw new Error("业务包已不存在");
+  const updated = { ...previous, ...updates };
+  const useExistingRules = usesExistingBundleRules(updated);
+  const applyingActiveMode = updated.enabled && (!previous.enabled || useExistingRules !== usesExistingBundleRules(previous));
+  if (updated.enabled && !updated.targetProxy.trim()) throw new Error("请先绑定出口");
+  const bindingChanged = updates.targetProxy !== undefined;
+  if (bindingChanged) {
+    updated.targetIdentity = undefined;
+    if (updated.targetProxy && isTauriEnvironment()) {
+      const view = await invokeCommand<any>("get_routing_overrides");
+      const target = view && resolveRoutingTarget(view, updated.targetProxy);
+      if (!target) throw new Error("所选出口已不可用，请重新选择");
+      updated.targetProxy = target.name;
+      updated.targetIdentity = target;
+    }
+  }
+  const next = current.map((b) => b.id === bundleId ? updated : b);
+  const intent = applyingActiveMode
+    ? { activation: { bundleId, enableRouting: options.enableRouting ?? false } }
+    : bindingChanged && !previous.enabled && !updated.enabled ? { draftId: bundleId } : undefined;
+  await saveBundles(next, intent);
   return next;
 }
 
 export async function deleteBundle(bundleId: string): Promise<ProcessBundleItem[]> {
-  const current = await fetchBundles();
-  const next = current.filter((b) => b.id !== bundleId);
-  await saveBundles(next);
+  if (isTauriEnvironment()) {
+    const stored = await invokeCommand<any[] | null>("get_business_bundles");
+    const initialInstances = stored === null
+      ? readCachedBundles().map((bundle) => serializeBundle(bundle))
+      : null;
+    const remaining = await invokeCommand<any[]>("delete_business_bundle", { instanceId: bundleId, initialInstances });
+    const next = remaining.map(decodeBundleInstance);
+    try {
+      localStorage.setItem(STORAGE_BUNDLES_KEY, JSON.stringify(next));
+    } catch (error) {
+      console.warn("[processRoutingService] 更新本地业务包缓存失败", error);
+    }
+    window.dispatchEvent(new Event("netbox-route-changed"));
+    window.dispatchEvent(new Event("procweaver-route-changed"));
+    return next;
+  }
+
+  const next = readCachedBundles().filter((bundle) => bundle.id !== bundleId);
+  localStorage.setItem(STORAGE_BUNDLES_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -935,7 +980,7 @@ export function exportBundleToPwPack(bundle: ProcessBundleItem): void {
     formatVersion: "1.0",
     exportedAt: new Date().toISOString(),
     bundle: {
-      packageId: bundle.id || `bundle-${Date.now().toString(36)}`,
+      packageId: bundle.packageId || bundle.id || `bundle-${Date.now().toString(36)}`,
       packageName: bundle.name,
       packageVersion: "v1.0",
       description: bundle.description || "",
@@ -1026,8 +1071,8 @@ export function validateAndParsePwPack(jsonString: string): {
       description: b.description || "导入的规则包",
       mainExe,
       exes: cleanExes,
-      enabled: true,
-      targetProxy: "Proxy", // 安全脱敏：导入后默认由用户在本地指派出口插槽
+      enabled: false,
+      targetProxy: "",
       mode: b.mode === "sandbox" ? "sandbox" : "strict",
       fallback: b.fallback === "system" || b.fallback === "direct" ? b.fallback : "rules",
       domains: Array.isArray(b.domains) ? b.domains : [],
@@ -1045,6 +1090,7 @@ export function validateAndParsePwPack(jsonString: string): {
         targetRules: Array.isArray(b.policy?.targetRules) ? b.policy.targetRules : [],
         disallowProxyArgs: Boolean(b.policy?.disallowProxyArgs),
         staleConnectionStrategy: b.policy?.staleConnectionStrategy ?? "prompt",
+        useExistingRules: b.policy?.useExistingRules === true,
       },
       updatedAt: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
     };
@@ -1069,9 +1115,40 @@ export async function importBundleItem(bundle: ProcessBundleItem): Promise<Proce
     ...bundle,
     name: finalName,
     id: `bundle-imported-${Date.now()}`,
+    enabled: false,
+    targetProxy: "",
+    targetIdentity: undefined,
   };
   const next = [...current, nextBundle];
-  await saveBundles(next);
+  await saveBundles(next, { draftId: nextBundle.id });
+  return next;
+}
+
+export function isRepositoryPackageMounted(bundles: ProcessBundleItem[], item: RepositoryPackage): boolean {
+  return bundles.some((bundle) => bundle.packageId === item.definition.packageId
+    && bundle.repositoryOrigin?.repositoryKey === item.origin.repositoryKey);
+}
+
+export async function mountRepositoryPackage(item: RepositoryPackage): Promise<ProcessBundleItem[]> {
+  if (!item.definition.processes.length) throw new Error("规则包缺少桌面进程定义");
+  const instanceId = `repo-${crypto.randomUUID()}`;
+  if (isTauriEnvironment()) {
+    const instances = await invokeCommand<BundleLocalInstance[]>("mount_repository_business_bundle", {
+      instanceId,
+      definition: item.definition,
+      origin: item.origin,
+      initialInstances: readCachedBundles().map((bundle) => serializeBundle(bundle)),
+    });
+    window.dispatchEvent(new Event("netbox-route-changed"));
+    window.dispatchEvent(new Event("procweaver-route-changed"));
+    return instances.map(decodeBundleInstance);
+  }
+
+  const current = readCachedBundles();
+  if (isRepositoryPackageMounted(current, item)) return current;
+  const bundle = decodeBundleInstance({ instanceId, definition: item.definition, enabled: false, repositoryOrigin: item.origin, updatedAt: Date.now() });
+  const next = [...current, bundle];
+  await saveBundles(next, { draftId: instanceId });
   return next;
 }
 
@@ -1096,8 +1173,8 @@ export async function fetchLiveProcesses(): Promise<LiveProcessItem[]> {
           // 检查是否命中自定义规则
           const matchedRule = currentRules.find((r) => {
             if (!r.enabled) return false;
-            if (r.matchKind === "process-path" && exePath) {
-              return exePath.includes(r.matchValue.toLowerCase());
+            if (r.matchKind === "process-path") {
+              return exePath !== "" && exePath.replace(/\//g, "\\") === r.matchValue.toLowerCase().replace(/\//g, "\\");
             }
             return exeName === r.matchValue.toLowerCase();
           });
@@ -1116,9 +1193,6 @@ export async function fetchLiveProcesses(): Promise<LiveProcessItem[]> {
             pid: entry.pid,
             name: entry.name || "未知应用",
             path: entry.executablePath || undefined,
-            connectionCount: Math.floor(Math.random() * 6) + 1,
-            uploadBytes: 1024 * (Math.floor(Math.random() * 200) + 10),
-            downloadBytes: 1024 * (Math.floor(Math.random() * 800) + 50),
             isRouted,
             matchedRuleName,
             matchedProxy,
@@ -1128,6 +1202,7 @@ export async function fetchLiveProcesses(): Promise<LiveProcessItem[]> {
     } catch (e) {
       console.warn("[processRoutingService] get_process_tree failed in Tauri:", e);
     }
+    return [];
   }
 
   return [...mockLiveProcesses];

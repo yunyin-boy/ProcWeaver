@@ -109,7 +109,6 @@ fn stop_blocking() {
         let engine = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(engine)=&engine { crate::external_proxy::diagnostics::emit("capture.stopping","info",serde_json::json!({"stats":engine.stats()})); }
         drop(engine);
-        let _ = crate::capture::windivert::assets::cleanup_driver_and_service();
     }
 }
 pub(crate) fn stop() {
@@ -187,6 +186,19 @@ pub(crate) async fn tick() {
             .map(|e| e.stats());
         if let Some(s) = stats {
             if s.active {
+                let result = tokio::task::spawn_blocking(|| {
+                    let guard = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(engine) = guard.as_ref() {
+                        engine.refresh_relay_firewall()?;
+                    }
+                    Ok::<(), String>(())
+                })
+                .await
+                .unwrap_or_else(|_| Err("检查 WinDivert 中继防火墙规则失败".into()));
+                if let Err(error) = result {
+                    *ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+                    let _ = tokio::task::spawn_blocking(stop_blocking).await;
+                }
                 return;
             }
             *ERROR.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -239,6 +251,10 @@ pub async fn set_process_capture(
         return Err(format!("接入方式保存失败，保留原选择：{error}"));
     }
     *CURRENT_MODE.lock().unwrap_or_else(|e| e.into_inner()) = mode;
+    #[cfg(windows)]
+    if previous == AccessMode::UserMode && mode != AccessMode::UserMode {
+        crate::capture::user_mode::control::retain_external(|_, _| false);
+    }
     if mode != AccessMode::Windivert {
         let _ = tokio::task::spawn_blocking(stop_blocking).await;
     }

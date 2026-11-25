@@ -75,9 +75,10 @@ fn default_nameservers() -> Vec<String> {
         "https://doh.pub/dns-query".into(),
     ]
 }
+pub(crate) const DEFAULT_FALLBACK_DOH: &str = "https://1.1.1.1/dns-query";
 fn default_fallbacks() -> Vec<String> {
     vec![
-        "https://1.1.1.1/dns-query".into(),
+        DEFAULT_FALLBACK_DOH.into(),
         "https://8.8.8.8/dns-query".into(),
     ]
 }

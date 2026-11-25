@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+mod subscription_name;
+
 // 配置写入与核心启停属于同一事务；所有调用方只获取一次此锁。
 pub(crate) use super::process::LIFECYCLE as PROFILE_WRITE;
 
@@ -275,7 +278,11 @@ pub fn parse_subscription_userinfo(header_str: &str) -> (Option<u64>, Option<u64
 }
 
 #[tauri::command]
-pub async fn add_profile(name: String, url: String) -> Result<ProfileItem, String> {
+pub async fn add_profile(
+    name: String,
+    url: String,
+    auto_update_interval: Option<u32>,
+) -> Result<ProfileItem, String> {
     let _write = PROFILE_WRITE.lock().await;
     ensure_profiles_dir()?;
     let id = format!(
@@ -295,8 +302,11 @@ pub async fn add_profile(name: String, url: String) -> Result<ProfileItem, Strin
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client.get(&url).send().await.map_err(|e| format!("下载订阅失败: {}", e))?;
+    let request = client.get(&url).build().map_err(|_| "订阅链接无效")?;
+    let source_host = request.url().host_str().ok_or("订阅链接缺少域名")?.to_owned();
+    let resp = client.execute(request).await.map_err(|e| format!("下载订阅失败: {}", e))?;
     if !resp.status().is_success() { return Err(format!("下载订阅失败：HTTP {}", resp.status())); }
+    let name = subscription_name::resolve(&name, resp.headers(), &source_host);
 
     // 提取流量与到期时间信息 (从标准 Subscription-Userinfo 响应头)
     let (mut upload, mut download, mut total, mut expire) = resp
@@ -356,7 +366,7 @@ pub async fn add_profile(name: String, url: String) -> Result<ProfileItem, Strin
         download,
         total,
         expire,
-        auto_update_interval: 0,
+        auto_update_interval: auto_update_interval.unwrap_or_default(),
         last_updated_at_seconds: now_secs,
     };
 
@@ -504,8 +514,10 @@ pub async fn delete_profile(id: String) -> Result<bool, String> {
     if let Some(pos) = list.iter().position(|p| p.id == id) {
         let is_selected = list[pos].is_selected;
         if is_selected {
-            // 如果仅剩一个订阅且正在生效，禁止直接删除
-            if list.len() <= 1 {
+            if list.len() == 1 {
+                #[cfg(not(target_os = "android"))]
+                return delete_last_selected_profile(&list[pos]).await;
+                #[cfg(target_os = "android")]
                 return Err("无法删除当前正在生效的唯一订阅。请先添加或切换至其他可用订阅后再删除。".into());
             }
             // 挑选下一个可用订阅先进行事务切换
@@ -539,12 +551,103 @@ pub async fn delete_profile(id: String) -> Result<bool, String> {
     }
 }
 
+#[cfg(not(target_os = "android"))]
+async fn delete_last_selected_profile(item: &ProfileItem) -> Result<bool, String> {
+    use crate::routing_overrides as routing;
+
+    let base = get_base_dir();
+    let index_path = get_profiles_index_file();
+    let runtime_path = base.join("core_data/config.yaml");
+    let overrides_path = base.join("config/routing-overrides.json");
+    let source = base.join(&item.file_path);
+    let managed_source = match fs::canonicalize(&source) {
+        Ok(resolved) => fs::canonicalize(get_profiles_dir()).ok().filter(|dir| {
+            resolved.parent() == Some(dir.as_path())
+                && source.parent().and_then(|parent| fs::canonicalize(parent).ok()).as_ref() == Some(dir)
+                && resolved.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml")
+                })
+        }).map(|_| source),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("无法确认订阅文件路径：{error}")),
+    };
+    let previous_index = fs::read(&index_path).map_err(|e| format!("读取原订阅索引失败：{e}"))?;
+    let previous_runtime = match fs::read_to_string(&runtime_path) {
+        Ok(raw) => Some(raw),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("读取原运行配置失败：{error}")),
+    };
+    let mut config = routing::read()?;
+    let overrides_commit = if config.retain_foreign_targets {
+        let previous = fs::read(&overrides_path).map_err(|e| format!("读取原出口保留配置失败：{e}"))?;
+        config.retain_foreign_targets = false;
+        config.revision = config.revision.checked_add(1).ok_or("规则修订号已耗尽")?;
+        let next = serde_json::to_vec_pretty(&config).map_err(|e| format!("序列化出口保留配置失败：{e}"))?;
+        Some((previous, next))
+    } else { None };
+
+    let raw = fs::read_to_string(base.join("config/default.yaml")).map_err(|e| format!("读取本地默认配置失败：{e}"))?;
+    let prepared = routing::prepare(&raw, &config, "default")?;
+    validate_config(&prepared)?;
+    routing::apply_runtime(&prepared).await?;
+
+    let mut wrote_overrides = false;
+    let mut wrote_index = false;
+    let committed = async {
+        let mut affected = config.clone();
+        affected.bundles.retain(|bundle| bundle.enabled && [&bundle.main_target, &bundle.dns_target]
+            .into_iter().flatten().any(|target| target.profile_id == item.id));
+        if !affected.bundles.is_empty() {
+            tokio::time::timeout(std::time::Duration::from_secs(10), super::mihomo_api::close_withdrawn_bundle_connections(&affected))
+                .await.map_err(|_| "旧业务连接清理超时".to_string())??;
+        }
+        if let Some((_, next)) = &overrides_commit {
+            crate::storage::replace_atomic(&overrides_path, next)?;
+            wrote_overrides = true;
+        }
+        crate::storage::replace_atomic(&index_path, b"[]")?;
+        wrote_index = true;
+        if let Some(path) = managed_source {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("删除订阅文件失败：{error}")),
+            }
+        }
+        Ok::<(), String>(())
+    }.await;
+    if let Err(error) = committed {
+        let mut failures = Vec::new();
+        if wrote_index {
+            if let Err(restore) = crate::storage::replace_atomic(&index_path, &previous_index) {
+                failures.push(restore);
+            }
+        }
+        if let Some((previous, _)) = overrides_commit.filter(|_| wrote_overrides) {
+            if let Err(restore) = crate::storage::replace_atomic(&overrides_path, &previous) {
+                failures.push(restore);
+            }
+        }
+        let restored = if let Some(raw) = previous_runtime {
+            routing::apply_runtime(&raw).await
+        } else {
+            fs::remove_file(&runtime_path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+                .map_err(|e| format!("清理候选运行配置失败：{e}"))
+        };
+        if let Err(restore) = restored { failures.push(restore); }
+        return Err(if failures.is_empty() { format!("删除订阅失败，已恢复原配置：{error}") }
+            else { format!("删除订阅失败：{error}；恢复异常：{}", failures.join("；")) });
+    }
+    routing::set_applied(config.revision, routing::tracker::status(&config).generation);
+    Ok(true)
+}
+
 /// 编辑订阅元数据（名称、URL、自动更新周期小时数）
 #[tauri::command]
 pub async fn edit_profile_metadata(
     id: String,
     name: String,
-    url: String,
+    url: Option<String>,
     auto_update_interval: u32,
 ) -> Result<ProfileItem, String> {
     let _write = PROFILE_WRITE.lock().await;
@@ -552,7 +655,9 @@ pub async fn edit_profile_metadata(
     let idx = list.iter().position(|p| p.id == id).ok_or_else(|| "订阅未找到".to_string())?;
 
     list[idx].name = name.trim().to_string();
-    list[idx].url = url.trim().to_string();
+    if let Some(url) = url {
+        list[idx].url = url.trim().to_string();
+    }
     list[idx].auto_update_interval = auto_update_interval;
 
     write_profiles_index(&list)?;
@@ -663,7 +768,9 @@ pub(crate) async fn run_due_updates() -> Result<(), String> {
     if failed { Err("部分订阅更新失败，已保留原配置".into()) } else { Ok(()) }
 }
 
-pub async fn run_profile_scheduler() {
+pub async fn run_profile_scheduler(app: tauri::AppHandle) {
+    use tauri::Emitter;
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         if !crate::function_mode::core_features_enabled() { continue; }
@@ -690,8 +797,9 @@ pub async fn run_profile_scheduler() {
         for id in pending_ids {
             if !crate::function_mode::core_features_enabled() { break; }
             eprintln!("[ProfileScheduler] 正在触发自动更新订阅: {}", id);
-            if let Err(e) = update_profile(id).await {
-                eprintln!("[ProfileScheduler] 自动更新订阅失败: {}", e);
+            match update_profile(id).await {
+                Ok(_) => { let _ = app.emit("procweaver-profile-changed", ()); }
+                Err(e) => eprintln!("[ProfileScheduler] 自动更新订阅失败: {}", e),
             }
         }
     }

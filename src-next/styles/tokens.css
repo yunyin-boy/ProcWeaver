@@ -25,14 +25,14 @@
   --duration-normal: 180ms;
   
   /* 窗口全局背景通透度与毛玻璃模糊度 (由系统首选项滑块动态驱动，默认设定 95% 扎实安全底垫) */
-  --window-opacity: 0.95;
+  --window-opacity: 1;
   --window-blur: 32px;
 
   /* ------------------------------------------------------------------------
      3. 浅色模式玻璃拟态 (Light Mode - 瑞士白瓷与液态透光晶体玻璃 - 光学清晰度加固)
      ------------------------------------------------------------------------ */
   --color-scheme: light;
-  --surface-canvas: rgba(245, 248, 252, var(--window-opacity, 0.95));  /* 动态通透冷瓷基底 */
+  --surface-canvas: rgba(245, 248, 252, var(--window-opacity));
   --surface-sunken: rgba(15, 23, 42, 0.04);     /* 微雕刻内凹槽道 */
   --surface-card: rgba(255, 255, 255, 0.90);    /* 90% 扎实白瓷晶体底垫，彻底垫死底层杂光穿透，字底高洁清晰 */
   --surface-card-hover: rgba(255, 255, 255, 0.96);
@@ -67,7 +67,7 @@
    -------------------------------------------------------------------------- */
 .dark {
   --color-scheme: dark;
-  --surface-canvas: rgba(13, 16, 22, var(--window-opacity, 0.96));     /* 纯正曜石黑晶扎实基底 (彻底杜绝桌面穿透重影) */
+  --surface-canvas: rgba(13, 16, 22, var(--window-opacity));
   --surface-sunken: rgba(0, 0, 0, 0.50);        /* 深度微雕刻暗槽 */
   --surface-card: rgba(22, 26, 35, 0.92);       /* 黑曜石安全底垫卡片 (拒绝死灰白雾，确保文字 8:1 超高对比) */
   --surface-card-hover: rgba(30, 35, 48, 0.95);

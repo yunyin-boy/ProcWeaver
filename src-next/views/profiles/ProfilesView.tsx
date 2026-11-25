@@ -3,15 +3,18 @@
 // 规范溯源: tauri-linear-raycast-ui / ui-surface-elevation-hierarchy
 // ==========================================================================
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useId } from "react";
+import { FileCode, Globe, Plus, RefreshCw } from "lucide-react";
 import { ProfileItem } from "../../types/profile";
 import {
   getProfiles,
   addProfile,
   updateProfile,
   updateAllProfiles,
+  type ProfileBatchUpdateResult,
   selectProfile,
   deleteProfile,
+  getProfileBoundBundleNames,
   editProfileMetadata,
   getProfileContent,
   saveProfileContent,
@@ -21,6 +24,16 @@ import {
 } from "../../services/profileService";
 import { CustomSelect } from "../../primitives/CustomSelect";
 import { ConfirmModal } from "../../primitives/ConfirmModal";
+import { Button } from "../../primitives/Button";
+import { Modal } from "../../primitives/Modal";
+
+const updateIntervals = [
+  { value: "6", label: "每 6 小时" },
+  { value: "12", label: "每 12 小时" },
+  { value: "24", label: "每 24 小时" },
+  { value: "48", label: "每 48 小时" },
+  { value: "0", label: "手动更新" },
+];
 
 interface ProfilesViewProps {
   onShowNotice?: (msg: string) => void;
@@ -31,14 +44,22 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
   onShowNotice,
   onProfileSwitched,
 }) => {
+  const formId = useId();
   const [profiles, setProfiles] = useState<ProfileItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [isRefreshingAll, setIsRefreshingAll] = useState(false);
+  const [batchFailure, setBatchFailure] = useState<ProfileBatchUpdateResult | null>(null);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
 
   // 删除订阅确认模态窗状态 (替代原生 window.confirm)
-  const [profileToDelete, setProfileToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [profileToDelete, setProfileToDelete] = useState<{
+    id: string;
+    name: string;
+    switchToDefault: boolean;
+    affectedBundles?: string[];
+  } | null>(null);
+  const [isPreparingDelete, setIsPreparingDelete] = useState(false);
   const [isDeletingProfile, setIsDeletingProfile] = useState(false);
 
   // 添加订阅弹窗状态
@@ -46,37 +67,20 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
   const [addMode, setAddMode] = useState<"url" | "file">("url");
   const [addName, setAddName] = useState("");
   const [addUrl, setAddUrl] = useState("");
-  const [addInterval, setAddInterval] = useState(24);
+  const [addInterval, setAddInterval] = useState(0);
   const [addFileContent, setAddFileContent] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 编辑元数据弹窗状态
   const [editingProfile, setEditingProfile] = useState<ProfileItem | null>(null);
   const [editName, setEditName] = useState("");
-  const [editInterval, setEditInterval] = useState(24);
+  const [editInterval, setEditInterval] = useState(0);
 
   // YAML 源码查看/编辑弹窗状态
   const [viewerProfile, setViewerProfile] = useState<ProfileItem | null>(null);
   const [viewerContent, setViewerContent] = useState("");
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [isSavingContent, setIsSavingContent] = useState(false);
-
-  // ESC 快捷键统一关闭弹窗
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (viewerProfile) {
-          setViewerProfile(null);
-        } else if (editingProfile) {
-          setEditingProfile(null);
-        } else if (isAddModalOpen) {
-          setIsAddModalOpen(false);
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [viewerProfile, editingProfile, isAddModalOpen]);
 
   // 加载订阅列表
   const loadProfiles = async () => {
@@ -100,7 +104,7 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
     if (p.isSelected || switchingId) return;
     setSwitchingId(p.id);
     try {
-      await selectProfile(p.id);
+      if (!(await selectProfile(p.id))) throw new Error("方案切换未完成");
       setProfiles((prev) =>
         prev.map((item) => ({ ...item, isSelected: item.id === p.id }))
       );
@@ -132,10 +136,15 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
   // 全量更新所有订阅
   const handleUpdateAll = async () => {
     setIsRefreshingAll(true);
+    setBatchFailure(null);
     try {
-      await updateAllProfiles(profiles);
+      const result = await updateAllProfiles(profiles);
       await loadProfiles();
-      if (onShowNotice) onShowNotice("全部云端订阅源同步完成");
+      if (result.failedProfiles.length > 0) {
+        setBatchFailure(result);
+      } else {
+        onShowNotice?.(result.updatedCount > 0 ? "全部云端订阅源同步完成" : "暂无可更新的云端订阅");
+      }
     } catch (e: any) {
       if (onShowNotice) onShowNotice(`全量更新失败: ${e?.message || e}`);
     } finally {
@@ -144,25 +153,36 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
   };
 
   // 删除订阅 - 触发微晶确认弹窗
-  const handleDelete = (id: string, name: string, isSelected: boolean) => {
-    if (isSelected) {
+  const handleDelete = async (id: string, name: string, isSelected: boolean) => {
+    if (isSelected && profiles.length !== 1) {
       if (onShowNotice) {
         onShowNotice(`订阅 [${name}] 当前正在生效中，若要删除请先将另一方案设为生效`);
       }
       return;
     }
-    setProfileToDelete({ id, name });
+    if (!isSelected) {
+      setProfileToDelete({ id, name, switchToDefault: false });
+      return;
+    }
+    setIsPreparingDelete(true);
+    try {
+      const affectedBundles = await getProfileBoundBundleNames(id).catch(() => undefined);
+      setProfileToDelete({ id, name, switchToDefault: true, affectedBundles });
+    } finally {
+      setIsPreparingDelete(false);
+    }
   };
 
   // 确认执行物理删除订阅
   const handleConfirmDelete = async () => {
     if (!profileToDelete) return;
-    const { id, name } = profileToDelete;
+    const { id, name, switchToDefault } = profileToDelete;
     setIsDeletingProfile(true);
     try {
-      await deleteProfile(id);
+      if (!(await deleteProfile(id))) throw new Error("订阅删除未完成");
       setProfiles((prev) => prev.filter((item) => item.id !== id));
-      if (onShowNotice) onShowNotice(`已移除订阅配置: ${name}`);
+      if (switchToDefault) onProfileSwitched?.("默认分流策略");
+      onShowNotice?.(switchToDefault ? `已删除「${name}」，已切换到本地默认配置` : `已移除订阅配置: ${name}`);
       setProfileToDelete(null);
     } catch (e: any) {
       if (onShowNotice) onShowNotice(`删除失败: ${e?.message || e}`);
@@ -182,7 +202,7 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
           return;
         }
         await addProfile({
-          name: addName.trim() || "机场高速订阅源",
+          name: addName.trim(),
           url: addUrl.trim(),
           autoUpdateInterval: addInterval,
         });
@@ -214,12 +234,13 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
   const handleOpenEdit = (p: ProfileItem) => {
     setEditingProfile(p);
     setEditName(p.name);
-    setEditInterval(p.autoUpdateInterval || 24);
+    setEditInterval(p.autoUpdateInterval ?? 0);
   };
 
   // 保存元数据修改
   const handleSaveEdit = async () => {
-    if (!editingProfile) return;
+    if (!editingProfile || isSubmitting) return;
+    setIsSubmitting(true);
     try {
       const updated = await editProfileMetadata(
         editingProfile.id,
@@ -233,6 +254,8 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
       if (onShowNotice) onShowNotice("订阅参数已成功更新");
     } catch (e: any) {
       if (onShowNotice) onShowNotice(`修改失败: ${e?.message || e}`);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -256,7 +279,10 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
     if (!viewerProfile) return;
     setIsSavingContent(true);
     try {
-      await saveProfileContent(viewerProfile.id, viewerContent);
+      const updated = await saveProfileContent(viewerProfile.id, viewerContent);
+      setProfiles((prev) =>
+        prev.map((item) => (item.id === viewerProfile.id ? updated : item))
+      );
       if (onShowNotice) onShowNotice("配置文本已成功保存至本地持久化");
       setViewerProfile(null);
     } catch (e: any) {
@@ -266,529 +292,272 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
     }
   };
 
-  // 当前激活方案
-  const activeProfile = profiles.find((p) => p.isSelected);
+  const activeProfile = profiles.find((profile) => profile.isSelected);
+  const hasRemoteProfiles = profiles.some((profile) => Boolean(profile.url?.trim()));
+  const isUpdating = isRefreshingAll || refreshingId !== null;
 
   return (
-    <div className="space-y-3 pb-12 animate-in fade-in duration-150">
-      {/* ============================================================== */}
-      {/* 极简一体化紧凑顶栏 (Compact Header Bar: 高度 38px，极度克制) */}
-      {/* ============================================================== */}
-      <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-xl glass-surface border border-[var(--glass-border-subtle)] shadow-xs">
-        {/* 左侧: 图标 + 标题 + 统计徽标 + 运行中方案指示 */}
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-5 h-5 rounded-lg bg-purple-500/15 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 100-6 3 3 0 000 6z" />
-            </svg>
+    <div className="workbench-view workbench-profiles">
+      <section className="workbench-panel flex min-w-0 flex-wrap items-center justify-between gap-3 p-4" aria-label="订阅源操作">
+        <div className="grid min-w-0 gap-0.5">
+          <span className="text-xs text-[var(--text-muted)]">当前方案</span>
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <strong className="min-w-0 [overflow-wrap:anywhere] text-sm">
+              {isLoading && profiles.length === 0 ? "正在读取…" : activeProfile?.name || "尚未应用方案"}
+            </strong>
+            <span className="shrink-0 text-xs tabular-nums text-[var(--text-muted)]">{profiles.length} 个方案</span>
           </div>
-          <span className="font-semibold text-xs text-[var(--text-primary)] shrink-0">
-            订阅源管理
-          </span>
-          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[var(--surface-sunken)] text-[var(--text-muted)] shrink-0">
-            {profiles.length} 个方案
-          </span>
-          {activeProfile && (
-            <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border border-emerald-500/20 shrink-0 truncate max-w-[180px]">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-              <span className="truncate">{activeProfile.name}</span>
-            </span>
-          )}
         </div>
-
-        {/* 右侧: 全部更新 + 添加订阅 */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
             type="button"
             onClick={handleUpdateAll}
-            disabled={isRefreshingAll || isLoading}
-            className="px-2.5 py-1 rounded-lg bg-[var(--surface-card)] hover:bg-[var(--glass-bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--glass-border-subtle)] text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-2xs active:scale-[0.98] disabled:opacity-50"
+            loading={isRefreshingAll}
+            disabled={isLoading || !hasRemoteProfiles || refreshingId !== null || switchingId !== null}
           >
-            <svg
-              className={`w-3 h-3 ${isRefreshingAll ? "animate-spin text-indigo-500" : ""}`}
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            <span>{isRefreshingAll ? "更新中..." : "全部更新"}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            className="px-3 py-1 rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-[11px] font-semibold transition cursor-pointer flex items-center gap-1 shrink-0 shadow-xs active:scale-[0.98]"
-          >
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            <span>添加订阅</span>
-          </button>
+            {!isRefreshingAll && <RefreshCw size={14} aria-hidden="true" />}
+            {isRefreshingAll ? "更新中…" : "全部更新"}
+          </Button>
+          <Button type="button" variant="primary" onClick={() => setIsAddModalOpen(true)}>
+            <Plus size={15} aria-hidden="true" />添加订阅
+          </Button>
         </div>
-      </div>
+      </section>
 
-      {/* ============================================================== */}
-      {/* 订阅卡片网格列表 (双列紧凑流式磁贴: 高度 85px，极度克制) */}
-      {/* ============================================================== */}
-      {isLoading ? (
-        <div className="py-16 flex flex-col items-center justify-center space-y-2">
-          <svg className="w-5 h-5 animate-spin text-purple-500" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-          </svg>
-          <div className="text-[11px] text-[var(--text-muted)] font-mono">载入配置清单...</div>
-        </div>
-      ) : profiles.length === 0 ? (
-        <div className="p-8 rounded-xl glass-surface border border-dashed border-[var(--glass-border)] text-center space-y-2">
-          <div className="text-xs font-semibold text-[var(--text-primary)]">尚未导入任何订阅方案</div>
-          <p className="text-[11px] text-[var(--text-muted)]">
-            点击右上角“添加订阅”粘贴机场 HTTPS 链接或载入本地 YAML 配置。
+      {batchFailure && (
+        <div role="status" className="grid gap-2 rounded-xl bg-[var(--workbench-warning-bg)] p-4 text-xs text-[var(--workbench-warning)]">
+          <p className="font-semibold">
+            批量更新成功 {batchFailure.updatedCount} 项，失败 {batchFailure.failedProfiles.length} 项
           </p>
+          <ul className="list-disc space-y-1 pl-5">
+            {batchFailure.failedProfiles.map(({ id, name }) => (
+              <li key={id} className="[overflow-wrap:anywhere]">{name}</li>
+            ))}
+          </ul>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-          {profiles.map((p) => {
-            const isRefreshing = refreshingId === p.id;
-            const isSwitching = switchingId === p.id;
-            const isRemote = Boolean(p.url && p.url.trim());
+      )}
 
-            // 流量百分比计算
-            const usedBytes = (p.upload || 0) + (p.download || 0);
-            const totalBytes = p.total || 0;
-            const hasTraffic = totalBytes > 0;
-            const usagePercent = hasTraffic
-              ? Math.min(100, Math.round((usedBytes / totalBytes) * 100))
-              : 0;
+      {isLoading ? (
+        <p role="status" className="flex items-center justify-center gap-2 p-8 text-sm text-[var(--text-muted)]">
+          <RefreshCw size={15} className="animate-spin" aria-hidden="true" />正在读取订阅方案…
+        </p>
+      ) : profiles.length === 0 ? (
+        <section className="workbench-panel flex items-start gap-3 p-5" aria-label="订阅源状态">
+          <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-[var(--workbench-selected)] text-[var(--workbench-accent)]">
+            <Globe size={19} aria-hidden="true" />
+          </span>
+          <div className="grid min-w-0 gap-1">
+            <h2 className="workbench-panel-title">暂无订阅方案</h2>
+            <p className="text-[13px] leading-relaxed text-[var(--text-muted)]">通过「添加订阅」输入订阅链接，或粘贴本地 YAML 配置。</p>
+          </div>
+        </section>
+      ) : (
+        <section className="grid min-w-0 gap-4" aria-label="订阅方案列表">
+          {profiles.map((profile) => {
+            const isRemote = Boolean(profile.url?.trim());
+            const isRefreshing = refreshingId === profile.id;
+            const isSwitching = switchingId === profile.id;
+            const usedBytes = (profile.upload || 0) + (profile.download || 0);
+            const totalBytes = profile.total || 0;
+            const usagePercent = totalBytes > 0 ? Math.min(100, Math.round((usedBytes / totalBytes) * 100)) : 0;
+            const usageTone = usagePercent > 90 ? "var(--workbench-danger)" : usagePercent > 75 ? "var(--workbench-warning)" : "var(--workbench-accent-solid)";
+            const updatedLabel = formatRelativeTime(profile.updatedAt);
+            const ProfileIcon = isRemote ? Globe : FileCode;
 
             return (
-              <div
-                key={p.id}
-                className={`p-3.5 rounded-xl glass-surface border transition-all duration-150 relative overflow-hidden flex flex-col justify-between space-y-2 ${
-                  p.isSelected
-                    ? "border-emerald-500/40 bg-emerald-500/[0.04] shadow-xs ring-1 ring-emerald-500/20"
-                    : "border-[var(--glass-border-subtle)] hover:border-slate-500/40"
-                }`}
-              >
-                {/* 顶部发丝内高光 */}
-                <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-[var(--glass-specular)] to-transparent pointer-events-none" />
-
-                {/* 1. 顶行: 状态指示点 + 方案名 + 类型徽章 + 激活状态 */}
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        p.isSelected
-                          ? "bg-emerald-500 shadow-xs shadow-emerald-500/50"
-                          : "bg-slate-300 dark:bg-zinc-600"
-                      }`}
-                    />
-                    <span className="font-semibold text-xs text-[var(--text-primary)] truncate" title={p.name}>
-                      {p.name}
-                    </span>
-                    <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-[var(--surface-sunken)] text-[var(--text-muted)] shrink-0">
-                      {isRemote ? "云端" : "本地"}
-                    </span>
-                    <span className="text-[10px] font-mono text-[var(--text-muted)] shrink-0 hidden sm:inline">
-                      {p.nodeCount} 节点
-                    </span>
-                  </div>
-
-                  <div className="shrink-0">
-                    {p.isSelected ? (
-                      <span className="text-[10px] font-mono text-emerald-800 dark:text-emerald-300 font-bold px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/25 flex items-center gap-1 shadow-2xs">
-                        <svg className="w-3 h-3 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                        </svg>
-                        <span>生效中</span>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleSelect(p)}
-                        disabled={isSwitching}
-                        className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[var(--surface-card)] hover:bg-indigo-600 hover:text-white text-[var(--text-primary)] border border-[var(--glass-border)] transition cursor-pointer shadow-2xs active:scale-[0.98] disabled:opacity-50"
-                      >
-                        {isSwitching ? "切换中..." : "应用"}
-                      </button>
-                    )}
+              <article key={profile.id} className="workbench-panel workbench-profile-row">
+                <div className="flex min-w-0 items-start gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--workbench-control)] text-[var(--workbench-accent)]">
+                    <ProfileIcon size={17} aria-hidden="true" />
+                  </span>
+                  <div className="grid min-w-0 gap-1.5">
+                    <h2 className="workbench-panel-title [overflow-wrap:anywhere]">{profile.name}</h2>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]">
+                      <span>{isRemote ? "远程订阅" : "本地配置"}</span>
+                      <span className="tabular-nums">{profile.nodeCount} 个节点</span>
+                      {profile.isSelected && <span className="workbench-tag workbench-tag-positive">生效中</span>}
+                    </div>
                   </div>
                 </div>
 
-                {/* 2. 中间行: 流量微型发丝进度条与到期信息 */}
-                {hasTraffic ? (
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] font-mono text-[var(--text-muted)]">
-                      <span className="text-[var(--text-secondary)]">
-                        {formatBytes(usedBytes)} / {formatBytes(totalBytes)} ({usagePercent}%)
-                      </span>
-                      {p.expire && (
-                        <span>到期: {new Date(p.expire * 1000).toLocaleDateString()}</span>
-                      )}
-                    </div>
-                    <div className="w-full h-1 rounded-full bg-slate-200 dark:bg-zinc-800 overflow-hidden">
+                <div className="grid min-w-0 gap-2 text-xs">
+                  {totalBytes > 0 ? (
+                    <div className="grid gap-1.5">
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+                        <span className="text-[var(--text-muted)]">流量用量</span>
+                        <strong className="tabular-nums">{formatBytes(usedBytes)} / {formatBytes(totalBytes)}</strong>
+                      </div>
                       <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          usagePercent > 90
-                            ? "bg-rose-500"
-                            : usagePercent > 75
-                            ? "bg-amber-500"
-                            : "bg-indigo-500"
-                        }`}
-                        style={{ width: `${usagePercent}%` }}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-[10px] font-mono text-[var(--text-muted)] truncate" title={p.url || p.filePath}>
-                    {p.url || p.filePath}
-                  </div>
-                )}
-
-                {/* 3. 底部行: 更新时间戳 + 微型图标快捷组 */}
-                <div className="flex items-center justify-between text-[10px] font-mono text-[var(--text-muted)] pt-1 border-t border-[var(--glass-border-subtle)]/50">
-                  <span>{formatRelativeTime(p.updatedAt)}</span>
-
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {isRemote && (
-                      <button
-                        type="button"
-                        onClick={() => handleUpdateOne(p.id, p.name)}
-                        disabled={isRefreshing}
-                        className="hover:text-[var(--text-primary)] transition p-0.5 cursor-pointer text-[10px] flex items-center gap-0.5"
-                        title="立即拉取更新"
+                        className="h-1.5 overflow-hidden rounded-full bg-[var(--workbench-control)]"
+                        role="progressbar"
+                        aria-label="流量使用比例"
+                        aria-valuenow={usagePercent}
+                        aria-valuetext={usagePercent + "%"}
                       >
-                        <svg className={`w-3 h-3 ${isRefreshing ? "animate-spin text-indigo-500" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                        <span>更新</span>
-                      </button>
+                        <div className="h-full rounded-full" style={{ width: usagePercent + "%", backgroundColor: usageTone }} />
+                      </div>
+                    </div>
+                  ) : isRemote && (
+                    <span className="text-[var(--text-muted)]">{usedBytes > 0 ? "已用 " + formatBytes(usedBytes) : "订阅未提供流量额度"}</span>
+                  )}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[var(--text-muted)]">
+                    <span title={profile.updatedAt}>{updatedLabel.endsWith("更新") ? updatedLabel : "更新于 " + updatedLabel}</span>
+                    {profile.expire ? <span>到期 {new Date(profile.expire * 1000).toLocaleDateString()}</span> : null}
+                    {isRemote && (
+                      <span>{profile.autoUpdateInterval ? "每 " + profile.autoUpdateInterval + " 小时更新" : "手动更新"}</span>
                     )}
-
-                    <button
-                      type="button"
-                      onClick={() => handleOpenViewer(p)}
-                      className="hover:text-[var(--text-primary)] transition p-0.5 cursor-pointer text-[10px] flex items-center gap-0.5"
-                      title="查看本地配置源码"
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                      </svg>
-                      <span>源码</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEdit(p)}
-                      className="hover:text-[var(--text-primary)] transition p-0.5 cursor-pointer text-[10px]"
-                      title="修改别名与周期"
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                    </button>
-
-                    {/* 删除配置方案按钮 (常驻显式，生效方案带安全拦截提示) */}
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(p.id, p.name, p.isSelected)}
-                      className="hover:text-rose-500 hover:bg-rose-500/10 px-1.5 py-0.5 rounded text-[10px] text-[var(--text-muted)] transition cursor-pointer flex items-center gap-0.5 border border-transparent hover:border-rose-500/20"
-                      title={p.isSelected ? "当前生效中（若要删除请先应用另一方案）" : "删除此订阅方案"}
-                    >
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                      <span>删除</span>
-                    </button>
                   </div>
                 </div>
-              </div>
+
+                <div className="workbench-profile-actions">
+                  {!profile.isSelected && (
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => handleSelect(profile)}
+                      loading={isSwitching}
+                      disabled={switchingId !== null || isUpdating}
+                    >
+                      {isSwitching ? "应用中…" : "应用方案"}
+                    </Button>
+                  )}
+                  <div className="flex flex-wrap items-center gap-0.5">
+                    {isRemote && (
+                      <Button type="button" variant="ghost" size="sm" onClick={() => handleUpdateOne(profile.id, profile.name)} loading={isRefreshing} disabled={isUpdating || switchingId !== null}>
+                        {isRefreshing ? "更新中…" : "更新"}
+                      </Button>
+                    )}
+                    <Button type="button" variant="ghost" size="sm" onClick={() => handleOpenViewer(profile)}>配置源码</Button>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => handleOpenEdit(profile)}>编辑</Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDelete(profile.id, profile.name, profile.isSelected)}
+                      disabled={isPreparingDelete || switchingId !== null || isUpdating}
+                      className="hover:!bg-[var(--workbench-danger-bg)] hover:!text-[var(--workbench-danger)]"
+                      title={profile.isSelected && profiles.length > 1 ? "请先应用另一方案" : "删除订阅方案"}
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              </article>
             );
           })}
-        </div>
+        </section>
       )}
 
-      {/* ============================================================== */}
-      {/* 弹窗 1: 添加订阅源模态框 */}
-      {/* ============================================================== */}
-      {isAddModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
-          onClick={(e) => e.target === e.currentTarget && setIsAddModalOpen(false)}
-        >
-          <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 p-6 shadow-2xl space-y-5 relative">
-            <div className="flex items-center justify-between border-b border-[var(--glass-border-subtle)] pb-3">
-              <div className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
-                <span>添加订阅或配置方案</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAddModalOpen(false)}
-                className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-white/10 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* 模式切换胶囊 */}
-            <div className="grid grid-cols-2 p-1 rounded-xl bg-slate-100/90 dark:bg-black/40 border border-slate-200/80 dark:border-white/10 text-xs">
-              <button
-                type="button"
-                onClick={() => setAddMode("url")}
-                className={`py-1.5 rounded-lg font-semibold transition cursor-pointer ${
-                  addMode === "url"
-                    ? "bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs border border-slate-200/60 dark:border-transparent"
-                    : "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
-                }`}
-              >
-                远程 URL 订阅
-              </button>
-              <button
-                type="button"
-                onClick={() => setAddMode("file")}
-                className={`py-1.5 rounded-lg font-semibold transition cursor-pointer ${
-                  addMode === "file"
-                    ? "bg-white dark:bg-white/15 text-slate-900 dark:text-white shadow-xs border border-slate-200/60 dark:border-transparent"
-                    : "text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
-                }`}
-              >
-                本地 YAML 导入
-              </button>
-            </div>
-
-            <form onSubmit={handleAddSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
-                  方案别名 (可选)
-                </label>
-                <input
-                  type="text"
-                  value={addName}
-                  onChange={(e) => setAddName(e.target.value)}
-                  placeholder="留空自动识别机场或配置文件名"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50/80 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs text-[var(--text-primary)] focus:bg-white dark:focus:bg-white/10 focus:outline-hidden focus:border-indigo-500 transition-colors"
-                />
-              </div>
-
-              {addMode === "url" ? (
-                <>
-                  <div>
-                    <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
-                      订阅链接 (HTTPS / Clash 协议地址)
-                    </label>
-                    <input
-                      type="url"
-                      required
-                      value={addUrl}
-                      onChange={(e) => setAddUrl(e.target.value)}
-                      placeholder="https://your-airport-domain.com/api/v1/client/subscribe?token=..."
-                      className="w-full px-3 py-2 rounded-xl bg-slate-50/80 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs text-[var(--text-primary)] font-mono focus:bg-white dark:focus:bg-white/10 focus:outline-hidden focus:border-indigo-500 transition-colors"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
-                      自动更新周期 (小时)
-                    </label>
-                    <CustomSelect
-                      value={String(addInterval)}
-                      onChange={(val) => setAddInterval(parseInt(val, 10))}
-                      options={[
-                        { value: "6", label: "每 6 小时自动同步" },
-                        { value: "12", label: "每 12 小时自动同步" },
-                        { value: "24", label: "每 24 小时自动同步 (推荐)" },
-                        { value: "48", label: "每 48 小时自动同步" },
-                        { value: "0", label: "仅手动同步 (关闭自动拉取)" },
-                      ]}
-                      size="md"
-                    />
-                  </div>
-                </>
-              ) : (
-                <div>
-                  <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
-                    配置内容 (YAML 格式)
-                  </label>
-                  <textarea
-                    rows={8}
-                    required
-                    value={addFileContent}
-                    onChange={(e) => setAddFileContent(e.target.value)}
-                    placeholder="粘贴 proxies: / proxy-groups: / rules: 等标准配置..."
-                    className="w-full px-3 py-2 rounded-xl bg-slate-50/80 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs text-[var(--text-primary)] font-mono leading-relaxed focus:bg-white dark:focus:bg-white/10 focus:outline-hidden focus:border-indigo-500 transition-colors"
-                  />
-                </div>
-              )}
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--glass-border-subtle)]">
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/10 text-xs font-semibold text-[var(--text-secondary)] transition cursor-pointer"
-                >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer shadow-sm active:scale-[0.98] disabled:opacity-50"
-                >
-                  {isSubmitting ? "正在解析导入..." : "确认并导入"}
-                </button>
-              </div>
-            </form>
+      <Modal isOpen={isAddModalOpen} title="添加订阅或配置方案" onClose={() => { if (!isSubmitting) setIsAddModalOpen(false); }}>
+        <form onSubmit={handleAddSubmit} className="grid min-w-0 gap-4">
+          <div className="workbench-segments" role="group" aria-label="订阅添加方式">
+            <button type="button" aria-pressed={addMode === "url"} onClick={() => setAddMode("url")} className="flex-1" disabled={isSubmitting}>订阅链接</button>
+            <button type="button" aria-pressed={addMode === "file"} onClick={() => setAddMode("file")} className="flex-1" disabled={isSubmitting}>本地 YAML</button>
           </div>
-        </div>
-      )}
+          <label className="grid gap-1.5 text-[13px] font-semibold" htmlFor={formId + "-add-name"}>
+            方案名称
+            <input id={formId + "-add-name"} className="min-h-9 w-full px-3 font-normal" value={addName} onChange={(event) => setAddName(event.target.value)} placeholder={addMode === "url" ? "选填，留空自动获取名称" : "可选，留空使用默认名称"} disabled={isSubmitting} />
+          </label>
+          {addMode === "url" ? (
+            <>
+              <label className="grid gap-1.5 text-[13px] font-semibold" htmlFor={formId + "-url"}>
+                订阅链接
+                <input id={formId + "-url"} type="url" required className="min-h-9 w-full px-3 font-mono text-xs font-normal" value={addUrl} onChange={(event) => setAddUrl(event.target.value)} placeholder="https://example.com/subscription" disabled={isSubmitting} />
+              </label>
+              <div className="grid gap-1.5">
+                <span className="text-[13px] font-semibold">自动更新周期</span>
+                <CustomSelect value={String(addInterval)} onChange={(value) => setAddInterval(Number(value))} options={updateIntervals} disabled={isSubmitting} />
+              </div>
+            </>
+          ) : (
+            <label className="grid gap-1.5 text-[13px] font-semibold" htmlFor={formId + "-yaml"}>
+              YAML 配置
+              <textarea id={formId + "-yaml"} rows={8} required className="w-full resize-y px-3 py-2 font-mono text-xs font-normal leading-relaxed" value={addFileContent} onChange={(event) => setAddFileContent(event.target.value)} placeholder="在此粘贴 YAML 配置内容" disabled={isSubmitting} />
+            </label>
+          )}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setIsAddModalOpen(false)} disabled={isSubmitting}>取消</Button>
+            <Button type="submit" variant="primary" loading={isSubmitting}>{addMode === "url" ? "添加订阅" : "导入配置"}</Button>
+          </div>
+        </form>
+      </Modal>
 
-      {/* ============================================================== */}
-      {/* 弹窗 2: 编辑订阅元数据模态框 */}
-      {/* ============================================================== */}
       {editingProfile && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
-          onClick={(e) => e.target === e.currentTarget && setEditingProfile(null)}
-        >
-          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 p-6 shadow-2xl space-y-4">
-            <div className="text-sm font-semibold text-[var(--text-primary)]">
-              修改配置方案属性
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
-                  方案名称
+        <Modal isOpen title="编辑订阅方案" onClose={() => { if (!isSubmitting) setEditingProfile(null); }}>
+          <form onSubmit={(event) => { event.preventDefault(); void handleSaveEdit(); }} className="grid min-w-0 gap-4">
+            <label className="grid gap-1.5 text-[13px] font-semibold" htmlFor={formId + "-edit-name"}>
+              方案名称
+              <input id={formId + "-edit-name"} className="min-h-9 w-full px-3 font-normal" value={editName} onChange={(event) => setEditName(event.target.value)} disabled={isSubmitting} />
+            </label>
+            {editingProfile.url?.trim() && (
+              <>
+                <label className="grid gap-1.5 text-[13px] font-semibold" htmlFor={formId + "-edit-url"}>
+                  订阅地址
+                  <input id={formId + "-edit-url"} className="min-h-9 w-full px-3 font-mono text-xs font-normal" value={editingProfile.url} readOnly />
                 </label>
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl bg-slate-50/80 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs text-[var(--text-primary)] focus:bg-white dark:focus:bg-white/10 focus:outline-hidden focus:border-indigo-500 transition-colors"
-                />
-              </div>
-
-              {Boolean(editingProfile.url) && (
-                <div>
-                  <label className="block text-xs font-semibold text-[var(--text-secondary)] mb-1">
-                    自动定时拉取周期 (小时)
-                  </label>
-                  <CustomSelect
-                    value={String(editInterval)}
-                    onChange={(val) => setEditInterval(parseInt(val, 10))}
-                    options={[
-                      { value: "6", label: "每 6 小时" },
-                      { value: "12", label: "每 12 小时" },
-                      { value: "24", label: "每 24 小时" },
-                      { value: "48", label: "每 48 小时" },
-                      { value: "0", label: "手动刷新" },
-                    ]}
-                    size="md"
-                  />
+                <div className="grid gap-1.5">
+                  <span className="text-[13px] font-semibold">自动更新周期</span>
+                  <CustomSelect value={String(editInterval)} onChange={(value) => setEditInterval(Number(value))} options={updateIntervals} disabled={isSubmitting} />
                 </div>
-              )}
+              </>
+            )}
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setEditingProfile(null)} disabled={isSubmitting}>取消</Button>
+              <Button type="submit" variant="primary" loading={isSubmitting}>保存修改</Button>
             </div>
-
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-[var(--glass-border-subtle)]">
-              <button
-                type="button"
-                onClick={() => setEditingProfile(null)}
-                className="px-4 py-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/10 text-xs font-semibold text-[var(--text-secondary)] transition cursor-pointer"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveEdit}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer shadow-sm active:scale-[0.98]"
-              >
-                保存修改
-              </button>
-            </div>
-          </div>
-        </div>
+          </form>
+        </Modal>
       )}
 
-      {/* ============================================================== */}
-      {/* 弹窗 3: YAML 源码查看/编辑模态框 */}
-      {/* ============================================================== */}
       {viewerProfile && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
-          onClick={(e) => e.target === e.currentTarget && setViewerProfile(null)}
-        >
-          <div className="w-full max-w-3xl h-[80vh] rounded-2xl bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-white/10 p-5 shadow-2xl flex flex-col justify-between space-y-3 relative">
-            <div className="flex items-center justify-between border-b border-[var(--glass-border-subtle)] pb-2.5">
-              <div>
-                <div className="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-2">
-                  <span>配置源码：{viewerProfile.name}</span>
-                </div>
-                <div className="text-[10px] text-[var(--text-muted)] font-mono mt-0.5">
-                  文件路径: {viewerProfile.filePath}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setViewerProfile(null)}
-                className="p-1.5 rounded-lg hover:bg-[var(--glass-bg-hover)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition cursor-pointer"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="flex-1 min-h-0 relative">
-              {isLoadingContent ? (
-                <div className="w-full h-full flex items-center justify-center">
-                  <svg className="w-5 h-5 animate-spin text-indigo-500" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                  </svg>
-                </div>
-              ) : (
-                <textarea
-                  value={viewerContent}
-                  onChange={(e) => setViewerContent(e.target.value)}
-                  className="w-full h-full p-4 rounded-xl bg-[var(--surface-sunken)] border border-[var(--glass-border-subtle)] text-xs text-[var(--text-primary)] font-mono leading-relaxed focus:outline-hidden focus:border-indigo-500 resize-none overflow-y-auto"
-                />
-              )}
-            </div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-[var(--glass-border-subtle)] text-xs">
-              <span className="text-[11px] text-[var(--text-muted)]">
-                提示: 修改保存后将覆盖本地缓存，切换至本方案时将以此配置运行
-              </span>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setViewerProfile(null)}
-                  className="px-3 py-1.5 rounded-xl hover:bg-[var(--glass-bg-hover)] text-xs font-semibold text-[var(--text-secondary)] transition cursor-pointer"
-                >
-                  关闭
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveViewerContent}
-                  disabled={isSavingContent}
-                  className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer shadow-sm active:scale-[0.98] disabled:opacity-50"
-                >
-                  {isSavingContent ? "正在保存..." : "保存源码"}
-                </button>
+        <Modal isOpen wide title={"配置源码 · " + viewerProfile.name} subtitle={viewerProfile.filePath} onClose={() => { if (!isSavingContent) setViewerProfile(null); }}>
+          <div className="grid min-w-0 gap-3">
+            {isLoadingContent ? (
+              <p role="status" className="flex items-center justify-center gap-2 p-12 text-sm text-[var(--text-muted)]">
+                <RefreshCw size={15} className="animate-spin" aria-hidden="true" />正在读取配置…
+              </p>
+            ) : (
+              <textarea
+                aria-label="YAML 配置源码"
+                value={viewerContent}
+                onChange={(event) => setViewerContent(event.target.value)}
+                className="h-[min(50dvh,28rem)] w-full resize-none px-3 py-2 font-mono text-xs leading-relaxed"
+                spellCheck={false}
+                disabled={isSavingContent}
+              />
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs leading-relaxed text-[var(--text-muted)]">保存将覆盖本地配置，切换到该方案时生效。</p>
+              <div className="ml-auto flex flex-wrap gap-2">
+                <Button type="button" variant="ghost" onClick={() => setViewerProfile(null)} disabled={isSavingContent}>关闭</Button>
+                <Button type="button" variant="primary" onClick={handleSaveViewerContent} loading={isSavingContent} disabled={isLoadingContent}>保存源码</Button>
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* 订阅配置彻底删除微晶确认模态窗 (替代原生 window.confirm) */}
       <ConfirmModal
         isOpen={!!profileToDelete}
         title="彻底删除订阅配置？"
-        description={`确定要彻底删除订阅配置 [${profileToDelete?.name || ""}] 吗？删除后本地缓存文件将被清理，此操作不可撤销。`}
+        description={profileToDelete?.switchToDefault ? (
+          <div className="space-y-2">
+            <p>删除「{profileToDelete.name}」后将切换到本地默认配置。本地缓存文件会被清理，此操作不可撤销。</p>
+            {!profileToDelete.affectedBundles ? (
+              <p>依赖此订阅的业务包需要重新绑定出口。</p>
+            ) : profileToDelete.affectedBundles.length > 0 ? (
+              <div>
+                <p>以下业务包需要重新绑定出口</p>
+                <ul className="max-h-28 overflow-y-auto list-disc pl-5">
+                  {profileToDelete.affectedBundles.map((name, index) => <li key={index}>{name}</li>)}
+                </ul>
+                <p>严格模式会继续阻止受影响的连接。</p>
+              </div>
+            ) : null}
+          </div>
+        ) : `确定要彻底删除订阅配置 [${profileToDelete?.name || ""}] 吗？删除后本地缓存文件将被清理，此操作不可撤销。`}
         confirmText="彻底删除"
         cancelText="保留配置"
         variant="danger"

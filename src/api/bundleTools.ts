@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 export interface LaunchRequest { instanceId: string; shortcutId?: string | null; direct?: boolean }
-export interface LaunchOutcome { state: "launched" | "reused" | "restart_required" | "not_running"; message: string; confirmation: string | null; entry: string; processCount: number }
+export interface LaunchOutcome {
+  state: "launched" | "reused" | "restart_required" | "not_running" | "windivert_required";
+  message: string;
+  confirmation: string | null;
+  entry: string;
+  processCount: number;
+}
 export interface BundleShortcuts { desktop: string; executableFound: boolean; candidates: { path: string; label: string }[]; managed: { id: string; path: string; dedicated: boolean; verified: boolean; backup: string | null }[] }
 export interface ProcessMonitorChange { refreshAll: boolean; instanceIds: string[] }
 export interface BundleEntryState { instanceId: string; state: string; message: string; chains: string[]; connectionState: string; connectionMessage: string; instanceKey?: string; monitorMessage?: string; monitorState?: "disabled" | "initializing" | "current" | "degraded" | "stale" | null; identityState?: string; identityMessage?: string; hookTier?: "FullInline" | "IatCompat" | "NativeBypass" | "Failed" | string; hookTierReason?: string }

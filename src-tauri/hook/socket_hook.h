@@ -43,6 +43,15 @@ extern PFN_WSAConnect TrueWSAConnect;
 extern PFN_sendto TrueSendTo;
 extern PFN_WSASendTo TrueWSASendTo;
 
+extern decltype(&::socket) TrueSocket;
+extern decltype(&::WSASocketA) TrueWSASocketA;
+extern decltype(&::WSASocketW) TrueWSASocketW;
+bool ExchangeSuiteDns(const std::vector<uint8_t>& query, std::vector<uint8_t>& answer);
+
+SOCKET WSAAPI HookSocket(int af, int type, int protocol);
+SOCKET WSAAPI HookWSASocketA(int af, int type, int protocol, LPWSAPROTOCOL_INFOA info, GROUP group, DWORD flags);
+SOCKET WSAAPI HookWSASocketW(int af, int type, int protocol, LPWSAPROTOCOL_INFOW info, GROUP group, DWORD flags);
+
 int WSAAPI HookConnect(
     SOCKET s,
     const struct sockaddr *name,

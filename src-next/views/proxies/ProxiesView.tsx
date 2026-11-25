@@ -4,7 +4,8 @@
 // 特性: 接入 IPpure 深度体检、订阅源切换、自建节点管理、测速端点自定义与隐藏管理
 // ==========================================================================
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { EyeOff, Globe, Plus } from "lucide-react";
 import {
   ProxyGroupItem,
   ProxyItem,
@@ -24,11 +25,11 @@ import {
   getIgnoredNodes,
   toggleIgnoreNode,
 } from "../../services/proxyService";
+import { PROFILE_CHANGED_EVENT } from "../../services/profileService";
 import { parseNodeMeta, isAdOrInfoNode, isRealProxyNode } from "../../utils/nodeParser";
 import { ProxiesToolbar } from "./ProxiesToolbar";
 import { ProxyGroupHeader } from "./ProxyGroupHeader";
 import { ProxyNodeCard } from "./ProxyNodeCard";
-import { ProxyNodeRow } from "./ProxyNodeRow";
 
 import { LocalNodeModal } from "./LocalNodeModal";
 import { IgnoredNodesModal } from "./IgnoredNodesModal";
@@ -87,33 +88,35 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
   const [showIgnoredModal, setShowIgnoredModal] = useState(false);
 
   // 1. 初始化拉取节点大盘数据
+  const proxyLoad = useRef(0);
+  const loadedGroupNames = useRef(new Set<string>());
   const loadData = useCallback(async () => {
+    const request = ++proxyLoad.current;
     setIsLoading(true);
     try {
       const snap = await fetchProxiesData();
+      if (request !== proxyLoad.current) return;
       setGroups(snap.groups);
       setProxies(snap.proxies);
 
       // 智能默认折叠策略：仅展开 Proxy / 手动选择 / 节点选择，其余专项分流策略组默认折叠保持清爽
-      const defaultCollapsed = new Set<string>();
-      for (const g of snap.groups) {
-        const name = g.name;
-        const isMain =
-          name === "Proxy" ||
-          name === "PROXY" ||
-          name.includes("手动选择") ||
-          name.includes("节点选择") ||
-          name.includes("Proxy");
-        if (!isMain) {
-          defaultCollapsed.add(name);
+      const previousGroupNames = loadedGroupNames.current;
+      loadedGroupNames.current = new Set(snap.groups.map(({ name }) => name));
+      setCollapsedGroups((previouslyCollapsed) => {
+        const nextCollapsed = new Set<string>();
+        for (const { name } of snap.groups) {
+          const isMain = name === "PROXY" || name.includes("手动选择")
+            || name.includes("节点选择") || name.includes("Proxy");
+          const collapsed = previousGroupNames.has(name) ? previouslyCollapsed.has(name) : !isMain;
+          if (collapsed) nextCollapsed.add(name);
         }
-      }
-      setCollapsedGroups(defaultCollapsed);
+        return nextCollapsed;
+      });
 
       setIgnoredNodes(getIgnoredNodes());
       setNodeHealthMap(getHealthCache());
     } finally {
-      setIsLoading(false);
+      if (request === proxyLoad.current) setIsLoading(false);
     }
   }, []);
 
@@ -123,10 +126,11 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
       loadData();
     };
     window.addEventListener("netbox-profile-changed", handleProfileChange);
-    window.addEventListener("procweaver-profile-changed", handleProfileChange);
+    window.addEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
     return () => {
+      ++proxyLoad.current;
       window.removeEventListener("netbox-profile-changed", handleProfileChange);
-      window.removeEventListener("procweaver-profile-changed", handleProfileChange);
+      window.removeEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
     };
   }, [loadData]);
 
@@ -579,10 +583,14 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
     return [...filtered].sort((a, b) => getGroupWeight(b) - getGroupWeight(a));
   }, [groups, proxies, ignoredNodes, totalAvailableNodes, currentMode, isMasterSelectorGroup]);
 
+  const displayedGroups = visibleGroups
+    .map((group) => ({ group, nodes: filterAndSortNodes(group.all) }))
+    .filter(({ nodes }) => !searchQuery || nodes.length > 0);
+  const hasNodes = totalAvailableNodes > 0 && visibleGroups.length > 0;
+
   return (
-    <div className="space-y-4 pb-12">
-      {/* 顶部现代化操作与控制工具栏 (设置明确高层级 z-30，确保排序与筛选下拉菜单完全浮于所有节点卡片之上) */}
-      <div className="relative z-30">
+    <div className="workbench-view workbench-proxies">
+      {hasNodes && (
         <ProxiesToolbar
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
@@ -602,180 +610,110 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
           ignoredCount={ignoredNodes.size}
           onOpenIgnoredModal={() => setShowIgnoredModal(true)}
         />
-      </div>
+      )}
 
-      {/* 策略组列表主体区域 (明确相对层级 z-10，彻底根除层级穿透与菜单遮挡) */}
       {isLoading ? (
-        <div className="p-12 text-center text-xs text-[var(--text-muted)] animate-pulse">
-          正在加载出口节点矩阵与健康体检状态...
-        </div>
-      ) : totalAvailableNodes === 0 || visibleGroups.length === 0 ? (
-        /* 空状态微晶引导看板：提示添加订阅源 */
-        <div className="flex flex-col items-center justify-center p-12 md:p-16 rounded-2xl border border-[var(--glass-border-subtle)] glass-surface text-center select-none">
-          <div className="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center mb-5 text-blue-400">
-            <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.6} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-            </svg>
+        <div className="p-8 text-center text-xs text-[var(--text-muted)]" role="status">正在加载出口节点…</div>
+      ) : !hasNodes ? (
+        <section className="workbench-panel flex flex-wrap items-start gap-4 px-5 py-6" aria-labelledby="proxy-empty-title">
+          <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--workbench-selected)] text-[var(--workbench-accent)]">
+            <Globe size={21} aria-hidden="true" />
+          </span>
+          <div className="grid min-w-0 flex-1 gap-2">
+            <h2 id="proxy-empty-title" className="workbench-panel-title">还没有可用的出口节点</h2>
+            <p className="text-[13px] leading-relaxed text-[var(--text-muted)]">添加订阅源可以一次导入多个节点，也可以单独添加自建节点。</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="workbench-action workbench-action-primary"
+                data-size="md"
+                onClick={() => {
+                  if (onNavigateTab) onNavigateTab("profiles");
+                  else window.dispatchEvent(new CustomEvent("netbox-navigate-tab", { detail: "profiles" }));
+                }}
+              >
+                前往订阅源管理
+              </button>
+              <button type="button" className="workbench-action workbench-action-ghost" data-size="md" onClick={() => setShowLocalNodeModal(true)}>
+                <Plus size={15} aria-hidden="true" /> 添加自建节点
+              </button>
+              {ignoredNodes.size > 0 && (
+                <button type="button" className="workbench-action workbench-action-ghost" data-size="md" onClick={() => setShowIgnoredModal(true)}>
+                  <EyeOff size={15} aria-hidden="true" /> 已隐藏 <span className="tabular-nums">{ignoredNodes.size}</span>
+                </button>
+              )}
+            </div>
           </div>
-          <h3 className="text-base font-semibold text-[var(--text-primary)] mb-2 tracking-wide">
-            尚未配置订阅源与代理节点
-          </h3>
-          <p className="text-xs text-[var(--text-secondary)] max-w-md leading-relaxed mb-6">
-            出口节点大盘当前为空。请在“订阅源管理”中添加您的订阅链接，或手动添加本地自建 VPS 节点以启动分流代理。
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                if (onNavigateTab) {
-                  onNavigateTab("profiles");
-                } else {
-                  window.dispatchEvent(new CustomEvent("netbox-navigate-tab", { detail: "profiles" }));
-                }
-              }}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20 active:scale-95 transition-all"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              <span>前往订阅源管理</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowLocalNodeModal(true)}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-xl border border-[var(--glass-border-subtle)] bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-[var(--text-primary)] active:scale-95 transition-all"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-              </svg>
-              <span>添加自建节点</span>
-            </button>
-          </div>
-        </div>
+        </section>
+      ) : displayedGroups.length === 0 ? (
+        <div className="p-8 text-center text-xs text-[var(--text-muted)]" role="status">没有匹配的出口节点</div>
       ) : (
-        <div className="space-y-4 relative z-10">
-          {visibleGroups.map((group) => {
+        <div className="grid gap-5">
+          {displayedGroups.map(({ group, nodes }) => {
             const isCollapsed = collapsedGroups.has(group.name);
             const isTestingGroup = testingGroups.has(group.name);
-            const isTestingGroupHealth = testingHealthGroups.has(group.name);
-            const displayNodes = filterAndSortNodes(group.all);
-
-            // 当搜索无匹配时隐藏该组
-            if (searchQuery && displayNodes.length === 0) {
-              return null;
-            }
-
             return (
-              <section
-                key={group.name}
-                className="rounded-2xl border border-[var(--glass-border-subtle)] glass-surface p-3 transition-all"
-              >
-                {/* 策略组吸顶控制头 */}
+              <section key={group.name} className="workbench-panel grid gap-3 p-3.5" aria-label={group.name}>
                 <ProxyGroupHeader
                   group={group}
-                  nodeCount={displayNodes.length}
+                  nodeCount={nodes.length}
                   isCollapsed={isCollapsed}
                   isTestingGroup={isTestingGroup}
-                  isTestingGroupHealth={isTestingGroupHealth}
+                  isTestingGroupHealth={testingHealthGroups.has(group.name)}
                   onToggleCollapse={() => handleToggleCollapse(group.name)}
-                  onTestGroup={(e) => handleTestGroup(group, e)}
-                  onTestGroupHealth={(e) => handleTestGroupHealth(group, e)}
+                  onTestGroup={(event) => handleTestGroup(group, event)}
+                  onTestGroupHealth={(event) => handleTestGroupHealth(group, event)}
                 />
 
-                {/* 展开节点卡片矩阵 */}
-                {!isCollapsed && (
-                  <div className="pt-2.5">
-                    {displayNodes.length === 0 ? (
-                      <div className="p-6 text-center text-[11px] text-[var(--text-muted)]">
-                        未找到符合过滤条件的可用节点
-                      </div>
-                    ) : viewMode === "grid" ? (
-                      /* 网格模式：响应式自适应多列 */
-                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5">
-                        {displayNodes.map((nodeName) => {
-                          const meta = parsedMetas[nodeName] || {
-                            rawName: nodeName,
-                            cleanName: nodeName,
-                            regionCode: "GLB",
-                            regionName: "通用节点",
-                            multiplier: 1.0,
-                            protocolBadge: "PROXY",
-                            protocolColor: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
-                            isAdOrInfo: false,
-                          };
-                          const health = nodeHealthMap[nodeName];
-                          const isSelected = group.now === nodeName;
-                          const isTesting =
-                            testingNodes.has(nodeName) ||
-                            isTestingGroup ||
-                            isTestingAll;
-
-                          return (
-                            <ProxyNodeCard
-                              key={nodeName}
-                              meta={meta}
-                              health={health}
-                              isSelected={isSelected}
-                              isTesting={isTesting}
-                              onSelect={() => handleSelectNode(group.name, nodeName)}
-                              onTest={(e) => handleTestSingle(nodeName, e)}
-                              onToggleIgnore={(e) => handleToggleIgnoreNode(nodeName, e)}
-                            />
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      /* 列表模式：高密度等宽防抖表格列表 */
-                      <div className="space-y-1.5">
-                        {displayNodes.map((nodeName) => {
-                          const meta = parsedMetas[nodeName] || {
-                            rawName: nodeName,
-                            cleanName: nodeName,
-                            regionCode: "GLB",
-                            regionName: "通用节点",
-                            multiplier: 1.0,
-                            protocolBadge: "PROXY",
-                            protocolColor: "bg-zinc-500/15 text-zinc-300 border-zinc-500/30",
-                            isAdOrInfo: false,
-                          };
-                          const health = nodeHealthMap[nodeName];
-                          const isSelected = group.now === nodeName;
-                          const isTesting =
-                            testingNodes.has(nodeName) ||
-                            isTestingGroup ||
-                            isTestingAll;
-
-                          return (
-                            <ProxyNodeRow
-                              key={nodeName}
-                              meta={meta}
-                              health={health}
-                              isSelected={isSelected}
-                              isTesting={isTesting}
-                              onSelect={() => handleSelectNode(group.name, nodeName)}
-                              onTest={(e) => handleTestSingle(nodeName, e)}
-                              onToggleIgnore={(e) => handleToggleIgnoreNode(nodeName, e)}
-                            />
-                          );
-                        })}
+                {!isCollapsed && (nodes.length === 0 ? (
+                  <p className="p-4 text-center text-xs text-[var(--text-muted)]">未找到符合过滤条件的可用节点</p>
+                ) : (
+                  <div className="workbench-node-list" data-layout={viewMode}>
+                    {viewMode === "list" && (
+                      <div className="workbench-node-columns" aria-hidden="true">
+                        <span>节点</span><span>协议</span><span>地区</span><span>健康与风控</span><span>延迟</span><span>状态</span><span />
                       </div>
                     )}
+                    <div className="workbench-node-grid">
+                      {nodes.map((nodeName) => {
+                        const meta = parsedMetas[nodeName] || {
+                          rawName: nodeName,
+                          cleanName: nodeName,
+                          regionCode: "GLB",
+                          regionName: "通用节点",
+                          multiplier: 1,
+                          protocolBadge: "PROXY",
+                          protocolColor: "text-[var(--text-muted)]",
+                          isAdOrInfo: false,
+                        };
+                        return (
+                          <ProxyNodeCard
+                            key={nodeName}
+                            meta={meta}
+                            health={nodeHealthMap[nodeName]}
+                            isSelected={group.now === nodeName}
+                            isTesting={testingNodes.has(nodeName) || isTestingGroup || isTestingAll}
+                            onSelect={() => handleSelectNode(group.name, nodeName)}
+                            onTest={(event) => handleTestSingle(nodeName, event)}
+                            onToggleIgnore={(event) => handleToggleIgnoreNode(nodeName, event)}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
-                )}
+                ))}
               </section>
             );
           })}
         </div>
       )}
 
-      {/* 高级弹窗挂载 */}
       <LocalNodeModal
         isOpen={showLocalNodeModal}
         onClose={() => setShowLocalNodeModal(false)}
         onNodesUpdated={loadData}
         onShowNotice={onShowNotice}
       />
-
       <IgnoredNodesModal
         isOpen={showIgnoredModal}
         onClose={() => setShowIgnoredModal(false)}

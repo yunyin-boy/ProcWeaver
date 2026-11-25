@@ -1,15 +1,19 @@
 //! Scoped transparent TCP and SOCKS UDP relay. Two receive threads and a bounded
 //! Tokio worker pool; no full process-table scan in the packet path.
 use super::{
+    dns::{blocked_ipv6_reply, Question},
     driver::{Address, Device},
+    firewall::RelayFirewall,
     ownership::{Event, Identity, Index},
     packet::{capture_bypass_destination, Flow, Packet},
     plan::Plan,
     preflight::VerifiedApi,
 };
+use crate::capture::{suite_dns::Mode as DnsMode, ConnectionEvidence, ConnectionOutcome};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -82,8 +86,16 @@ fn is_fake_ip(ip: IpAddr) -> bool {
             let b = v4.octets();
             b[0] == 198 && (b[1] == 18 || b[1] == 19)
         }
-        IpAddr::V6(_) => false,
+        IpAddr::V6(v6) => v6.segments()[..6] == [0xfd00, 0x5057, 0x646e, 0x7300, 0, 0],
     }
+}
+
+fn external_ipv6(ip: IpAddr) -> bool {
+    let IpAddr::V6(ip) = ip else { return false };
+    let words = ip.segments();
+    words[0] & 0xe000 == 0x2000
+        || (words[..2] == [0x64, 0xff9b]
+            && (words[2..6] == [0; 4] || words[2] == 1))
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -95,16 +107,48 @@ pub struct Stats {
     pub dns: u64,
     pub unknown: u64,
     pub failures: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_connections: Vec<ConnectionEvidence>,
 }
+#[derive(Clone)]
+struct FlowEvidence {
+    id: u64,
+    pid: u32,
+    process_name: String,
+    owner: Option<String>,
+    entry_port: Option<u16>,
+    dns_name: Option<String>,
+    dns_upstream: Option<String>,
+}
+impl FlowEvidence {
+    fn describe_dns(&mut self, question: &Question) {
+        self.dns_name = Some(question.name.clone());
+        self.dns_upstream = Some(crate::commands::dns::DEFAULT_FALLBACK_DOH.into());
+    }
+}
+
+const CONNECTION_EVIDENCE_LIMIT: usize = 48;
+
+fn remember_connection(events: &mut VecDeque<ConnectionEvidence>, event: ConnectionEvidence) {
+    if events.len() == CONNECTION_EVIDENCE_LIMIT {
+        events.pop_front();
+    }
+    events.push_back(event);
+}
+
 struct Route {
     external: Option<crate::external_proxy::captured::Context>,
+    identity: Option<Identity>,
+    owned_dns: bool,
     flow: Flow,
     token: u16,
     port: u16,
     touched: Mutex<Instant>,
     claimed: AtomicBool,
     finished: AtomicBool,
+    ipv6_revoked: AtomicBool,
     cancel: tokio::sync::Notify,
+    evidence: Option<FlowEvidence>,
 }
 #[derive(Default)]
 struct Tables {
@@ -122,10 +166,26 @@ fn withdraw_routes(table: &mut Tables, old: &Plan, next: &Plan) {
     // 新发起的连接（新 SYN）将自动采用新计划中的端口映射。
     table.udp.retain(|flow, (_, owner, _)| {
         let identity = &owner.identity;
-        let before = old.port_for(&identity.path, identity.pid, identity.created_at);
-        before.is_some() && before == next.port_for(&identity.path, identity.pid, identity.created_at)
-            && flow.protocol == 17
+        let Some((before_owner, Some(before_port))) = old.destination_for(&identity.path, identity.pid, identity.created_at) else { return false };
+        let Some((after_owner, Some(after_port))) = next.destination_for(&identity.path, identity.pid, identity.created_at) else { return false };
+        flow.protocol == 17 && before_port == after_port
+            && (flow.destination.port() != 53 || (old.uses_owned_dns(before_owner) == next.uses_owned_dns(after_owner)
+                && old.uses_sandbox_dns(before_owner) == next.uses_sandbox_dns(after_owner)
+                && old.dns_mode(before_owner) == next.dns_mode(after_owner)
+                && old.native_dns_servers == next.native_dns_servers))
+            && !(external_ipv6(flow.destination.ip()) && next.blocks_ipv6(after_owner))
     });
+    if !next.block_ipv6_owners.is_empty() {
+        for route in table.flows.values().filter(|route| !route.owned_dns && external_ipv6(route.flow.destination.ip())) {
+            let blocked = route.identity.as_ref().and_then(|identity| {
+                next.destination_for(&identity.path, identity.pid, identity.created_at)
+            }).is_some_and(|(owner, _)| next.blocks_ipv6(owner));
+            if blocked && !route.ipv6_revoked.swap(true, Ordering::AcqRel) {
+                route.finished.store(true, Ordering::Release);
+                route.cancel.notify_one();
+            }
+        }
+    }
 }
 struct Shared {
     external: bool,
@@ -142,17 +202,108 @@ struct Shared {
     worker: tokio::runtime::Handle,
     test_loopback: bool,
     capacity: Arc<Semaphore>,
+    dns_capacity: Arc<Semaphore>,
     tcp: AtomicU64,
     udp: AtomicU64,
     dns: AtomicU64,
     unknown: AtomicU64,
     failures: AtomicU64,
+    connection_sequence: AtomicU64,
+    recent_connections: Mutex<VecDeque<ConnectionEvidence>>,
+}
+
+impl Shared {
+    fn flow_evidence(&self, identity: &Identity, owner: &str, port: Option<u16>) -> FlowEvidence {
+        FlowEvidence {
+            id: self.connection_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            pid: identity.pid,
+            process_name: identity
+                .path
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect(),
+            owner: (!owner.is_empty()).then(|| owner.to_owned()),
+            entry_port: port,
+            dns_name: None,
+            dns_upstream: None,
+        }
+    }
+
+    fn record_connection(
+        &self,
+        evidence: Option<&FlowEvidence>,
+        flow: Flow,
+        stage: &str,
+        outcome: ConnectionOutcome,
+        error_kind: Option<String>,
+    ) {
+        let Some(evidence) = evidence else { return };
+        let event = ConnectionEvidence {
+            connection_id: evidence.id,
+            time_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            pid: evidence.pid,
+            process_name: evidence.process_name.clone(),
+            rule_owner: evidence.owner.clone(),
+            entry_port: evidence.entry_port,
+            destination: flow.destination.to_string(),
+            protocol: if flow.protocol == 6 { "tcp" } else { "udp" }.into(),
+            stage: stage.into(),
+            outcome,
+            error_kind,
+            dns_name: evidence.dns_name.clone(),
+            dns_upstream: evidence.dns_upstream.clone(),
+        };
+        remember_connection(&mut self.recent_connections.lock().unwrap(), event);
+    }
+
+    fn connection_failure(
+        &self,
+        evidence: Option<&FlowEvidence>,
+        flow: Flow,
+        stage: &str,
+        error_kind: &str,
+    ) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+        self.record_connection(
+            evidence, flow, stage, ConnectionOutcome::Failed, Some(error_kind.into()),
+        );
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilterKey {
+    has_targets: bool,
+    managed_ports: std::collections::BTreeSet<u16>,
+}
+
+fn compute_filter_key(plan: &Plan) -> FilterKey {
+    let mut managed_ports: std::collections::BTreeSet<u16> =
+        plan.managed_endpoints.iter().map(|a| a.port()).collect();
+    if let Some(p) = plan.mixed_port {
+        managed_ports.insert(p);
+    }
+    if managed_ports.is_empty() {
+        managed_ports.insert(7890);
+    }
+    let has_targets = !plan.targets.is_empty() || !plan.instances.is_empty() || plan.has_dns();
+    FilterKey {
+        has_targets,
+        managed_ports,
+    }
 }
 
 pub struct Engine {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
     pool: Option<tokio::runtime::Runtime>,
+    filter_key: FilterKey,
+    firewall: Option<Mutex<RelayFirewall>>,
 }
 impl Engine {
     pub fn start(
@@ -198,6 +349,12 @@ impl Engine {
         );
         let v4 = TcpListener::from_std(v4).map_err(|_| "转发入口创建失败")?;
         let v6 = TcpListener::from_std(v6).map_err(|_| "转发入口创建失败")?;
+        let filter_key = compute_filter_key(&plan);
+        let firewall = if filter.is_none() && (external || filter_key.has_targets) {
+            Some(Mutex::new(RelayFirewall::start([ports.0, ports.1])?))
+        } else {
+            None
+        };
         let loaded = VerifiedApi::load(components)?;
         let sockets = loaded
             .api
@@ -205,11 +362,9 @@ impl Engine {
         if sockets.version().map_err(|_| "驱动版本读取失败")? != (2, 2) {
             return Err("WinDivert 共享驱动版本不兼容".into());
         }
-        let mut managed_ports: std::collections::BTreeSet<u16> = plan.managed_endpoints.iter().map(|a| a.port()).collect();
-        if let Some(p) = plan.mixed_port { managed_ports.insert(p); }
-        if managed_ports.is_empty() { managed_ports.insert(7890); }
+        let managed_ports = &filter_key.managed_ports;
         let port_filter = managed_ports.iter().map(|p| format!("tcp.DstPort == {p}")).collect::<Vec<_>>().join(" or ");
-        let default_filter = if !external && plan.targets.is_empty() && plan.instances.is_empty() && !plan.has_dns() {
+        let default_filter = if !external && !filter_key.has_targets {
             "false".to_string()
         } else {
             format!("(outbound and !loopback and (tcp or udp)) or (loopback and tcp and (({port_filter}) or (tcp.SrcPort >= 61000 and tcp.SrcPort <= 64999)))")
@@ -239,11 +394,14 @@ impl Engine {
             worker: pool.handle().clone(),
             test_loopback: cfg!(test) && filter.is_some(),
             capacity: Arc::new(Semaphore::new(4096)),
+            dns_capacity: Arc::new(Semaphore::new(64)),
             tcp: AtomicU64::new(0),
             udp: AtomicU64::new(0),
             dns: AtomicU64::new(0),
             unknown: AtomicU64::new(0),
             failures: AtomicU64::new(0),
+            connection_sequence: AtomicU64::new(0),
+            recent_connections: Mutex::new(VecDeque::with_capacity(CONNECTION_EVIDENCE_LIMIT)),
         });
         for listener in [v4, v6] {
             pool.spawn(accept(shared.clone(), listener));
@@ -257,19 +415,30 @@ impl Engine {
             shared,
             threads: vec![observer, receiver],
             pool: Some(pool),
+            filter_key,
+            firewall,
         })
+    }
+    pub(crate) fn refresh_relay_firewall(&self) -> Result<(), String> {
+        if let Some(firewall) = &self.firewall {
+            firewall.lock().unwrap().refresh()?;
+        }
+        Ok(())
+    }
+    pub fn matches_filter(&self, plan: &Plan) -> bool {
+        self.filter_key == compute_filter_key(plan)
     }
     pub fn update(&self, plan: Plan) -> Result<(), String> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err("接管工作线程已停止".into());
         }
         plan.validate()?;
+        let mut current = self.shared.plan.write().unwrap();
         if !self.shared.external {
-            let old = self.shared.plan.read().unwrap();
             let mut table = self.shared.table.lock().unwrap();
-            withdraw_routes(&mut table, &old, &plan);
+            withdraw_routes(&mut table, &current, &plan);
         }
-        *self.shared.plan.write().unwrap() = plan;
+        *current = plan;
         self.shared.paused.store(false, Ordering::Release);
         Ok(())
     }
@@ -288,6 +457,9 @@ impl Engine {
         {
             return Err("接管范围改变，需要完整确认".into());
         }
+        if !self.shared.external && !next.block_ipv6_owners.is_empty() {
+            withdraw_routes(&mut self.shared.table.lock().unwrap(), &guard, &next);
+        }
         *guard = next;
         Ok(())
     }
@@ -303,6 +475,7 @@ impl Engine {
             dns: s.dns.load(Ordering::Relaxed),
             unknown: s.unknown.load(Ordering::Relaxed),
             failures: s.failures.load(Ordering::Relaxed),
+            recent_connections: s.recent_connections.lock().unwrap().iter().rev().cloned().collect(),
         }
     }
 }
@@ -345,17 +518,20 @@ fn observe(s: Arc<Shared>) {
     }
 }
 fn event_identity(event: &Event) -> Option<Identity> {
+    identity_at(event.pid, event.timestamp)
+}
+fn identity_at(pid: u32, timestamp: i64) -> Option<Identity> {
     #[link(name = "kernel32")]
     extern "system" {
         fn QueryPerformanceCounter(value: *mut i64) -> i32;
         fn QueryPerformanceFrequency(value: *mut i64) -> i32;
     }
-    let id = Identity::inspect(event.pid)?;
+    let id = Identity::inspect(pid)?;
     let (mut now, mut frequency) = (0i64, 0i64);
     if unsafe { QueryPerformanceCounter(&mut now) } == 0
         || unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
         || frequency <= 0
-        || event.timestamp > now
+        || timestamp > now
     {
         return None;
     }
@@ -365,17 +541,33 @@ fn event_identity(event: &Event) -> Option<Identity> {
         .as_nanos()
         / 100
         + 116444736000000000;
-    let elapsed = (now - event.timestamp) as u128 * 10000000 / frequency as u128;
+    let elapsed = now.checked_sub(timestamp)? as u128 * 10000000 / frequency as u128;
     let at = wall.checked_sub(elapsed)?;
-    // Do not assign an old queued SOCKET event to a process born after it.
+    // The PID must have existed when WinDivert observed the event or packet.
     (u128::from(id.created_at) <= at).then_some(id)
 }
-fn send(s: &Shared, data: &mut [u8], address: &mut Address, changed: bool) {
-    if s.network.send(data, address, changed).is_err() {
+
+fn live_table_owner(flow: Flow, timestamp: i64) -> Option<super::ownership::Owner> {
+    let pid = if flow.protocol == 6 {
+        super::tcp_owner(flow.source, flow.destination)
+    } else {
+        super::udp_owner(flow.source)
+    }?;
+    Some(super::ownership::Owner {
+        endpoint: 0,
+        observed_at: timestamp,
+        identity: identity_at(pid, timestamp)?,
+    })
+}
+
+fn send(s: &Shared, data: &mut [u8], address: &mut Address, changed: bool) -> bool {
+    let sent = s.network.send(data, address, changed).is_ok();
+    if !sent {
         s.failures.fetch_add(1, Ordering::Relaxed);
     }
+    sent
 }
-fn reflect(s: &Shared, p: &Packet, r: &Route, data: &mut [u8], a: &mut Address) {
+fn reflect(s: &Shared, p: &Packet, r: &Route, data: &mut [u8], a: &mut Address) -> bool {
     p.rewrite(
         data,
         SocketAddr::new(r.flow.destination.ip(), r.token),
@@ -387,7 +579,7 @@ fn reflect(s: &Shared, p: &Packet, r: &Route, data: &mut [u8], a: &mut Address) 
     if a.flags & (1 << 18) == 0 {
         a.inbound();
     }
-    send(s, data, a, true);
+    send(s, data, a, true)
 }
 fn network(s: Arc<Shared>) {
     let mut data = vec![0; 65575];
@@ -401,6 +593,10 @@ fn network(s: Arc<Shared>) {
             continue;
         };
         let flow = packet.flow;
+        let dns_destination = !s.external && flow.destination.port() == 53;
+        let protected_ipv6 = external_ipv6(flow.destination.ip());
+        let ipv6_policy_active = protected_ipv6 && !s.external && !s.plan.read().unwrap().block_ipv6_owners.is_empty();
+        let existing_tcp = flow.protocol == 6 && !packet.syn;
         if cleanup.elapsed() > Duration::from_secs(2) {
             let mut t = s.table.lock().unwrap();
             t.flows.retain(|_, r| {
@@ -448,6 +644,9 @@ fn network(s: Arc<Shared>) {
                 None
             };
             if let Some(r) = reverse {
+                if r.ipv6_revoked.load(Ordering::Acquire) {
+                    continue;
+                }
                 *r.touched.lock().unwrap() = Instant::now();
                 packet.rewrite(data, r.flow.destination, r.flow.source);
                 if address.flags & (1 << 18) == 0 {
@@ -463,12 +662,15 @@ fn network(s: Arc<Shared>) {
                     t.flows.remove(&flow);
                     t.tokens.remove(&r.token);
                 } else {
+                    if r.ipv6_revoked.load(Ordering::Acquire) {
+                        continue;
+                    }
                     *r.touched.lock().unwrap() = Instant::now();
                     reflect(&s, &packet, &r, data, &mut address);
                     continue;
                 }
             }
-            if !packet.syn {
+            if existing_tcp && !ipv6_policy_active && !dns_destination {
                 send(&s, data, &mut address, false);
                 continue;
             }
@@ -496,6 +698,18 @@ fn network(s: Arc<Shared>) {
                     s.owners.lock().unwrap().current(&owner)
                 };
                 if valid {
+                    if ipv6_policy_active {
+                        let identity = &owner.identity;
+                        let plan = s.plan.read().unwrap();
+                        if let Some((rule, port)) = plan.destination_for(&identity.path, identity.pid, identity.created_at) {
+                            if plan.blocks_ipv6(rule) {
+                                s.table.lock().unwrap().udp.remove(&flow);
+                                let evidence = s.flow_evidence(identity, rule, port);
+                                s.record_connection(Some(&evidence), flow, "ipv6_policy", ConnectionOutcome::Failed, Some("Ipv6Blocked".into()));
+                                continue;
+                            }
+                        }
+                    }
                     if tx.try_send(data[packet.payload..].to_vec()).is_err() {
                         s.failures.fetch_add(1, Ordering::Relaxed);
                     } else {
@@ -506,7 +720,7 @@ fn network(s: Arc<Shared>) {
                 s.table.lock().unwrap().udp.remove(&flow);
             }
         }
-        if s.table.lock().unwrap().bypass.contains_key(&flow) {
+        if !ipv6_policy_active && !dns_destination && s.table.lock().unwrap().bypass.contains_key(&flow) {
             send(&s, data, &mut address, false);
             continue;
         }
@@ -517,10 +731,9 @@ fn network(s: Arc<Shared>) {
             address.timestamp,
             Identity::inspect,
         );
-        // SOCKET 事件与系统连接表双轨异步判定：
-        // 对于刚拉起的子进程或突发短命连接，在有界时间内进行微秒级退让和查表，
-        // 彻底解决短命子进程第一条连接尚未写入 WFP 事件导致的“追不回首包”问题。
-        if owner.is_none() && (packet.syn || flow.protocol == 17) {
+        // Fresh connections can reach the packet layer before the SOCKET event.
+        // Check the live table and retry a bounded number of times before passing an unresolved packet.
+        if owner.is_none() && (packet.syn || flow.protocol == 17 || ipv6_policy_active || dns_destination) {
             // 阶段 1: 短暂退让与重试（3 次 yield）
             for _ in 0..3 {
                 std::thread::yield_now();
@@ -535,10 +748,18 @@ fn network(s: Arc<Shared>) {
                     break;
                 }
             }
-            // 阶段 2: 若仍未就绪，进行有界微休眠重试（500us -> 1500us -> 3000us），兼顾低延迟与子进程首包捕获率
+            if owner.is_none() {
+                owner = live_table_owner(flow, address.timestamp);
+            }
+            // Retry only after both ownership sources fail on the current packet.
             if owner.is_none() && packet.syn {
+                let retry_until = Instant::now() + Duration::from_millis(5);
                 for wait_us in [500, 1500, 3000] {
-                    std::thread::sleep(Duration::from_micros(wait_us));
+                    let remaining = retry_until.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    std::thread::sleep(remaining.min(Duration::from_micros(wait_us)));
                     owner = s.owners.lock().unwrap().resolve(
                         flow.source,
                         flow.destination,
@@ -549,28 +770,9 @@ fn network(s: Arc<Shared>) {
                     if owner.is_some() {
                         break;
                     }
-                    // 每次微休眠后即时尝试 Windows 系统连接表反查
-                    let pid = super::tcp_owner(flow.source, flow.destination);
-                    if let Some(pid) = pid {
-                        if let Some(identity) = Identity::inspect(pid) {
-                            owner = Some(super::ownership::Owner {
-                                endpoint: 0,
-                                observed_at: address.timestamp,
-                                identity,
-                            });
-                            break;
-                        }
-                    }
-                }
-            } else if owner.is_none() {
-                // UDP 兜底即时反查
-                if let Some(pid) = super::udp_owner(flow.source) {
-                    if let Some(identity) = Identity::inspect(pid) {
-                        owner = Some(super::ownership::Owner {
-                            endpoint: 0,
-                            observed_at: address.timestamp,
-                            identity,
-                        });
+                    owner = live_table_owner(flow, address.timestamp);
+                    if owner.is_some() {
+                        break;
                     }
                 }
             }
@@ -582,27 +784,62 @@ fn network(s: Arc<Shared>) {
                 Err(_)=>{s.failures.fetch_add(1,Ordering::Relaxed);continue;}
             }
         } else {None};
-        let matched_port = if s.external {external.as_ref().map(|_|0)} else {owner
-            .as_ref()
-            .filter(|_| !is_excluded)
-            .and_then(|o| {
-                s.plan.read().unwrap().port_for(
-                    &o.identity.path,
-                    o.identity.pid,
-                    o.identity.created_at,
-                )
-            })};
-        let choice = if let Some(port) = matched_port {
-            Some(port)
+        // Hold the policy through route creation so an update can revoke any old IPv6 route.
+        let plan = (!s.external).then(|| s.plan.read().unwrap());
+        let mut evidence = None;
+        let mut owned_dns = false;
+        let choice = if s.external {
+            external.as_ref().map(|_| 0)
+        } else if let Some(identity) = owner.as_ref().filter(|_| !is_excluded).map(|o| &o.identity) {
+            let plan = plan.as_ref().expect("the full engine has a routing plan");
+            if let Some((rule_owner, port)) = plan.destination_for(&identity.path, identity.pid, identity.created_at) {
+                evidence = Some(s.flow_evidence(identity, rule_owner, port));
+                let dns_mode = plan.dns_mode(rule_owner);
+                if dns_destination && !is_to_sysproxy && dns_mode == Some(DnsMode::SystemNative)
+                    && plan.native_dns_servers.contains(&flow.destination.ip())
+                {
+                    if !existing_tcp {
+                        s.record_connection(evidence.as_ref(), flow, "dns_native", ConnectionOutcome::Relayed, None);
+                    }
+                    send(&s, data, &mut address, false);
+                    continue;
+                }
+                owned_dns = dns_destination && !is_to_sysproxy && plan.uses_owned_dns(rule_owner);
+                // IPv6 DNS transport can be answered locally or translated to IPv4 DoH.
+                // Only a new intercepted TCP session can enter the DNS relay.
+                if protected_ipv6 && plan.blocks_ipv6(rule_owner) && (!owned_dns || existing_tcp) {
+                    s.record_connection(evidence.as_ref(), flow, "ipv6_policy", ConnectionOutcome::Failed, Some("Ipv6Blocked".into()));
+                    continue;
+                }
+                let Some(port) = port else {
+                    s.connection_failure(evidence.as_ref(), flow, "rule_entry", "EntryUnavailable");
+                    continue;
+                };
+                if !is_to_sysproxy && !owned_dns && !existing_tcp {
+                    s.record_connection(evidence.as_ref(), flow, "ownership", ConnectionOutcome::Attributed, None);
+                }
+                Some(port)
+            } else {
+                None
+            }
         } else {
             // A single available outlet is not evidence of process ownership.
             None
         };
+        if existing_tcp {
+            if owned_dns {
+                // A previously direct DNS TCP connection cannot enter a SOCKS relay midstream.
+                s.connection_failure(evidence.as_ref(), flow, "dns_policy", "PreviousDnsConnection");
+                continue;
+            }
+            send(&s, data, &mut address, false);
+            continue;
+        }
         let Some(port) = choice else {
             if !is_excluded && !s.external && flow.protocol == 17 && flow.destination.port() == 53 {
                 let payload = &data[packet.payload..];
                 let matched_dns = super::dns::Question::parse_query(payload).and_then(|q| {
-                    s.plan.read().unwrap().dns_port_for(&q.name).map(|dns_port| (q, dns_port))
+                    plan.as_ref()?.dns_port_for(&q.name).map(|dns_port| (q, dns_port))
                 });
                 if let Some((question, dns_port)) = matched_dns {
                     if s.paused.load(Ordering::Acquire) {
@@ -671,7 +908,43 @@ fn network(s: Arc<Shared>) {
         };
         // A confirmed target must never fall back directly on relay failure.
         if s.paused.load(Ordering::Acquire) {
-            s.failures.fetch_add(1, Ordering::Relaxed);
+            s.connection_failure(evidence.as_ref(), flow, "routing", "CapturePaused");
+            continue;
+        }
+        if owned_dns && flow.protocol == 17 {
+            let mut evidence = evidence.expect("owned DNS is positively attributed");
+            let mode = evidence.owner.as_deref().and_then(|owner| {
+                plan.as_ref().and_then(|plan| plan.dns_mode(owner))
+            }).unwrap_or_default();
+            let sandbox = evidence.owner.as_deref().is_some_and(|owner| {
+                plan.as_ref().is_some_and(|plan| plan.uses_sandbox_dns(owner))
+            });
+            let stage = OwnedDnsPolicy { sandbox, mode, block_ipv6: false }.stage();
+            let payload = &data[packet.payload..];
+            let Some(question) = Question::parse_query(payload) else {
+                s.connection_failure(Some(&evidence), flow, "dns_validation", "InvalidQuery");
+                continue;
+            };
+            evidence.describe_dns(&question);
+            if sandbox { evidence.dns_upstream = None; }
+            s.record_connection(Some(&evidence), flow, "ownership", ConnectionOutcome::Attributed, None);
+            let Ok(permit) = s.dns_capacity.clone().try_acquire_owned() else {
+                s.connection_failure(Some(&evidence), flow, stage, "RelayCapacity");
+                continue;
+            };
+            let owner = owner.expect("owned DNS has a verified process identity");
+            let template = data.to_vec();
+            let shared = s.clone();
+            s.worker.spawn(async move {
+                let _permit = permit;
+                match owned_dns_udp(&shared, packet, template, address, &owner, &evidence, &question, port).await {
+                    Ok(stage) => {
+                        if stage != "dns_doh" { evidence.dns_upstream = None; }
+                        shared.record_connection(Some(&evidence), flow, stage, ConnectionOutcome::Relayed, None);
+                    }
+                    Err(error) => shared.connection_failure(Some(&evidence), flow, stage, &format!("{:?}", error.kind())),
+                }
+            });
             continue;
         }
         if flow.protocol == 6 {
@@ -685,7 +958,7 @@ fn network(s: Arc<Shared>) {
                     t.nat.forget(flow);
                     if !t.nat.insert(flow, port, opt_id) {
                         // 映射建立失败：绝不原样放行至公共代理，阻断该连接以守护严格指定出口契约
-                        s.failures.fetch_add(1, Ordering::Relaxed);
+                        s.connection_failure(evidence.as_ref(), flow, "managed_redirect", "MappingUnavailable");
                         drop(t);
                         continue;
                     }
@@ -701,14 +974,20 @@ fn network(s: Arc<Shared>) {
                 };
                 drop(t);
                 packet.rewrite(data, translated.source, translated.destination);
-                send(&s, data, &mut address, true);
+                if !send(&s, data, &mut address, true) {
+                    s.record_connection(evidence.as_ref(), flow, "managed_redirect", ConnectionOutcome::Failed, Some("PacketInjection".into()));
+                    continue;
+                }
+                if !is_retransmit {
+                    s.record_connection(evidence.as_ref(), flow, "managed_redirect", ConnectionOutcome::Attributed, None);
+                }
                 s.tcp.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
             let mut t = s.table.lock().unwrap();
             if t.flows.len() >= 8192 {
-                s.failures.fetch_add(1, Ordering::Relaxed);
+                s.connection_failure(evidence.as_ref(), flow, "packet_redirect", "FlowTableFull");
                 continue;
             }
             let token = (0..50000).find_map(|_| {
@@ -720,34 +999,40 @@ fn network(s: Arc<Shared>) {
                 (!t.tokens.contains_key(&t.next)).then_some(t.next)
             });
             let Some(token) = token else {
-                s.failures.fetch_add(1, Ordering::Relaxed);
+                s.connection_failure(evidence.as_ref(), flow, "packet_redirect", "RelayTokenUnavailable");
                 continue;
             };
             let route = Arc::new(Route {
                 external,
+                identity: (!s.external).then(|| owner.expect("a full route has a verified process identity").identity),
+                owned_dns,
                 flow,
                 token,
                 port,
                 touched: Mutex::new(Instant::now()),
                 claimed: AtomicBool::new(false),
                 finished: AtomicBool::new(false),
+                ipv6_revoked: AtomicBool::new(false),
                 cancel: tokio::sync::Notify::new(),
+                evidence,
             });
             t.tokens.insert(token, route.clone());
             t.flows.insert(flow, route.clone());
             drop(t);
-            reflect(&s, &packet, &route, data, &mut address);
+            if !reflect(&s, &packet, &route, data, &mut address) {
+                s.record_connection(route.evidence.as_ref(), flow, "packet_redirect", ConnectionOutcome::Failed, Some("PacketInjection".into()));
+            }
         } else {
             let permit = match s.capacity.clone().try_acquire_owned() {
                 Ok(p) => p,
                 Err(_) => {
-                    s.failures.fetch_add(1, Ordering::Relaxed);
+                    s.connection_failure(evidence.as_ref(), flow, "udp_relay", "RelayCapacity");
                     continue;
                 }
             };
             let mut t = s.table.lock().unwrap();
             if t.udp.len() >= 1024 {
-                s.failures.fetch_add(1, Ordering::Relaxed);
+                s.connection_failure(evidence.as_ref(), flow, "udp_relay", "FlowTableFull");
                 continue;
             }
             let owner = owner.expect("a selected route has a verified owner");
@@ -761,7 +1046,7 @@ fn network(s: Arc<Shared>) {
             let shared = s.clone();
             s.worker.spawn(async move {
                 let _permit = permit;
-                if udp(
+                if let Err(error) = udp(
                     shared.clone(),
                     packet,
                     template,
@@ -771,11 +1056,13 @@ fn network(s: Arc<Shared>) {
                     generation,
                     owner,
                     external,
+                    evidence.as_ref(),
                 )
                 .await
-                .is_err()
                 {
-                    shared.failures.fetch_add(1, Ordering::Relaxed);
+                    shared.connection_failure(
+                        evidence.as_ref(), flow, "udp_relay", &format!("{:?}", error.kind()),
+                    );
                 }
                 let mut t = shared.table.lock().unwrap();
                 if t.udp.get(&flow).is_some_and(|(g, _, _)| *g == generation) {
@@ -815,12 +1102,12 @@ async fn accept(s: Arc<Shared>, listener: TcpListener) {
         let Some(route) = route else {
             continue;
         };
-        if route.claimed.swap(true, Ordering::AcqRel) {
+        if route.ipv6_revoked.load(Ordering::Acquire) || route.claimed.swap(true, Ordering::AcqRel) {
             continue;
         }
         let Ok(permit) = s.capacity.clone().try_acquire_owned() else {
             route.finished.store(true, Ordering::Release);
-            s.failures.fetch_add(1, Ordering::Relaxed);
+            s.connection_failure(route.evidence.as_ref(), route.flow, "tcp_relay", "RelayCapacity");
             continue;
         };
         let shared = s.clone();
@@ -829,31 +1116,289 @@ async fn accept(s: Arc<Shared>, listener: TcpListener) {
             shared.tcp.fetch_add(1, Ordering::Relaxed);
             let relay = async {
                 if let Some(context)=route.external.clone() {
-                    return crate::external_proxy::captured::tcp(context,stream,route.flow.destination).await.map_err(std::io::Error::other);
+                    return crate::external_proxy::captured::tcp(context, stream, route.flow.destination)
+                        .await
+                        .map_err(|error| ("tcp_relay", std::io::Error::other(error)));
+                }
+                if route.owned_dns {
+                    let identity = route.identity.as_ref().expect("owned DNS has a verified process identity");
+                    return owned_dns_tcp(&shared, &mut stream, &route, identity)
+                        .await
+                        .map_err(|error| ("dns_doh", error));
                 }
                 let (mut upstream, _) = socks(route.port, route.flow.destination, false).await?;
-                tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
-                Ok::<(), std::io::Error>(())
+                shared.record_connection(
+                    route.evidence.as_ref(), route.flow, "socks_ingress", ConnectionOutcome::Relayed, None,
+                );
+                tokio::io::copy_bidirectional(&mut stream, &mut upstream)
+                    .await
+                    .map_err(|error| ("tcp_relay", error))?;
+                Ok(())
             };
             let result = tokio::select! {
                 result = relay => result,
                 _ = route.cancel.notified() => Ok(()),
             };
-            if result.is_err() {
-                shared.failures.fetch_add(1, Ordering::Relaxed);
+            if let Err((stage, error)) = result {
+                shared.connection_failure(
+                    route.evidence.as_ref(), route.flow, stage, &format!("{:?}", error.kind()),
+                );
             }
             route.finished.store(true, Ordering::Release);
             *route.touched.lock().unwrap() = Instant::now();
         });
     }
 }
+
+const DNS_MAX_WIRE_SIZE: usize = u16::MAX as usize;
+const DNS_MESSAGE_MEDIA_TYPE: &str = "application/dns-message";
+
+fn dns_http_error(error: reqwest::Error) -> io::Error {
+    let kind = if error.is_timeout() {
+        io::ErrorKind::TimedOut
+    } else if error.is_connect() {
+        io::ErrorKind::ConnectionRefused
+    } else {
+        io::ErrorKind::ConnectionAborted
+    };
+    kind.into()
+}
+
+fn validate_doh_answer(question: &Question, answer: &mut [u8]) -> io::Result<()> {
+    let expected = Question { id: 0, ..question.clone() };
+    if !expected.matches_reply(answer) || answer[2] & 0x02 != 0 {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    answer[..2].copy_from_slice(&question.id.to_be_bytes());
+    Ok(())
+}
+
+async fn owned_doh(port: u16, query: &[u8], question: &Question) -> io::Result<Vec<u8>> {
+    let proxy = reqwest::Proxy::all(format!("socks5h://127.0.0.1:{port}"))
+        .map_err(dns_http_error)?;
+    // One request per connection. Reusing a DoH tunnel after a rule update
+    // could keep a retired outlet even when the loopback port is unchanged.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .proxy(proxy)
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .http1_only()
+        .pool_max_idle_per_host(0)
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(dns_http_error)?;
+    let mut message = query.to_vec();
+    message[..2].fill(0);
+    let mut response = client
+        .post(crate::commands::dns::DEFAULT_FALLBACK_DOH)
+        .header(reqwest::header::CONTENT_TYPE, DNS_MESSAGE_MEDIA_TYPE)
+        .header(reqwest::header::ACCEPT, DNS_MESSAGE_MEDIA_TYPE)
+        .body(message)
+        .send()
+        .await
+        .map_err(dns_http_error)?;
+    if response.status() != reqwest::StatusCode::OK
+        || !response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.split(';').next().unwrap_or_default().trim().eq_ignore_ascii_case(DNS_MESSAGE_MEDIA_TYPE))
+        || response.content_length().is_some_and(|size| size > DNS_MAX_WIRE_SIZE as u64)
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let mut answer = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(dns_http_error)? {
+        if answer.len() + chunk.len() > DNS_MAX_WIRE_SIZE {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        answer.extend_from_slice(&chunk);
+    }
+    validate_doh_answer(question, &mut answer)?;
+    Ok(answer)
+}
+
+#[derive(Clone, Copy)]
+struct OwnedDnsPolicy {
+    sandbox: bool,
+    mode: DnsMode,
+    block_ipv6: bool,
+}
+
+impl OwnedDnsPolicy {
+    fn stage(self) -> &'static str {
+        if self.mode == DnsMode::FakeIp { "dns_fake_ip" }
+        else if self.sandbox { "dns_sandbox" }
+        else { "dns_doh" }
+    }
+}
+
+fn owned_dns_policy(s: &Shared, identity: &Identity, evidence: &FlowEvidence, port: u16) -> io::Result<OwnedDnsPolicy> {
+    if s.stop.load(Ordering::Acquire) || s.paused.load(Ordering::Acquire) {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
+    let plan = s.plan.read().unwrap();
+    let rule_owner = evidence.owner.as_deref().ok_or(io::ErrorKind::Interrupted)?;
+    if !plan.uses_owned_dns(rule_owner)
+        || plan.destination_for(&identity.path, identity.pid, identity.created_at) != Some((rule_owner, Some(port))) {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
+    Ok(OwnedDnsPolicy {
+        sandbox: plan.uses_sandbox_dns(rule_owner),
+        mode: plan.dns_mode(rule_owner).unwrap_or_default(),
+        block_ipv6: plan.blocks_ipv6(rule_owner),
+    })
+}
+
+fn local_ipv6_dns_answer(block_ipv6: bool, query: &[u8], question: &Question) -> Option<(Vec<u8>, &'static str)> {
+    if !block_ipv6 {
+        return None;
+    }
+    blocked_ipv6_reply(query, question).map(|answer| (answer, "dns_ipv6_policy"))
+}
+
+async fn sandbox_dns(port: u16, query: &[u8], question: &Question) -> io::Result<Vec<u8>> {
+    // This destination terminates inside Mihomo on the verified suite inlet.
+    let gateway = ([198, 19, 0, 1], 53).into();
+    tokio::time::timeout(Duration::from_millis(900), async {
+        let (mut stream, _) = socks(port, gateway, false).await.map_err(|(_, error)| error)?;
+        stream.write_u16(query.len() as u16).await?;
+        stream.write_all(query).await?;
+        let reply = read_dns_frame(&mut stream).await?.ok_or(io::ErrorKind::UnexpectedEof)?;
+        if !question.matches_reply(&reply) { return Err(io::ErrorKind::InvalidData.into()); }
+        Ok(reply)
+    }).await.map_err(|_| io::ErrorKind::TimedOut)?
+}
+
+async fn exchange_owned_dns(policy: OwnedDnsPolicy, port: u16, query: &[u8], question: &Question) -> io::Result<(Vec<u8>, &'static str)> {
+    if let Some(answer) = local_ipv6_dns_answer(policy.block_ipv6, query, question) {
+        return Ok(answer);
+    }
+    let answer = if policy.sandbox {
+        sandbox_dns(port, query, question).await?
+    } else {
+        owned_doh(port, query, question).await?
+    };
+    Ok((answer, policy.stage()))
+}
+
+async fn owned_dns_udp(
+    s: &Shared,
+    packet: Packet,
+    template: Vec<u8>,
+    mut address: Address,
+    owner: &super::ownership::Owner,
+    evidence: &FlowEvidence,
+    question: &Question,
+    port: u16,
+) -> io::Result<&'static str> {
+    let policy = owned_dns_policy(s, &owner.identity, evidence, port)?;
+    let query = &template[packet.payload..];
+    s.dns.fetch_add(1, Ordering::Relaxed);
+    let result = exchange_owned_dns(policy, port, query, question).await;
+    let owner_current = if owner.endpoint == 0 {
+        super::owner::lookup(packet.flow) == Some(owner.identity.pid)
+            && Identity::inspect(owner.identity.pid).as_ref() == Some(&owner.identity)
+    } else {
+        s.owners.lock().unwrap().current_udp_flow(
+            owner, packet.flow.source, packet.flow.destination, Identity::inspect,
+        )
+    };
+    if !owner_current {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
+    let current = owned_dns_policy(s, &owner.identity, evidence, port)?;
+    if current.sandbox != policy.sandbox || current.mode != policy.mode { return Err(io::ErrorKind::Interrupted.into()); }
+    let result = local_ipv6_dns_answer(current.block_ipv6 && !policy.block_ipv6, query, question).map_or(result, Ok);
+    let (answer, stage, failure) = match result {
+        Ok((answer, stage)) => (crate::external_proxy::dns::fit_udp(query, answer), stage, None),
+        Err(error) => (crate::external_proxy::dns::failure(query, 2), policy.stage(), Some(error)),
+    };
+    let mut response = packet.udp_reply(&template, &answer).ok_or(io::ErrorKind::InvalidData)?;
+    if address.flags & (1 << 18) == 0 {
+        address.inbound();
+    }
+    s.network.send(&mut response, &mut address, true)?;
+    failure.map_or(Ok(stage), Err)
+}
+
+async fn read_dns_frame(stream: &mut TcpStream) -> io::Result<Option<Vec<u8>>> {
+    let mut prefix = [0; 2];
+    if stream.read(&mut prefix[..1]).await? == 0 {
+        return Ok(None);
+    }
+    stream.read_exact(&mut prefix[1..]).await?;
+    let size = usize::from(u16::from_be_bytes(prefix));
+    if size < 12 {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let mut message = vec![0; size];
+    stream.read_exact(&mut message).await?;
+    Ok(Some(message))
+}
+
+async fn owned_dns_tcp(s: &Shared, stream: &mut TcpStream, route: &Route, identity: &Identity) -> io::Result<()> {
+    let base = route.evidence.as_ref().expect("owned DNS has connection evidence");
+    loop {
+        let query = match tokio::time::timeout(Duration::from_secs(15), read_dns_frame(stream)).await {
+            Ok(Ok(Some(query))) => query,
+            Ok(Ok(None)) | Err(_) => return Ok(()),
+            Ok(Err(error)) => return Err(error),
+        };
+        let Some(question) = Question::parse_query(&query) else {
+            s.connection_failure(Some(base), route.flow, "dns_validation", "InvalidQuery");
+            return Ok(());
+        };
+        let mut evidence = base.clone();
+        evidence.describe_dns(&question);
+        let policy = owned_dns_policy(s, identity, &evidence, route.port)?;
+        if policy.sandbox { evidence.dns_upstream = None; }
+        s.record_connection(Some(&evidence), route.flow, "ownership", ConnectionOutcome::Attributed, None);
+        let result = match local_ipv6_dns_answer(policy.block_ipv6, &query, &question) {
+            Some(answer) => {
+                s.dns.fetch_add(1, Ordering::Relaxed);
+                Ok(answer)
+            }
+            None => match s.dns_capacity.try_acquire() {
+                Ok(_permit) => {
+                    s.dns.fetch_add(1, Ordering::Relaxed);
+                    exchange_owned_dns(policy, route.port, &query, &question).await
+                }
+                Err(_) => Err(io::ErrorKind::WouldBlock.into()),
+            },
+        };
+        let current = owned_dns_policy(s, identity, &evidence, route.port)?;
+        if current.sandbox != policy.sandbox || current.mode != policy.mode { return Err(io::ErrorKind::Interrupted.into()); }
+        let result = local_ipv6_dns_answer(current.block_ipv6 && !policy.block_ipv6, &query, &question).map_or(result, Ok);
+        let (answer, stage, failure) = match result {
+            Ok((answer, stage)) => (answer, stage, None),
+            Err(error) => (crate::external_proxy::dns::failure(&query, 2), policy.stage(), Some(error)),
+        };
+        tokio::time::timeout(Duration::from_secs(4), async {
+            stream.write_u16(answer.len() as u16).await?;
+            stream.write_all(&answer).await
+        })
+        .await
+        .map_err(|_| io::ErrorKind::TimedOut)??;
+        if let Some(error) = failure {
+            s.connection_failure(Some(&evidence), route.flow, stage, &format!("{:?}", error.kind()));
+        } else {
+            if stage != "dns_doh" { evidence.dns_upstream = None; }
+            s.record_connection(Some(&evidence), route.flow, stage, ConnectionOutcome::Relayed, None);
+        }
+    }
+}
+
 async fn socks(
     port: u16,
     destination: SocketAddr,
     udp: bool,
-) -> std::io::Result<(TcpStream, SocketAddr)> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+) -> Result<(TcpStream, SocketAddr), (&'static str, std::io::Error)> {
+    let mut stage = "socks_ingress";
+    let result = tokio::time::timeout(Duration::from_secs(8), async {
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+        stage = "socks_handshake";
         let _ = stream.set_nodelay(true);
         #[cfg(windows)]
         {
@@ -864,26 +1409,28 @@ async fn socks(
         let mut greeting = [0; 2];
         stream.read_exact(&mut greeting).await?;
         if greeting != [5, 0] {
-            return Err(std::io::Error::other("SOCKS 认证失败"));
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "SOCKS 认证失败"));
         }
         let mut request = vec![5, if udp { 3 } else { 1 }, 0];
         super::socks::encode(destination, &mut request);
+        stage = "socks_reply";
         stream.write_all(&request).await?;
         let mut prefix = [0; 4];
         stream.read_exact(&mut prefix).await?;
         if prefix[..3] != [5, 0, 0] {
-            return Err(std::io::Error::other("SOCKS 入口拒绝连接"));
+            return Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "SOCKS 入口拒绝连接"));
         }
         let length = match prefix[3] {
             1 => 6,
             4 => 18,
-            _ => return Err(std::io::Error::other("SOCKS 回应地址不支持")),
+            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "SOCKS 回应地址不支持")),
         };
         let mut data = vec![prefix[3]];
         data.resize(length + 1, 0);
         stream.read_exact(&mut data[1..]).await?;
         let (mut relay, _) =
-            super::socks::decode(&data).ok_or_else(|| std::io::Error::other("SOCKS 回应无效"))?;
+            super::socks::decode(&data)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "SOCKS 回应无效"))?;
         if relay.ip().is_unspecified() {
             relay.set_ip(if relay.is_ipv4() {
                 IpAddr::V4(Ipv4Addr::LOCALHOST)
@@ -893,8 +1440,9 @@ async fn socks(
         }
         Ok((stream, relay))
     })
-    .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "SOCKS 入口超时"))?
+    .await;
+    result.unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+        .map_err(|error| (stage, error))
 }
 async fn udp(
     s: Arc<Shared>,
@@ -906,6 +1454,7 @@ async fn udp(
     generation: u64,
     owner: super::ownership::Owner,
     external: Option<crate::external_proxy::captured::Context>,
+    evidence: Option<&FlowEvidence>,
 ) -> std::io::Result<()> {
     if let Some(context)=external {
         let (tx,mut replies)=mpsc::channel(16);
@@ -929,8 +1478,9 @@ async fn udp(
         }};
         if !completed {worker.abort();let _=worker.await;}return result;
     }
-    let (mut control, relay) =
-        socks(port, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)), true).await?;
+    let (mut control, relay) = socks(port, SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)), true)
+        .await
+        .map_err(|(_, error)| error)?;
     if !relay.ip().is_loopback() || relay.port() == 0 {
         return Err(std::io::Error::other("SOCKS UDP 入口必须为本机"));
     }
@@ -946,6 +1496,7 @@ async fn udp(
     socket.connect(relay).await?;
     let mut buffer = vec![0; 65535];
     let mut control_byte = [0];
+    let mut observed_reply = false;
     loop {
         tokio::select! {
             payload=rx.recv()=>{let Some(payload)=payload else{return Ok(());};
@@ -961,6 +1512,10 @@ async fn udp(
                 };
                 if !is_valid || !s.table.lock().unwrap().udp.get(&p.flow).is_some_and(|(g,_,_)| *g == generation) {
                     return Ok(());
+                }
+                if !observed_reply {
+                    s.record_connection(evidence, p.flow, "socks_udp_reply", ConnectionOutcome::Relayed, None);
+                    observed_reply = true;
                 }
                 if let Some(mut response)=p.udp_reply(&template,payload){if address.flags&(1<<18)==0{address.inbound();}send(&s,&mut response,&mut address,true);}
             },

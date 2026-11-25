@@ -11,7 +11,6 @@ const buttonClass =
 interface Props {
   open: boolean;
   repositories: BundleRepository[];
-  defaultId: string;
   error: string;
   onClose(): void;
   onSave(repo: BundleRepository): boolean;
@@ -22,7 +21,6 @@ interface Props {
 export function RepositoryManager({
   open,
   repositories,
-  defaultId,
   error,
   onClose,
   onSave,
@@ -119,11 +117,6 @@ export function RepositoryManager({
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-semibold text-slate-900 dark:text-zinc-100 break-words flex items-center gap-1.5">
                     <span>{repo.name}</span>
-                    {repo.id === defaultId && (
-                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-md bg-sky-500/10 text-sky-600 dark:text-sky-400 border border-sky-500/25">
-                        内置
-                      </span>
-                    )}
                   </div>
                   <p className="text-[11px] text-slate-500 dark:text-zinc-400 break-all mt-1 font-mono">
                     {repo.url}
@@ -152,29 +145,25 @@ export function RepositoryManager({
                       }`}
                     />
                   </button>
-                  {repo.id !== defaultId && (
-                    <>
-                      <button
-                        type="button"
-                        aria-label={`编辑仓库 ${repo.name}`}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition cursor-pointer"
-                        onClick={() => {
-                          setRemoving(null);
-                          setDraft({ ...repo });
-                        }}
-                      >
-                        <Pencil size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`删除仓库 ${repo.name}`}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:text-zinc-400 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition cursor-pointer"
-                        onClick={() => setRemoving(repo.id)}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </>
-                  )}
+                  <button
+                    type="button"
+                    aria-label={`编辑仓库 ${repo.name}`}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/[0.08] transition cursor-pointer"
+                    onClick={() => {
+                      setRemoving(null);
+                      setDraft({ ...repo });
+                    }}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`删除仓库 ${repo.name}`}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:text-zinc-400 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/20 transition cursor-pointer"
+                    onClick={() => setRemoving(repo.id)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
 
