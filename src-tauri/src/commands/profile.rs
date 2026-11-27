@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod subscription_name;
+mod refresh;
 
 // 配置写入与核心启停属于同一事务；所有调用方只获取一次此锁。
 pub(crate) use super::process::LIFECYCLE as PROFILE_WRITE;
@@ -341,6 +342,7 @@ pub async fn add_profile(
     #[cfg(not(target_os = "android"))]
     let node_count = count_proxies(&raw_content);
     let final_content = super::settings::prepare_with(&raw_content, &super::settings::get_general_settings()?)?;
+    let (final_content, _) = sanitize_profile_rules(&final_content);
     validate_config(&final_content)?;
 
     crate::storage::replace(&full_path, final_content.as_bytes())?;
@@ -466,15 +468,6 @@ pub async fn update_profile(id: String) -> Result<ProfileItem, String> {
     let node_count = count_proxies(&raw_content);
     let final_content = super::settings::prepare_with(&raw_content, &super::settings::get_general_settings()?)?;
     validate_config(&final_content)?;
-    let runtime_source = super::profile_switch::runtime_source_for_change(&list[idx])?;
-    let previous = fs::read(&full_path).map_err(|e| e.to_string())?;
-    crate::storage::replace(&full_path, final_content.as_bytes())?;
-    if let Some(runtime_source) = &runtime_source {
-        if let Err(error) = apply_profile_to_core(&runtime_source.to_string_lossy()).await {
-            crate::storage::replace(&full_path, &previous)?;
-            return Err(error);
-        }
-    }
 
     list[idx].updated_at = chrono_or_simple_date();
     list[idx].node_count = node_count;
@@ -490,15 +483,7 @@ pub async fn update_profile(id: String) -> Result<ProfileItem, String> {
         list[idx].expire = expire;
     }
 
-    if let Err(error) = write_profiles_index(&list) {
-        crate::storage::replace(&full_path, &previous)?;
-        if let Some(runtime_source) = &runtime_source {
-            apply_profile_to_core(&runtime_source.to_string_lossy()).await
-                .map_err(|restore| format!("保存订阅索引失败：{error}；恢复运行配置失败：{restore}"))?;
-        }
-        return Err(format!("保存订阅索引失败，已恢复原配置：{error}"));
-    }
-
+    refresh::commit(&list, &list[idx], &full_path, &final_content).await?;
     Ok(list[idx].clone())
 }
 
@@ -835,7 +820,11 @@ pub(crate) async fn apply_profile_with_overrides(yaml_path: &str, config: &crate
     // 切换时索引尚未提交，必须使用候选文件的订阅身份，不能绑定旧订阅同名节点。
     let profile_id = read_profiles_index().iter().find(|item| get_base_dir().join(&item.file_path) == actual_path)
         .map(|item| item.id.clone()).unwrap_or_else(|| "default".into());
-    let prepared = crate::routing_overrides::prepare(&cleaned_raw, config, &profile_id)?;
+    apply_profile_runtime(&cleaned_raw, &profile_id, config).await
+}
+
+async fn apply_profile_runtime(raw: &str, profile_id: &str, config: &crate::routing_overrides::model::Overrides) -> Result<(), String> {
+    let prepared = crate::routing_overrides::prepare(raw, config, profile_id)?;
     validate_config(&prepared)?;
     crate::routing_overrides::apply_runtime(&prepared).await?;
     crate::routing_overrides::set_applied(config.revision, crate::routing_overrides::tracker::status(&config).generation);

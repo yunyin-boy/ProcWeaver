@@ -58,17 +58,22 @@ struct Importer {
     imported: Vec<Target>, visiting: Vec<Target>, names: HashSet<String>,
 }
 impl Importer {
+    fn find_outlet(&mut self, target: &Target) -> Result<Option<&Value>, String> {
+        if !self.sources.contains_key(&target.profile_id) {
+            self.sources.insert(target.profile_id.clone(), read_source(&target.profile_id)?);
+        }
+        let section = if target.kind == "node" { "proxies" } else { "proxy-groups" };
+        Ok(self.sources[&target.profile_id][section].as_sequence().into_iter().flatten()
+            .find(|item| item["name"].as_str() == Some(&target.name)))
+    }
+
     fn import(&mut self, target: &Target) -> Result<String, String> {
         let name = alias(target);
         if self.imported.contains(target) { return Ok(name); }
         if self.visiting.contains(target) { return Err("原出口包含循环代理依赖，无法保留".into()); }
         if !self.names.insert(name.clone()) { return Err("订阅与保留出口的内部名称冲突".into()); }
-        if !self.sources.contains_key(&target.profile_id) { self.sources.insert(target.profile_id.clone(), read_source(&target.profile_id)?); }
-        let source = self.sources.get(&target.profile_id).unwrap();
-        let section = if target.kind == "node" { "proxies" } else { "proxy-groups" };
-        let mut item = source[section].as_sequence().into_iter().flatten()
-            .find(|item| item["name"].as_str() == Some(&target.name)).cloned()
-            .ok_or_else(|| format!("原出口「{}」已不存在，未改用其他同名节点", target.name))?;
+        let mut item = self.find_outlet(target)?.cloned()
+            .ok_or_else(|| format!("原出口「{}」已不存在，请重新绑定", target.name))?;
         // Dynamic providers and name filters cannot be renamed without changing
         // their selection semantics. Leave that choice explicit in the dialog.
         if ["use", "include-all", "include-all-proxies", "include-all-providers", "filter", "exclude-filter"]
@@ -105,16 +110,28 @@ impl Importer {
     }
 }
 pub fn materialize(raw: &str, config: &Overrides, active: &str) -> Result<(String, Overrides), String> {
+    materialize_with_missing(raw, config, active, false)
+}
+
+pub(super) fn materialize_runtime(raw: &str, config: &Overrides, active: &str) -> Result<(String, Overrides), String> {
+    materialize_with_missing(raw, config, active, true)
+}
+
+fn materialize_with_missing(raw: &str, config: &Overrides, active: &str, allow_missing: bool) -> Result<(String, Overrides), String> {
     let targets = bindings(config, active);
     if targets.is_empty() { return Ok((raw.into(), config.clone())); }
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "订阅格式无效")?;
     let names = composer::targets(raw, active)?.into_iter().map(|t| t.name).collect();
     let mut importer = Importer { sources: BTreeMap::new(), nodes: vec![], groups: vec![], imported: vec![], visiting: vec![], names };
+    let mut rejected = HashSet::new();
     for target in &targets {
-        if config.retain_foreign_targets { importer.import(target)?; }
+        if config.retain_foreign_targets && (!allow_missing || importer.find_outlet(target)?.is_some()) {
+            importer.import(target)?;
+        }
         else {
             let name = alias(target);
             if !importer.names.insert(name.clone()) { return Err("订阅与保留出口的内部名称冲突".into()); }
+            rejected.insert(name.clone());
             importer.groups.push(serde_yaml::to_value(serde_json::json!({"name":name,"type":"select","proxies":["REJECT"],"hidden":true})).unwrap());
         }
     }
@@ -137,7 +154,8 @@ pub fn materialize(raw: &str, config: &Overrides, active: &str) -> Result<(Strin
     }
     let map = |target: &mut Target| {
         if targets.contains(target) {
-            *target = Target { profile_id: active.into(), kind: if config.retain_foreign_targets { target.kind.clone() } else { "group".into() }, name: alias(target) };
+            let name = alias(target);
+            *target = Target { profile_id: active.into(), kind: if rejected.contains(&name) { "group".into() } else { target.kind.clone() }, name };
         }
     };
     let mut mapped = config.clone();

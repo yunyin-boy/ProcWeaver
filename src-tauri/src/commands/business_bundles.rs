@@ -16,11 +16,11 @@ fn default_schema_version() -> u32 {
     1
 }
 
-fn bundle_store_path() -> PathBuf {
+pub(super) fn bundle_store_path() -> PathBuf {
     crate::storage::data_dir().join("config/business-bundles.json")
 }
 
-fn read_store_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
+pub(super) fn read_store_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -28,11 +28,11 @@ fn read_store_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-fn parse_store(bytes: &[u8]) -> Result<BusinessBundleStore, String> {
+pub(super) fn parse_store(bytes: &[u8]) -> Result<BusinessBundleStore, String> {
     serde_json::from_slice(bytes).map_err(|error| format!("业务包配置损坏: {error}"))
 }
 
-fn now_millis() -> u64 {
+pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -48,7 +48,8 @@ fn write_store(path: &Path, store: &mut BusinessBundleStore) -> Result<(), Strin
 /// 读取保存在后端的业务规则包实例定义
 /// 若文件尚不存在（新环境或老版本升级），返回 None 供前端触发平滑无感迁移
 #[tauri::command]
-pub fn get_business_bundles() -> Result<Option<Vec<serde_json::Value>>, String> {
+pub async fn get_business_bundles() -> Result<Option<Vec<serde_json::Value>>, String> {
+    let _lock = super::process::LIFECYCLE.lock().await;
     read_store_bytes(&bundle_store_path())?
         .map(|bytes| {
             let mut store = parse_store(&bytes)?;
@@ -206,7 +207,7 @@ mod tests {
         crate::storage::initialize_test(temp_dir.clone(), temp_dir.clone());
 
         // 1. 初始状态文件不存在，返回 None
-        assert_eq!(get_business_bundles().unwrap(), None);
+        assert_eq!(get_business_bundles().await.unwrap(), None);
 
         // 2. 模拟保存高阶定义实例
         let instance = serde_json::json!({
@@ -233,7 +234,7 @@ mod tests {
         save_business_bundles(instances).await.unwrap();
 
         // 3. 再次读取，验证完整反序列化并且保全扩展未知字段
-        let loaded = get_business_bundles().unwrap().expect("应成功读取");
+        let loaded = get_business_bundles().await.unwrap().expect("应成功读取");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0]["instanceId"], "inst-test");
         assert_eq!(loaded[0]["definition"]["packageName"], "测试套件");

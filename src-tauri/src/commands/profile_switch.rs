@@ -74,6 +74,10 @@ pub async fn select(id: String, decision: Option<BindingDecision>) -> Result<boo
     let old_runtime = if super::process::ACTIVE.load(Ordering::SeqCst) {
         Some(fs::read_to_string(crate::storage::data_dir().join("core_data/config.yaml")).map_err(|_| "读取运行恢复数据失败，未切换")?)
     } else { None };
+    if config.retain_foreign_targets {
+        let raw = fs::read_to_string(&path).map_err(|_| "读取候选订阅失败")?;
+        foreign_targets::materialize(&raw, &config, &id)?;
+    }
     profile::apply_profile_with_overrides(&path.to_string_lossy(), &config).await?;
     for item in &mut list { item.is_selected = item.id == id; }
     let commit = (|| {

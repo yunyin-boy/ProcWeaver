@@ -24,6 +24,10 @@ impl Cache {
 }
 static CACHE: Mutex<Cache> = Mutex::new(Cache { values: Vec::new() });
 
+pub(crate) fn invalidate(profile: &str) {
+    CACHE.lock().unwrap_or_else(|error| error.into_inner()).values.retain(|(key, _, _)| key.profile != profile);
+}
+
 pub(super) fn targets(profile: &str, source: &Path) -> Result<Vec<Target>, String> {
     let data = crate::storage::data_dir();
     let key = Key { profile: profile.into(), files: [source.to_owned(), data.join("config/preferences.json"), data.join("config/local-rules.json")]

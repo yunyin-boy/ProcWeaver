@@ -24,7 +24,8 @@ pub(crate) fn reset_system_proxy_observation() {
     *SYSTEM_PROXY_ROUTED.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 pub fn set_applied(revision: u64, generation: u64) { *APPLIED.lock().unwrap_or_else(|p| p.into_inner()) = Some((revision, generation)); }
-fn path() -> std::path::PathBuf { crate::storage::data_dir().join("config/routing-overrides.json") }
+pub(crate) fn path() -> std::path::PathBuf { crate::storage::data_dir().join("config/routing-overrides.json") }
+pub(crate) use target_cache::invalidate as invalidate_profile_targets;
 fn read_saved() -> Result<Overrides, String> {
     match std::fs::read(path()) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "进程 / DNS 规则损坏，请恢复备份，未覆盖原文件".into()),
@@ -111,7 +112,7 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     let base = crate::local_nodes::compose(&base, nodes)?;
     let base = local_rules::compose(&base, &local_rules::get_local_rule_plan()?)?;
     let locals = crate::local_nodes::map_config(config, profile_id);
-    let (base, foreign_mapped) = foreign_targets::materialize(&base, &locals, profile_id)?;
+    let (base, foreign_mapped) = foreign_targets::materialize_runtime(&base, &locals, profile_id)?;
     let (base, mut mapped) = bundles::materialize(&base, &foreign_mapped, profile_id)?;
     // 仅解析本次运行计划，持久化定义仍保留 system，重启和后续重应用会读取真实开关。
     for bundle in &mut mapped.bundles {

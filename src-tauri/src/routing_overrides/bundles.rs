@@ -38,7 +38,7 @@ pub fn owner<'a>(id: &str, bundles: &'a [BundleRoute]) -> Option<&'a BundleRoute
     bundles.iter().filter(|b| id.starts_with(&format!("bundle-{}-", b.id))).max_by_key(|b| b.id.len())
 }
 
-pub(super) fn dns_owner<'a>(id: &str, bundles: &'a [BundleRoute]) -> Option<&'a BundleRoute> {
+pub(crate) fn dns_owner<'a>(id: &str, bundles: &'a [BundleRoute]) -> Option<&'a BundleRoute> {
     bundles.iter().filter(|b| id.starts_with(&format!("bundle-dns-{}-", b.id))).max_by_key(|b| b.id.len())
 }
 
