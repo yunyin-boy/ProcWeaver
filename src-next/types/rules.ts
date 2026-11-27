@@ -3,6 +3,8 @@
 // 规范溯源: typography-dark-mono-optics / tauri-desktop-layout-typography
 // ==========================================================================
 
+import type { RoutingTarget } from "../../src/types/routingOverrides";
+
 export type RuleType =
   | "DOMAIN"
   | "DOMAIN-SUFFIX"
@@ -51,3 +53,39 @@ export interface RouteSimulateResult {
 }
 
 export type RulesSubTab = "active" | "providers" | "simulator";
+
+export interface CustomRuleCondition {
+  kind: string;
+  value: string;
+  options: string[];
+}
+
+export type CustomRuleAction =
+  | { kind: "direct" }
+  | { kind: "reject" }
+  | { kind: "outlet"; target: RoutingTarget };
+
+export interface CustomRule {
+  id: string;
+  profileId: string | null;
+  enabled: boolean;
+  condition: CustomRuleCondition;
+  action: CustomRuleAction;
+}
+
+export interface SourceRule {
+  order: number;
+  expression: string;
+  copy: { condition: CustomRuleCondition; action: CustomRuleAction | null } | null;
+}
+
+export interface RuleWorkbenchState {
+  revision: number;
+  profileId: string;
+  profileName: string;
+  sourceLabel: string;
+  running: boolean;
+  outlets: { label: string; target: RoutingTarget }[];
+  sourceRules: SourceRule[];
+  rules: (CustomRule & { availability: "ready" | "missing_outlet" | "missing_rule_set" })[];
+}

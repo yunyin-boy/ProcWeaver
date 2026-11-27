@@ -168,6 +168,7 @@ fn start_runtime(app: &AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn(external_proxy::restore());
     tauri::async_runtime::spawn(commands::geo::run_scheduler());
     tauri::async_runtime::spawn(commands::profile::run_profile_scheduler(app.clone()));
+    tauri::async_runtime::spawn(routing_overrides::policy_groups::admission::run(app.clone()));
     let monitor_app = app.clone();
     tauri::async_runtime::spawn(routing_overrides::tracker::run(move |change| {
         let _ = monitor_app.emit("procweaver-processes-changed", change);

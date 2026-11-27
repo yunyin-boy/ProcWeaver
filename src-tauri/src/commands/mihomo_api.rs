@@ -301,7 +301,7 @@ pub struct SwitchPublicNodeResult {
 static PUBLIC_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 精准关闭受影响公共组的连接，严格保护任何业务包连接 (PW-*)
-async fn close_public_connections_for_groups(
+pub(crate) async fn close_public_connections_for_groups(
     client: &reqwest::Client,
     base_url: &str,
     target_groups: &[String],
@@ -603,37 +603,50 @@ pub async fn test_mihomo_delay(
     url: Option<String>,
     timeout: Option<u64>,
 ) -> Result<Option<u32>, String> {
-    let client = controller_client()
-        .timeout(std::time::Duration::from_secs(4))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // 默认采用 HTTPS 真实链路握手端点 (Cloudflare / Google)
     let test_url = url.unwrap_or_else(|| "https://cp.cloudflare.com/generate_204".into());
     let timeout_ms = timeout.unwrap_or(2000);
-
-    let target = format!(
-        "{}/proxies/{}/delay?url={}&timeout={}",
-        base_url()?,
-        url_encode(&proxy),
-        url_encode(&test_url),
-        timeout_ms
-    );
-
-    let res = client
-        .get(target)
-        .send()
-        .await
-        .map_err(|e| format!("测速请求失败: {}", e))?;
-
-    if res.status().is_success() {
-        let json: Value = res.json().await.map_err(|e| e.to_string())?;
-        if let Some(delay) = json.get("delay").and_then(|d| d.as_u64()) {
-            return Ok(Some(delay as u32));
-        }
+    let client = controller_client()
+        .timeout(std::time::Duration::from_millis(timeout_ms.saturating_add(1500).min(34_000)))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match request_delay(&client, &base_url()?, &proxy, &test_url, timeout_ms, None).await? {
+        DelayResult::Passed(delay) => Ok(Some(delay)),
+        DelayResult::Timeout | DelayResult::Failed => Ok(None),
     }
+}
 
-    Ok(None)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DelayResult {
+    Passed(u32),
+    Timeout,
+    Failed,
+}
+
+pub(crate) async fn request_delay(
+    client: &reqwest::Client,
+    base: &str,
+    proxy: &str,
+    url: &str,
+    timeout_ms: u64,
+    expected: Option<&str>,
+) -> Result<DelayResult, String> {
+    let target = format!("{base}/proxies/{}/delay", url_encode(proxy));
+    let mut request = client.get(target).query(&[("url", url), ("timeout", &timeout_ms.to_string())]);
+    if let Some(statuses) = expected {
+        request = request.query(&[("expected", statuses)]);
+    }
+    let res = request.send().await.map_err(|_| "无法从核心读取测速结果".to_string())?;
+
+    match res.status() {
+        reqwest::StatusCode::GATEWAY_TIMEOUT => Ok(DelayResult::Timeout),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE => Ok(DelayResult::Failed),
+        status if status.is_success() => {
+            let json: Value = res.json().await.map_err(|_| "核心测速数据无效".to_string())?;
+            Ok(json["delay"].as_u64().and_then(|delay| u32::try_from(delay).ok())
+                .filter(|delay| *delay > 0).map_or(DelayResult::Failed, DelayResult::Passed))
+        }
+        status => Err(format!("核心拒绝测速请求（HTTP {status}）")),
+    }
 }
 
 #[tauri::command]

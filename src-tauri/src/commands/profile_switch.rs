@@ -97,6 +97,7 @@ pub async fn select(id: String, decision: Option<BindingDecision>) -> Result<boo
         return Err(if failures.is_empty() { format!("切换保存失败，已恢复原运行配置：{error}") }
             else { format!("切换保存失败：{error}；恢复异常：{}", failures.join("；")) });
     }
+    routing::policy_groups::admission::wake();
     Ok(true)
 }
 

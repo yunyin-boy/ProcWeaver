@@ -1,13 +1,20 @@
 import React from "react";
 import { ChevronDown, ShieldCheck, Zap } from "lucide-react";
 import { ProxyGroupItem } from "../../types/proxy";
+import { strategyLabel } from "./PolicyMemberCard";
 
 interface ProxyGroupHeaderProps {
   group: ProxyGroupItem;
+  displayName: string;
   nodeCount: number;
   isCollapsed: boolean;
   isTestingGroup: boolean;
   isTestingGroupHealth?: boolean;
+  currentLabel?: string;
+  custom?: boolean;
+  automaticCount?: number;
+  onEdit?: () => void;
+  onDelete?: () => void;
   onToggleCollapse: () => void;
   onTestGroup: (e: React.MouseEvent) => void;
   onTestGroupHealth?: (e: React.MouseEvent) => void;
@@ -15,21 +22,20 @@ interface ProxyGroupHeaderProps {
 
 export const ProxyGroupHeader: React.FC<ProxyGroupHeaderProps> = ({
   group,
+  displayName,
   nodeCount,
   isCollapsed,
   isTestingGroup,
   isTestingGroupHealth = false,
+  currentLabel,
+  custom,
+  automaticCount,
+  onEdit,
+  onDelete,
   onToggleCollapse,
   onTestGroup,
   onTestGroupHealth,
 }) => {
-  const typeLabels: Record<string, string> = {
-    urltest: "自动优选",
-    fallback: "故障转移",
-    loadbalance: "负载均衡",
-  };
-  const typeLabel = typeLabels[group.type.toLowerCase()] ?? "手动选择";
-
   return (
     <header className="flex flex-wrap items-center justify-between gap-2">
       <button
@@ -39,16 +45,20 @@ export const ProxyGroupHeader: React.FC<ProxyGroupHeaderProps> = ({
         aria-expanded={!isCollapsed}
       >
         <ChevronDown size={15} className={isCollapsed ? "-rotate-90" : ""} aria-hidden="true" />
-        <span className="workbench-panel-title break-all">{group.name}</span>
-        <span className="workbench-tag">{typeLabel}</span>
+        <span className="workbench-panel-title break-all">{displayName}</span>
+        {custom && <span className="workbench-tag workbench-tag-accent">自建</span>}
+        {automaticCount !== undefined && <span className="workbench-tag">自动加入 {automaticCount} 个</span>}
+        <span className="workbench-tag">{strategyLabel(group.type)}</span>
         <span className="tabular-nums text-xs text-[var(--text-muted)]">{nodeCount}</span>
-        {isCollapsed && group.now && (
-          <span className="workbench-tag workbench-tag-accent min-w-0 max-w-[200px]">
-            <span className="truncate">当前 {group.now}</span>
+        {currentLabel && (
+          <span className="workbench-tag min-w-0 max-w-[360px]" title={currentLabel}>
+            <span className="truncate">{currentLabel}</span>
           </span>
         )}
       </button>
       <div className="flex flex-wrap items-center gap-1.5">
+        {onEdit && <button type="button" className="workbench-action workbench-action-ghost" onClick={onEdit}>编辑组</button>}
+        {onDelete && <button type="button" className="workbench-action workbench-action-ghost" onClick={onDelete}>删除组</button>}
         {onTestGroupHealth && (
           <button type="button" onClick={onTestGroupHealth} disabled={isTestingGroupHealth} className="workbench-action">
             <ShieldCheck size={14} aria-hidden="true" /> {isTestingGroupHealth ? "体检中…" : "组测健康"}

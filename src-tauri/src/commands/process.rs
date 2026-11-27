@@ -405,6 +405,7 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
         }
         let raw = std::fs::read_to_string(&core_config).map_err(|_| "读取核心启动配置失败")?;
         super::dns_runtime::confirm(&raw, child.id()).await?;
+        crate::routing_overrides::policy_groups::runtime::restore(&raw).await?;
         crate::routing_overrides::bundles::select(&raw).await?;
         crate::capture::confirm_runtime_for_core(&raw, child.id()).await?;
         if !crate::routing_overrides::public_mode::enabled() && preferences.run_mode != "rule" {
@@ -577,7 +578,7 @@ pub async fn restart_core_transaction(app: &tauri::AppHandle) -> Result<CoreStat
         status.system_proxy_enabled = status.system_proxy.enabled();
         crate::app_lifecycle::notify_sysproxy_changed(app, status.system_proxy_enabled);
     }
-    if let Some(node) = last_active_node {
+    if let Some(node) = last_active_node.filter(|_| !crate::routing_overrides::policy_groups::managed().unwrap_or(false)) {
         for group in ["节点选择", "🚀 节点选择", "PROXY", "GLOBAL"] {
             let _ = crate::commands::mihomo_api::switch_mihomo_proxy_locked(group.into(), node.clone()).await;
         }

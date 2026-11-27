@@ -597,7 +597,7 @@ rules:
   - "GEOIP,CN,🎯 全球直连,no-resolve"
   - "MATCH,🚀 节点选择"
 "#;
-    let output = composer::ensure_bt_pt_and_proxy_group(raw).unwrap();
+    let (output, _) = composer::ensure_bt_pt_and_proxy_group(raw).unwrap();
     let val: Value = serde_yaml::from_str(&output).unwrap();
     
     // 验证 PROXY 主组排在第 0 位且为 select
@@ -641,7 +641,7 @@ dns:
 rules:
   - "MATCH,DIRECT"
 "#;
-    let output = composer::ensure_bt_pt_and_proxy_group(raw).unwrap();
+    let (output, _) = composer::ensure_bt_pt_and_proxy_group(raw).unwrap();
     let val: Value = serde_yaml::from_str(&output).unwrap();
 
     // 验证 direct-nameserver 与 direct-nameserver-follow-policy 正确自动注入

@@ -4,27 +4,24 @@
 // 特性: 智能剔除广告信息节点、解析地域、倍率、协议与 IPpure 评估风控分
 // ==========================================================================
 
+import recognition from "../../src/data/nodeRecognition.json";
 import { ProxyItem, ParsedNodeMeta } from "../types/proxy";
 
-interface RegionRule {
-  code: string;
-  name: string;
-  regex: RegExp;
-}
+const REGION_RULES = recognition.regions.map(rule => ({
+  ...rule, regex: new RegExp(rule.pattern, "i"),
+}));
+const REGION_NAMES = new Map(REGION_RULES.map(({ code, name }) => [code, name]));
+const localizedRegions = typeof Intl.DisplayNames === "function" && Intl.DisplayNames.supportedLocalesOf("zh-CN").length > 0
+  ? new Intl.DisplayNames("zh-CN", { type: "region", fallback: "none" })
+  : undefined;
+const MULTIPLIERS = recognition.multipliers.map(pattern => new RegExp(pattern, "i"));
 
-const REGION_RULES: RegionRule[] = [
-  { code: "HK", name: "中国香港", regex: /hk|hong\s*kong|香港|深港|沪港|港/i },
-  { code: "TW", name: "中国台湾", regex: /tw|taiwan|taipei|台湾|台北|台/i },
-  { code: "JP", name: "日本", regex: /jp|japan|tokyo|osaka|日本|东京|大阪/i },
-  { code: "SG", name: "新加坡", regex: /sg|singapore|狮城|新加坡/i },
-  { code: "US", name: "美国", regex: /us|usa|united\s*states|america|洛杉矶|硅谷|西雅图|波特兰|达拉斯|纽约|美/i },
-  { code: "KR", name: "韩国", regex: /kr|korea|seoul|韩国|首尔/i },
-  { code: "GB", name: "英国", regex: /uk|gb|united\s*kingdom|london|英国|伦敦/i },
-  { code: "DE", name: "德国", regex: /de|germany|frankfurt|德国|法兰克福/i },
-  { code: "CA", name: "加拿大", regex: /ca|canada|toronto|vancouver|加拿大|温哥华|多伦多/i },
-  { code: "AU", name: "澳大利亚", regex: /au|australia|sydney|澳大利亚|悉尼/i },
-  { code: "FR", name: "法国", regex: /fr|france|paris|法国|巴黎/i },
-];
+export function getRegionDisplayName(code: string): string {
+  const normalized = code.trim().toUpperCase();
+  return REGION_NAMES.get(normalized)
+    ?? (/^[A-Z]{2}$/.test(normalized) ? localizedRegions?.of(normalized) : undefined)
+    ?? "地区未知";
+}
 
 /**
  * 严格判定是否为机场广告、公告、通知、账单等信息节点 (将被直接过滤不显示)
@@ -88,6 +85,11 @@ export function isAdOrInfoNode(nodeName: string): boolean {
  * 从节点原始名称中智能提取地域信息
  */
 export function parseRegion(nodeName: string): { code: string; name: string } {
+  const flag = nodeName.match(/[🇦-🇿]{2}/u)?.[0];
+  if (flag) {
+    const code = Array.from(flag, letter => String.fromCharCode(letter.codePointAt(0)! - 0x1f1e6 + 65)).join("");
+    if (code !== "EU" && code !== "UN") return { code, name: getRegionDisplayName(code) };
+  }
   for (const rule of REGION_RULES) {
     if (rule.regex.test(nodeName)) {
       return { code: rule.code, name: rule.name };
@@ -102,15 +104,10 @@ export function parseRegion(nodeName: string): { code: string; name: string } {
  * 从节点名中提取流量倍率 (如 0.5x, 1.0x, 2.0x, 3x)
  */
 export function parseMultiplier(nodeName: string): number {
-  const match1 = nodeName.match(/(\d+(?:\.\d+)?)\s*[xX]/);
-  if (match1) return parseFloat(match1[1]);
-
-  const match2 = nodeName.match(/[xX]\s*(\d+(?:\.\d+)?)/);
-  if (match2) return parseFloat(match2[1]);
-
-  const match3 = nodeName.match(/(?:倍率|倍|Ratio:?)\s*(\d+(?:\.\d+)?)/i);
-  if (match3) return parseFloat(match3[1]);
-
+  for (const pattern of MULTIPLIERS) {
+    const match = nodeName.match(pattern);
+    if (match) return parseFloat(match[1]);
+  }
   return 1.0;
 }
 

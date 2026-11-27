@@ -12,6 +12,7 @@ interface ModalProps {
   subtitle?: string;
   wide?: boolean;
   children: React.ReactNode;
+  footer?: React.ReactNode;
 }
 
 export const Modal: React.FC<ModalProps> = ({
@@ -21,6 +22,7 @@ export const Modal: React.FC<ModalProps> = ({
   subtitle,
   wide = false,
   children,
+  footer,
 }) => {
   const titleId = useId();
   useEffect(() => {
@@ -44,14 +46,17 @@ export const Modal: React.FC<ModalProps> = ({
       />
 
       <div
-        className={`workbench-dialog relative w-full max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 sm:p-6 ${wide ? "max-w-3xl" : "max-w-lg"}`}
+        className={`workbench-dialog relative w-full max-h-[calc(100dvh-2rem)] ${wide ? "max-w-3xl" : "max-w-lg"}
+          ${footer ? "flex flex-col overflow-hidden" : "overflow-y-auto p-4 sm:p-6"}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
       >
-        <div className="flex items-start justify-between gap-3">
+        <div className={`flex items-start justify-between gap-3 ${footer ? "shrink-0 px-4 pb-3 pt-4 sm:px-6 sm:pt-5" : ""}`}>
           <div className="min-w-0">
-            <h3 id={titleId} className="workbench-panel-title [overflow-wrap:anywhere] text-[var(--text-primary)]">
+            <h3 id={titleId} className={footer
+              ? "text-lg font-semibold leading-tight [overflow-wrap:anywhere] text-[var(--text-primary)]"
+              : "workbench-panel-title [overflow-wrap:anywhere] text-[var(--text-primary)]"}>
               {title}
             </h3>
             {subtitle && (
@@ -72,7 +77,8 @@ export const Modal: React.FC<ModalProps> = ({
           </button>
         </div>
 
-        <div className="mt-4">{children}</div>
+        <div className={footer ? "min-h-0 overflow-y-auto overscroll-contain px-4 pb-5 pt-1 sm:px-6" : "mt-4"}>{children}</div>
+        {footer && <div className="workbench-dialog-footer shrink-0 px-4 py-3 sm:px-6">{footer}</div>}
       </div>
     </div>
   );

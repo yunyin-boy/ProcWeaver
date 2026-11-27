@@ -1,14 +1,14 @@
 // ==========================================================================
 // ProcWeaver src-next 节点大盘服务网关
 // 规范溯源: rust-pro (Mihomo IPC) / IPpure 健康体检 / 订阅与自建管理
-// 对接指令: get_mihomo_proxies, switch_mihomo_proxy, switch_public_node,
+// 对接指令: get_mihomo_proxies, select_policy_group_member,
 //           test_mihomo_delay, list_profiles, select_profile,
 //           get_local_nodes, preview_local_nodes, save_local_nodes,
 //           begin_health_probe, probe_node_health, end_health_probe,
 //           get_health_cache, save_health_cache
 // ==========================================================================
 
-import { isTauriEnvironment } from "./client";
+import { invokeCommand, isTauriEnvironment } from "./client";
 import {
   ProxyGroupItem,
   ProxyItem,
@@ -223,7 +223,8 @@ export function getSpeedtestUrl(): string {
   return localStorage.getItem(SPEEDTEST_STORAGE_KEY) || SPEEDTEST_ENDPOINTS[0].url;
 }
 
-export function setSpeedtestUrl(url: string): void {
+export async function setSpeedtestUrl(url: string): Promise<void> {
+  if (isTauriEnvironment()) await invokeCommand("set_policy_group_test_url", { testUrl: url });
   localStorage.setItem(SPEEDTEST_STORAGE_KEY, url);
 }
 
@@ -545,56 +546,27 @@ export async function fetchProxiesData(): Promise<ProxiesSnapshot> {
   };
 }
 
-/**
- * 切换指定策略组的当前活动节点，并智能联动受管公共出站组（GLOBAL / PROXY / 节点选择）
- * 规范溯源: rust-pro (switch_public_node / switch_mihomo_proxy) / 旧版 LinesManagementView
- */
-export async function switchGroupProxy(groupName: string, proxyName: string): Promise<boolean> {
-  if (isTauriEnvironment()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      
-      // 1. 切换目标单组
-      const switched = await invoke<boolean>("switch_mihomo_proxy", { group: groupName, proxy: proxyName });
-      if (!switched) return false;
-
-      // 若当前操作的是订阅原生主组（如“节点选择”），尝试同步保持底层合成 PROXY 组选项一致
-      if (groupName !== "PROXY") {
-        invoke("switch_mihomo_proxy", { group: "PROXY", proxy: proxyName }).catch(() => {});
-      }
-
-      // 2. 深度联动：若选中的是具体物理节点（非内部策略组），联动切换所有受管公共组 (PROXY / GLOBAL / 节点选择) 并热重置旧长连接
-      const isSpecialGroupOrAction =
-        proxyName === "DIRECT" ||
-        proxyName === "REJECT" ||
-        proxyName === "PASS" ||
-        proxyName.startsWith("PW-") ||
-        proxyName.includes("自动选择");
-
-      if (!isSpecialGroupOrAction) {
-        invoke("switch_public_node", { node: proxyName }).catch((err) => {
-          console.warn("[proxyService] switch_public_node linkage notice:", err);
-        });
-      }
-
-      window.dispatchEvent(
-        new CustomEvent("netbox-active-node-changed", { detail: { nodeName: proxyName } })
-      );
-      window.dispatchEvent(new Event("netbox-route-changed"));
-      return true;
-    } catch (e) {
-      console.warn("[proxyService] switchGroupProxy failed in Tauri", e);
-      return false;
-    }
-  }
-
-  const targetGroup = mockGroupsState.find((g) => g.name === groupName);
-  if (targetGroup) {
-    targetGroup.now = proxyName;
-  }
-  return true;
+/** Select a member of the given selector, then notify views of the confirmed change. */
+export async function selectGroupMember(group: string, member: string, profileId?: string): Promise<void> {
+  await invokeCommand<string>("select_policy_group_member", { group, member, profileId: profileId ?? null }, () => {
+    const target = mockGroupsState.find(item => item.name === group);
+    if (!target?.all.includes(member)) throw new Error("该成员已不在当前策略组");
+    target.now = member;
+    return member;
+  });
+  window.dispatchEvent(new CustomEvent("netbox-active-node-changed", { detail: { nodeName: member } }));
+  window.dispatchEvent(new Event("netbox-route-changed"));
 }
 
+export async function switchGroupProxy(group: string, member: string): Promise<boolean> {
+  try {
+    await selectGroupMember(group, member);
+    return true;
+  } catch (error) {
+    console.warn("[proxyService] switchGroupProxy failed", error);
+    return false;
+  }
+}
 /**
  * 测试单个节点延迟 (基于选定测速端点)
  * Rust 端指令: test_mihomo_delay (返回 Option<u32>)

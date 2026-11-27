@@ -43,6 +43,8 @@ hyper-util = { version = "=0.1.20", features = ["tokio"] }
 http-body-util = "=0.1.5"
 base64 = "=0.22.1"
 percent-encoding = "=2.3.2"
+regex = "=1.13.1"
+sha2 = "=0.10.9"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }

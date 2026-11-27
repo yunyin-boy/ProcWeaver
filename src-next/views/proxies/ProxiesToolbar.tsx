@@ -22,6 +22,8 @@ interface ProxiesToolbarProps {
   onTestAllHealth: () => void;
   // 节点统计与高级模态窗
   totalNodes: number;
+  onNewGroup?: () => void;
+  onSpeedtestSettings: () => void;
   onOpenLocalNodeModal: () => void;
   ignoredCount: number;
   onOpenIgnoredModal: () => void;
@@ -42,6 +44,8 @@ export const ProxiesToolbar: React.FC<ProxiesToolbarProps> = ({
   healthProgress,
   onTestAllHealth,
   totalNodes,
+  onNewGroup,
+  onSpeedtestSettings,
   onOpenLocalNodeModal,
   ignoredCount,
   onOpenIgnoredModal,
@@ -78,9 +82,8 @@ export const ProxiesToolbar: React.FC<ProxiesToolbarProps> = ({
             type="text"
             value={searchQuery}
             onChange={(event) => onSearchChange(event.target.value)}
-            disabled={totalNodes === 0}
-            aria-label="搜索节点、地区或协议"
-            placeholder={totalNodes ? "搜索节点、地区或协议" : "尚未添加订阅源与代理节点"}
+            aria-label="搜索节点、策略组、地区或协议"
+            placeholder="搜索节点、策略组、地区或协议"
             className="min-h-9 flex-1 bg-transparent text-[13px] disabled:opacity-60"
           />
           {searchQuery ? (
@@ -90,6 +93,11 @@ export const ProxiesToolbar: React.FC<ProxiesToolbarProps> = ({
           ) : <KbdBadge keys={["/"]} className="shrink-0 !bg-[var(--workbench-surface)]" />}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          {onNewGroup && (
+            <button type="button" onClick={onNewGroup} className="workbench-action workbench-action-primary">
+              <Plus size={14} aria-hidden="true" /> 新建策略组
+            </button>
+          )}
           <button type="button" onClick={onOpenLocalNodeModal} className="workbench-action">
             <Plus size={14} aria-hidden="true" /> 自建节点
           </button>
@@ -127,6 +135,9 @@ export const ProxiesToolbar: React.FC<ProxiesToolbarProps> = ({
           <span className="whitespace-nowrap px-1 text-xs tabular-nums text-[var(--text-muted)]">{totalNodes} 个节点</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          <button type="button" className="workbench-action workbench-action-ghost" onClick={onSpeedtestSettings}>
+            测速地址
+          </button>
           <button type="button" className="workbench-action workbench-action-positive" disabled={isTestingHealth || totalNodes === 0} aria-busy={isTestingHealth} onClick={onTestAllHealth}>
             <ShieldCheck size={14} aria-hidden="true" /> {healthLabel}
           </button>

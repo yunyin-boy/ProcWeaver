@@ -543,6 +543,7 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
             <div className={currentTab === "proxies" ? "h-full w-full" : "hidden"}>
               <ProxiesView
                 routingMode={status.mode}
+                coreRunning={status.running}
                 onShowNotice={showNotice}
                 onNavigateTab={(tab) => setCurrentTab(tab as NavTab)}
               />

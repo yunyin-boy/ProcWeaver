@@ -1,0 +1,29 @@
+{
+  "regions": [
+    {"code":"HK","name":"中国香港","pattern":"(?:^|[^a-z])hk(?:[^a-z]|$)|hong\\s*kong|香港|深港|沪港"},
+    {"code":"TW","name":"中国台湾","pattern":"(?:^|[^a-z])tw(?:[^a-z]|$)|taiwan|taipei|台湾|台北"},
+    {"code":"MO","name":"中国澳门","pattern":"(?:^|[^a-z])mo(?:[^a-z]|$)|macau|macao|澳门"},
+    {"code":"JP","name":"日本","pattern":"(?:^|[^a-z])jp(?:[^a-z]|$)|japan|tokyo|osaka|日本|东京|大阪"},
+    {"code":"SG","name":"新加坡","pattern":"(?:^|[^a-z])sg(?:[^a-z]|$)|singapore|狮城|新加坡"},
+    {"code":"US","name":"美国","pattern":"(?:^|[^a-z])(?:us|usa)(?:[^a-z]|$)|united\\s*states|america|美国|洛杉矶|硅谷|西雅图|波特兰|达拉斯|纽约"},
+    {"code":"KR","name":"韩国","pattern":"(?:^|[^a-z])kr(?:[^a-z]|$)|korea|seoul|韩国|首尔"},
+    {"code":"GB","name":"英国","pattern":"(?:^|[^a-z])(?:uk|gb)(?:[^a-z]|$)|united\\s*kingdom|london|英国|伦敦"},
+    {"code":"DE","name":"德国","pattern":"(?:^|[^a-z])de(?:[^a-z]|$)|germany|frankfurt|德国|法兰克福"},
+    {"code":"CA","name":"加拿大","pattern":"(?:^|[^a-z])ca(?:[^a-z]|$)|canada|toronto|vancouver|加拿大|温哥华|多伦多"},
+    {"code":"AU","name":"澳大利亚","pattern":"(?:^|[^a-z])au(?:[^a-z]|$)|australia|sydney|澳大利亚|悉尼"},
+    {"code":"FR","name":"法国","pattern":"(?:^|[^a-z])fr(?:[^a-z]|$)|france|paris|法国|巴黎"},
+    {"code":"NL","name":"荷兰","pattern":"(?:^|[^a-z])nl(?:[^a-z]|$)|netherlands|amsterdam|荷兰|阿姆斯特丹"},
+    {"code":"RU","name":"俄罗斯","pattern":"(?:^|[^a-z])ru(?:[^a-z]|$)|russia|moscow|俄罗斯|莫斯科"},
+    {"code":"MY","name":"马来西亚","pattern":"malaysia|马来西亚|吉隆坡"},
+    {"code":"TH","name":"泰国","pattern":"thailand|bangkok|泰国|曼谷"},
+    {"code":"VN","name":"越南","pattern":"vietnam|hanoi|越南|河内"},
+    {"code":"IN","name":"印度","pattern":"india|mumbai|印度|孟买"},
+    {"code":"ID","name":"印度尼西亚","pattern":"indonesia|jakarta|印度尼西亚|印尼|雅加达"},
+    {"code":"PH","name":"菲律宾","pattern":"philippines|manila|菲律宾|马尼拉"},
+    {"code":"BR","name":"巴西","pattern":"brazil|巴西|圣保罗"},
+    {"code":"TR","name":"土耳其","pattern":"turkey|istanbul|土耳其|伊斯坦布尔"},
+    {"code":"AE","name":"阿联酋","pattern":"emirates|dubai|阿联酋|迪拜"},
+    {"code":"CN","name":"中国大陆","pattern":"(?:^|[^a-z])cn(?:[^a-z]|$)|mainland\\s*china|中国大陆|上海|北京|广州|深圳"}
+  ],
+  "multipliers": ["(\\d+(?:\\.\\d+)?)\\s*[xX]","[xX]\\s*(\\d+(?:\\.\\d+)?)","(?:倍率|倍|Ratio:?)\\s*(\\d+(?:\\.\\d+)?)"]
+}

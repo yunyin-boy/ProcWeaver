@@ -58,15 +58,13 @@ fn normalize(mut config: Exclusions) -> Result<Exclusions, String> {
 
 /// 用户明确排除的目标优先直连；不改写原订阅或自动补充方案。
 pub fn compose(raw: &str, config: &Exclusions) -> Result<String, String> {
+    crate::routing_overrides::composer::prepend_rules(raw, &rules(config)?)
+}
+
+pub(crate) fn rules(config: &Exclusions) -> Result<Vec<Value>, String> {
     let config = normalize(config.clone())?;
-    if !config.enabled || config.entries.is_empty() { return Ok(raw.into()); }
-    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
-    let rules = yaml.as_mapping_mut().ok_or("配置须为对象")?
-        .entry(Value::from("rules")).or_insert(Value::Sequence(vec![]))
-        .as_sequence_mut().ok_or("rules 须为数组")?;
-    let prefix = config.entries.iter().map(|e| entry_rule(e).map(Value::from)).collect::<Result<Vec<_>, _>>()?;
-    rules.splice(0..0, prefix);
-    serde_yaml::to_string(&yaml).map_err(|_| "生成排除规则失败".into())
+    if !config.enabled { return Ok(Vec::new()); }
+    config.entries.iter().map(|entry| entry_rule(entry).map(Value::from)).collect()
 }
 
 #[tauri::command]

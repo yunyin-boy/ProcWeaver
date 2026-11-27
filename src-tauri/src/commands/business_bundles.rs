@@ -32,6 +32,19 @@ pub(super) fn parse_store(bytes: &[u8]) -> Result<BusinessBundleStore, String> {
     serde_json::from_slice(bytes).map_err(|error| format!("业务包配置损坏: {error}"))
 }
 
+pub(crate) fn outlet_references(target: &crate::routing_overrides::model::Target) -> Result<Vec<String>, String> {
+    let Some(bytes) = read_store_bytes(&bundle_store_path())? else { return Ok(Vec::new()) };
+    let desired = serde_json::to_value(target).map_err(|_| "无法读取业务包出口")?;
+    Ok(parse_store(&bytes)?.instances.into_iter().filter_map(|bundle| {
+        let uses = bundle["slotTargets"].as_object().is_some_and(|slots| slots.values().any(|slot| slot == &desired));
+        uses.then(|| {
+            let name = bundle["displayName"].as_str().or_else(|| bundle["definition"]["name"].as_str())
+                .or_else(|| bundle["instanceId"].as_str()).unwrap_or_default();
+            format!("业务包「{name}」")
+        })
+    }).collect())
+}
+
 pub(super) fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

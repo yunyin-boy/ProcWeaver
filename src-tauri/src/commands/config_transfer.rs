@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
 const LIMIT: usize = 6 * 1024 * 1024 - 1024;
 const FILES: &[&str] = &["config/preferences.json", "config/profiles.json", "config/default.yaml", "config/dns-preferences.json",
     "config/routing-overrides.json", "config/business-bundles.json", "config/local-nodes.json", "config/local-rules.json", "config/exclusions.json",
+    crate::routing_overrides::custom_rules::CONFIG_FILE, crate::routing_overrides::policy_groups::CONFIG_FILE,
     "config/geo_config.json", "config/smart_groups.json", "config/business_channels.json"];
 const UI_KEYS: &[&str] = &["netbox_business_bundles_instances_v1"];
 const JOURNAL: &str = "config/restore-pending.procweaver-backup";
@@ -109,6 +110,12 @@ fn validate(snapshot: &Snapshot) -> Result<(), String> {
     if let Some(raw) = snapshot.files.get("config/local-rules.json") {
         let plan: super::local_rules::LocalRulePlan = serde_json::from_str(raw).map_err(|_| "本地规则无效")?;
         if plan.providers.len() > 512 { return Err("本地规则数量超过上限".into()); }
+    }
+    if let Some(raw) = snapshot.files.get(crate::routing_overrides::custom_rules::CONFIG_FILE) {
+        crate::routing_overrides::custom_rules::validate_snapshot(raw.as_bytes())?;
+    }
+    if let Some(raw) = snapshot.files.get(crate::routing_overrides::policy_groups::CONFIG_FILE) {
+        crate::routing_overrides::policy_groups::validate_snapshot(raw.as_bytes())?;
     }
     for (key, value) in &snapshot.browser_state {
         if !UI_KEYS.contains(&key.as_str()) { return Err("备份包含未知界面状态".into()); }

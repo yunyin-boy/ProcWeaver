@@ -26,42 +26,40 @@ export const SpeedtestEndpointModal: React.FC<SpeedtestEndpointModalProps> = ({
 }) => {
   const [currentUrl, setCurrentUrl] = useState("");
   const [customInput, setCustomInput] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (isOpen) {
       const u = getSpeedtestUrl();
       setCurrentUrl(u);
       setCustomInput(u);
+      setError("");
     }
   }, [isOpen]);
 
-  const handleSelectPreset = (url: string, name: string) => {
-    setSpeedtestUrl(url);
-    setCurrentUrl(url);
-    setCustomInput(url);
-    if (onShowNotice) onShowNotice(`测速端点已切换至: ${name}`);
-    onEndpointChanged();
-    onClose();
-  };
-
-  const handleApplyCustom = () => {
-    const u = customInput.trim();
-    if (!u.startsWith("http://") && !u.startsWith("https://")) {
-      return;
+  const save = async (url: string) => {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      if (!/^https?:\/\//i.test(url)) throw new Error("请输入有效的 HTTP 或 HTTPS 地址");
+      await setSpeedtestUrl(url);
+      onShowNotice?.("测速地址已保存");
+      onEndpointChanged();
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
     }
-    setSpeedtestUrl(u);
-    setCurrentUrl(u);
-    if (onShowNotice) onShowNotice(`已应用自定义测速端点: ${u}`);
-    onEndpointChanged();
-    onClose();
   };
 
   return (
     <Modal
       isOpen={isOpen}
-      onClose={onClose}
-      title="测速目标端点配置"
-      subtitle="选择并发测速时请求的目标测试服务器，解决单一目标受限问题"
+      onClose={() => { if (!saving) onClose(); }}
+      title="测速地址"
     >
       <div className="space-y-4 pt-1 text-left">
         {/* 预设列表 */}
@@ -73,10 +71,12 @@ export const SpeedtestEndpointModal: React.FC<SpeedtestEndpointModalProps> = ({
             {SPEEDTEST_ENDPOINTS.map((ep) => {
               const isSelected = currentUrl === ep.url;
               return (
-                <div
+                <button
+                  type="button"
+                  disabled={saving}
                   key={ep.id}
-                  onClick={() => handleSelectPreset(ep.url, ep.name)}
-                  className={`p-3 rounded-xl border transition-all cursor-pointer select-none text-xs ${
+                  onClick={() => { void save(ep.url); }}
+                  className={`w-full p-3 rounded-xl border transition-all cursor-pointer select-none text-left text-xs ${
                     isSelected
                       ? "bg-blue-500/10 border-blue-500/40 text-blue-500 dark:text-blue-300 shadow-sm"
                       : "glass-surface border-[var(--glass-border-subtle)] hover:border-blue-500/30 hover:bg-black/5 dark:hover:bg-white/5"
@@ -89,7 +89,7 @@ export const SpeedtestEndpointModal: React.FC<SpeedtestEndpointModalProps> = ({
                   <div className="text-[10px] text-[var(--text-muted)] font-mono truncate mt-0.5">
                     {ep.url}
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -104,19 +104,22 @@ export const SpeedtestEndpointModal: React.FC<SpeedtestEndpointModalProps> = ({
             <input
               type="text"
               value={customInput}
+              disabled={saving}
               onChange={(e) => setCustomInput(e.target.value)}
               placeholder="https://your-test-domain.com/generate_204"
               className="flex-1 px-3 py-1.5 text-xs rounded-lg bg-black/5 dark:bg-white/5 border border-[var(--glass-border-subtle)] focus:border-blue-500/50 focus:outline-none text-[var(--text-primary)] font-mono"
             />
             <button
               type="button"
-              onClick={handleApplyCustom}
+              onClick={() => { void save(customInput.trim()); }}
+              disabled={saving}
               className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500 hover:bg-blue-600 text-white transition-all shrink-0 active:scale-95"
             >
               保存
             </button>
           </div>
         </div>
+        {error && <p role="alert" className="text-xs text-[var(--workbench-danger)]">{error}</p>}
       </div>
     </Modal>
   );

@@ -272,7 +272,7 @@ pub(super) fn existing_rules_name(bundle: &BundleRoute) -> String {
 }
 
 // Keep the rule expression and its arguments intact while replacing its outbound.
-fn existing_rule_parts(rule: &str) -> Option<(&str, &str, &str, &str)> {
+pub(super) fn existing_rule_parts(rule: &str) -> Option<(&str, &str, &str, &str)> {
     let (kind, rest) = rule.split_once(',')?;
     let start = match kind.trim().to_ascii_uppercase().as_str() {
         "MATCH" => kind.len() + 1,
@@ -446,7 +446,7 @@ pub fn structural(raw: &str) -> Result<Value, String> {
     Ok(yaml)
 }
 
-fn rule_selectors(yaml: &Value) -> Result<RuleSelectors, String> {
+pub(super) fn rule_selectors(yaml: &Value) -> Result<RuleSelectors, String> {
     if yaml[RULE_SELECTORS].is_null() { return Ok(RuleSelectors::new()); }
     serde_yaml::from_value(yaml[RULE_SELECTORS].clone()).map_err(|_| "沙盒分流映射无效".into())
 }

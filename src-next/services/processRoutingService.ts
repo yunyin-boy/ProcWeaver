@@ -1280,7 +1280,7 @@ export function cleanProxyOptions(rawProxies: string[] | Record<string, any>): C
   if (autoMatch && !added.has(autoMatch.toLowerCase())) {
     cleanList.push({
       value: autoMatch,
-      label: "Auto (自动低延迟优选)",
+      label: autoMatch,
       badge: "优选",
       description: "基于延迟自动切换最优节点",
     });

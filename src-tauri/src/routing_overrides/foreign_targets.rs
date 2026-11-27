@@ -47,8 +47,8 @@ pub fn available(targets: &[Target]) -> Vec<Target> {
 fn read_source(id: &str) -> Result<Value, String> {
     let path = source(id)?;
     let raw = std::fs::read_to_string(path).map_err(|_| "无法读取原绑定订阅")?;
-    let raw = crate::commands::settings::prepare_with(&raw, &crate::commands::settings::get_general_settings()?)?;
-    let raw = crate::commands::local_rules::compose(&raw, &crate::commands::local_rules::get_local_rule_plan()?)?;
+    let raw = super::prepare_profile_base(&raw, &crate::commands::settings::get_general_settings()?, &crate::local_nodes::read()?)?;
+    let raw = super::policy_groups::project(&raw, id, &super::policy_groups::read()?)?;
     composer::targets(&raw, id)?;
     serde_yaml::from_str(&raw).map_err(|_| "原绑定订阅格式无效".into())
 }

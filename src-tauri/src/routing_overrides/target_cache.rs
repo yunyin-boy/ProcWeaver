@@ -1,6 +1,6 @@
 //! Cache the expensive subscription projection, never the live routing state.
-use super::{composer, model::Target};
-use crate::commands::{local_rules, settings};
+use super::{composer, model::Target, policy_groups};
+use crate::{commands::settings, local_nodes};
 use std::{path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant, SystemTime}};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,7 +30,8 @@ pub(crate) fn invalidate(profile: &str) {
 
 pub(super) fn targets(profile: &str, source: &Path) -> Result<Vec<Target>, String> {
     let data = crate::storage::data_dir();
-    let key = Key { profile: profile.into(), files: [source.to_owned(), data.join("config/preferences.json"), data.join("config/local-rules.json")]
+    let key = Key { profile: profile.into(), files: [source.to_owned(), data.join("config/preferences.json"),
+        data.join("config/local-rules.json"), data.join(policy_groups::CONFIG_FILE), data.join("config/local-nodes.json")]
         .iter().map(|path| stamp(path)).collect::<Result<_, _>>()? };
     let mut cache = CACHE.lock().map_err(|_| "出口缓存不可用")?;
     if let Some(value) = cache.get(&key, Instant::now()) { return Ok(value); }
@@ -39,8 +40,10 @@ pub(super) fn targets(profile: &str, source: &Path) -> Result<Vec<Target>, Strin
     cache.values.retain(|(saved, time, _)| saved.profile != profile && time.elapsed() < Duration::from_secs(30));
     let value = if source.exists() {
         let raw = std::fs::read_to_string(source).map_err(|_| "读取当前订阅失败")?;
-        let base = settings::prepare_with(&raw, &settings::get_general_settings()?)?;
-        composer::targets(&local_rules::compose(&base, &local_rules::get_local_rule_plan()?)?, profile)?
+        let base = super::prepare_profile_base(&raw, &settings::get_general_settings()?, &local_nodes::read()?)?;
+        let base = policy_groups::project(&base, profile, &policy_groups::read()?)?;
+        composer::targets(&base, profile)?.into_iter()
+            .filter(|target| target.kind != "node" || !target.name.starts_with(local_nodes::PREFIX)).collect()
     } else { vec![] };
     if cache.values.len() >= 8 { cache.values.remove(0); }
     cache.values.push((key, Instant::now(), value.clone()));

@@ -214,15 +214,20 @@ fn domains_overlap(value: &str, r: &DnsRule) -> bool {
     matches_domain(&bare, r) || (suffix && r.domain.ends_with(&format!(".{bare}")))
 }
 
-pub fn safety(raw: &str) -> Result<String, String> {
-    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
+pub(super) fn safety_rules() -> Vec<Value> {
     let mut prefix: Vec<Value> = ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve", "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve", "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve", "IP-CIDR6,::1/128,DIRECT,no-resolve", "IP-CIDR6,fc00::/7,DIRECT,no-resolve", "IP-CIDR6,fe80::/10,DIRECT,no-resolve"].into_iter().map(Value::from).collect();
     for name in ["mihomo.exe", "mihomo-v3.exe", "mihomo-compatible.exe"] { prefix.push(format!("PROCESS-NAME,{name},DIRECT").into()); }
     #[cfg(target_os = "macos")]
     for name in ["mihomo-darwin-arm64", "mihomo-darwin-amd64"] { prefix.push(format!("PROCESS-NAME,{name},DIRECT").into()); }
+    prefix
+}
+
+pub(crate) fn prepend_rules(raw: &str, prefix: &[Value]) -> Result<String, String> {
+    if prefix.is_empty() { return Ok(raw.into()); }
+    let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
     let rules = yaml.as_mapping_mut().ok_or("配置须为对象")?.entry(Value::from("rules")).or_insert(Value::Sequence(vec![])).as_sequence_mut().ok_or("rules 须为数组")?;
-    rules.splice(0..0, prefix);
-    serde_yaml::to_string(&yaml).map_err(|_| "合成安全例外失败".into())
+    rules.splice(0..0, prefix.iter().cloned());
+    serde_yaml::to_string(&yaml).map_err(|_| "合成前置规则失败".into())
 }
 
 pub fn core_bypass(raw: &str) -> Result<String, String> {
@@ -271,7 +276,7 @@ pub fn safety_guard(raw: &str) -> Result<String, String> {
 }
 
 /// 检查节点是否为订阅服务商提供的说明/虚拟假节点（如到期时间、剩余流量提示）
-fn is_info_or_fake_node(name: &str) -> bool {
+pub(super) fn is_info_or_fake_node(name: &str) -> bool {
     let lower = name.to_lowercase();
     let keywords = [
         "到期", "剩余", "流量", "套餐", "官网", "网址", "重置", "通知", "公告",
@@ -280,35 +285,21 @@ fn is_info_or_fake_node(name: &str) -> bool {
     keywords.iter().any(|&k| name.contains(k) || lower.contains(k))
 }
 
-/// 强制注入 BT/PT 下载客户端与 Tracker 直连规则，
-/// 并在存在真实节点时，确保标准主出站代理组 PROXY 存在并置于首位，联动原订阅主策略组；
-/// 同时规整国内直连分流（补齐 GEOSITE,cn 并移除 GEOIP,CN 的 no-resolve），彻底根除系统代理下国内流量误走代理的缺陷。
-pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
+pub(super) fn public_proxy_nodes(yaml: &Value) -> Vec<String> {
+    yaml["proxies"].as_sequence().into_iter().flatten()
+        .filter_map(|proxy| proxy["name"].as_str().map(str::trim))
+        .filter(|name| !name.is_empty() && !matches!(*name, "DIRECT" | "REJECT" | "GLOBAL" | "PROXY")
+            && !name.starts_with(super::foreign_targets::PREFIX) && !is_info_or_fake_node(name))
+        .map(str::to_owned).collect()
+}
+
+/// 生成公共 PROXY 选择组，并补齐国内直连与 BT/PT 规则。
+pub(super) fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<(String, usize), String> {
     let mut yaml: Value = serde_yaml::from_str(raw).map_err(|_| "配置 YAML 无效")?;
+    let valid_nodes = public_proxy_nodes(&yaml);
     let map = yaml.as_mapping_mut().ok_or("配置须为对象")?;
-
-    // 1. 提取所有真实出站节点名称（严格过滤说明/到期假节点）
-    let mut valid_nodes = Vec::new();
-    if let Some(proxies) = map.get(Value::from("proxies")).and_then(|v| v.as_sequence()) {
-        for p in proxies {
-            if let Some(name) = p.get("name").and_then(|n| n.as_str()) {
-                let trimmed = name.trim();
-                if !trimmed.is_empty()
-                    && trimmed != "DIRECT"
-                    && trimmed != "REJECT"
-                    && trimmed != "GLOBAL"
-                    && trimmed != "PROXY"
-                    && !trimmed.starts_with(super::foreign_targets::PREFIX)
-                    && !is_info_or_fake_node(trimmed)
-                {
-                    valid_nodes.push(trimmed.to_string());
-                }
-            }
-        }
-    }
-
     if valid_nodes.is_empty() {
-        return Ok(raw.into());
+        return Ok((raw.into(), 0));
     }
 
     // 提取现有所有策略组名称
@@ -379,6 +370,10 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
                 }
             }
 
+            let mut proxy_group_map = proxy_group_index.and_then(|index| {
+                let group = &groups[index];
+                (group["type"].as_str() == Some("select")).then(|| group.as_mapping().cloned()).flatten()
+            }).unwrap_or_default();
             let mut node_values: Vec<Value> = Vec::new();
             // 2.1 若原订阅原本有主分流组（如 🚀 节点选择），优先作为 PROXY 组首位默认选中项
             if let Some(orig) = &original_match_target {
@@ -388,10 +383,19 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
                     node_values.push(Value::String(orig.clone()));
                 }
             }
+            if let Some(members) = proxy_group_map.get("proxies").and_then(Value::as_sequence) {
+                for member in members {
+                    if member.as_str().is_some_and(|name| name != "PROXY" && !is_info_or_fake_node(name))
+                        && !node_values.contains(member) {
+                        node_values.push(member.clone());
+                    }
+                }
+            }
             // 2.2 将原订阅中核心选择策略组（如包含"选择"/"Select"）加入 PROXY
             for g in groups.iter() {
                 if let Some(gname) = g.get("name").and_then(|n| n.as_str()) {
-                    if (gname.contains("选择") || gname.contains("Select"))
+                    if g.get(super::policy_groups::ORIGIN_KEY).is_none()
+                        && (gname.contains("选择") || gname.contains("Select"))
                         && !node_values.iter().any(|v| v.as_str() == Some(gname))
                         && gname != "PROXY"
                     {
@@ -410,7 +414,6 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
                 node_values.push(Value::String("DIRECT".to_string()));
             }
 
-            let mut proxy_group_map = serde_yaml::Mapping::new();
             proxy_group_map.insert("name".into(), "PROXY".into());
             proxy_group_map.insert("type".into(), "select".into());
             proxy_group_map.insert("proxies".into(), Value::Sequence(node_values));
@@ -521,6 +524,7 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
 
     let rules_entry = map.entry(Value::from("rules"))
         .or_insert(Value::Sequence(Vec::new()));
+    let mut added_prefix = 0;
     if let Some(rules) = rules_entry.as_sequence_mut() {
         let mut to_insert = Vec::new();
         // 先构建现有规则的字符串集合，避免逐项 O(N) 线性搜索，整体降至 O(N+21)。
@@ -532,6 +536,7 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
             }
         }
         if !to_insert.is_empty() {
+            added_prefix = to_insert.len();
             rules.splice(0..0, to_insert);
         }
     }
@@ -575,7 +580,9 @@ pub fn ensure_bt_pt_and_proxy_group(raw: &str) -> Result<String, String> {
         }
     }
 
-    serde_yaml::to_string(&yaml).map_err(|_| "合成BT保护与标准主组失败".into())
+    serde_yaml::to_string(&yaml)
+        .map(|content| (content, added_prefix))
+        .map_err(|_| "合成BT保护与标准主组失败".into())
 }
 
 /// 在 direct_first（白名单直连绝对最高）模式下，

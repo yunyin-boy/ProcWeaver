@@ -6,6 +6,8 @@ pub mod native;
 pub mod bundles;
 pub mod public_mode;
 pub mod foreign_targets;
+pub(crate) mod custom_rules;
+pub(crate) mod policy_groups;
 pub(crate) mod filters;
 #[cfg(windows)]
 pub(crate) mod hot_reset;
@@ -61,10 +63,19 @@ pub fn prepare(raw: &str, config: &Overrides, profile_id: &str) -> Result<String
     prepare_with_nodes(raw, config, profile_id, &crate::local_nodes::read()?)
 }
 pub fn prepare_with_nodes(raw: &str, config: &Overrides, profile_id: &str, nodes: &crate::local_nodes::Store) -> Result<String, String> {
+    prepare_with_rule_store(raw, config, profile_id, nodes, &custom_rules::read()?)
+}
+fn prepare_with_rule_store(raw: &str, config: &Overrides, profile_id: &str, nodes: &crate::local_nodes::Store, rules: &custom_rules::Store) -> Result<String, String> {
+    prepare_with_stores(raw, config, profile_id, nodes, rules, &policy_groups::read()?)
+}
+fn prepare_with_policy_groups(raw: &str, config: &Overrides, profile_id: &str, nodes: &crate::local_nodes::Store, group_store: &policy_groups::Store) -> Result<String, String> {
+    prepare_with_stores(raw, config, profile_id, nodes, &custom_rules::read()?, group_store)
+}
+fn prepare_with_stores(raw: &str, config: &Overrides, profile_id: &str, nodes: &crate::local_nodes::Store, rules: &custom_rules::Store, group_store: &policy_groups::Store) -> Result<String, String> {
     validate_business_capture(config)?;
     let follows_system = !cfg!(target_os = "android") && config.bundles_enabled && config.bundles.iter().any(BundleRoute::follows_system_proxy);
     let enabled = if follows_system { crate::commands::sysproxy::get_system_proxy_status()? } else { false };
-    prepare_plan(raw, config, profile_id, enabled, nodes, None)
+    prepare_plan(raw, config, profile_id, enabled, nodes, None, rules, group_store)
 }
 
 /// The lifecycle observer calls this under LIFECYCLE. Unknown reads never change routing.
@@ -89,18 +100,23 @@ pub(crate) async fn reconcile_system_proxy(status: &crate::commands::sysproxy::S
 }
 fn prepare_with_system_proxy(raw: &str, config: &Overrides, profile_id: &str, system_proxy: bool) -> Result<String, String> {
     validate_business_capture(config)?;
-    prepare_plan(raw, config, profile_id, system_proxy, &crate::local_nodes::read()?, None)
+    prepare_plan(raw, config, profile_id, system_proxy, &crate::local_nodes::read()?, None, &custom_rules::read()?, &policy_groups::read()?)
 }
 pub(crate) fn prepare_public_mode(raw: &str, config: &Overrides, profile_id: &str, mode: &str) -> Result<String, String> {
     validate_business_capture(config)?;
     let system = crate::commands::sysproxy::get_system_proxy_status()?;
-    prepare_plan(raw, config, profile_id, system, &crate::local_nodes::read()?, Some(mode))
+    prepare_plan(raw, config, profile_id, system, &crate::local_nodes::read()?, Some(mode), &custom_rules::read()?, &policy_groups::read()?)
 }
 fn validate_business_capture(config: &Overrides) -> Result<(), String> {
     let general = settings::get_general_settings()?;
     crate::capture::validate_business_remote_dns(&config.effective(), &general.traffic_mode, general.tun_mode)
 }
-fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: bool, nodes: &crate::local_nodes::Store, mode: Option<&str>) -> Result<String, String> {
+fn prepare_profile_base(raw: &str, general: &settings::GeneralSettings, nodes: &crate::local_nodes::Store) -> Result<String, String> {
+    let base = settings::prepare_with(raw, general)?;
+    let base = crate::local_nodes::compose(&base, nodes)?;
+    local_rules::compose(&base, &local_rules::get_local_rule_plan()?)
+}
+fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: bool, nodes: &crate::local_nodes::Store, mode: Option<&str>, rule_store: &custom_rules::Store, group_store: &policy_groups::Store) -> Result<String, String> {
     let effective = config.effective();
     let config = &effective;
     let mut general = settings::get_general_settings()?;
@@ -108,9 +124,8 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     if public_mode::enabled() && serde_yaml::from_str::<serde_yaml::Value>(raw).ok().is_some_and(|v| v.get(public_mode::KEY).is_some()) {
         return Err("订阅包含公共模式保留字段".into());
     }
-    let base = settings::prepare_with(raw, &general)?;
-    let base = crate::local_nodes::compose(&base, nodes)?;
-    let base = local_rules::compose(&base, &local_rules::get_local_rule_plan()?)?;
+    let base = prepare_profile_base(raw, &general, nodes)?;
+    let base = policy_groups::project(&base, profile_id, group_store)?;
     let locals = crate::local_nodes::map_config(config, profile_id);
     let (base, foreign_mapped) = foreign_targets::materialize_runtime(&base, &locals, profile_id)?;
     let (base, mut mapped) = bundles::materialize(&base, &foreign_mapped, profile_id)?;
@@ -175,11 +190,13 @@ fn prepare_plan(raw: &str, config: &Overrides, profile_id: &str, system_proxy: b
     };
     let base = compose_base(&manual, false)?;
 
-    let exclusions = exclusions::get_exclusions()?;
+    let mut protected = if config.process_enabled { composer::safety_rules() } else { Vec::new() };
+    protected.extend(exclusions::rules(&exclusions::get_exclusions()?)?);
     let finish = |raw:&str| -> Result<String,String> {
-        let raw=exclusions::compose(raw,&exclusions)?;
-        let raw=if config.process_enabled {composer::safety(&raw)?}else{raw};
-        composer::ensure_bt_pt_and_proxy_group(&raw)
+        let raw = composer::prepend_rules(raw, &protected)?;
+        let (raw, added_prefix) = composer::ensure_bt_pt_and_proxy_group(&raw)?;
+        let raw = policy_groups::finish(&raw, profile_id, group_store)?;
+        custom_rules::compose(&raw, profile_id, rule_store, protected.len() + added_prefix)
     };
     let base = bundles::compose_existing_rules(&finish(&base)?, config)?;
     let base = public_mode::compose(&base, &general.run_mode)?;
@@ -298,6 +315,10 @@ async fn apply_runtime_inner(prepared: &str, verify_lan: bool) -> Result<(), Str
     let new_config = bundles::structural(prepared)?;
     // An explicit LAN request can repair a listener even when the YAML already matches.
     let reload_needed = verify_lan || cfg!(target_os = "android") || old_config != new_config;
+    let old_choices = if reload_needed && (policy_groups::runtime::has_metadata(&old_config)
+        || policy_groups::runtime::has_metadata(&new_config)) {
+        Some(policy_groups::runtime::current_choices().await?)
+    } else { None };
     #[cfg(windows)]
     let old_tun = old_config["tun"]["enable"].as_bool() == Some(true);
     #[cfg(windows)]
@@ -307,13 +328,17 @@ async fn apply_runtime_inner(prepared: &str, verify_lan: bool) -> Result<(), Str
     let pid = process::PID.load(Ordering::SeqCst);
     crate::commands::dns_runtime::preflight(prepared, pid).await?;
     let applied = async {
-        if reload_needed { crate::capture::pause(); }
+        if reload_needed {
+            policy_groups::admission::configuration_reloaded();
+            crate::capture::pause();
+        }
         crate::storage::replace_atomic(&target, prepared.as_bytes())?;
         if reload_needed { reload(&target).await?; }
         #[cfg(windows)]
         if check_tun { crate::commands::tun::confirm(settings::get_general_settings()?.controller_port, new_tun).await?; }
         #[cfg(windows)]
         if verify_lan { crate::commands::lan_access::confirm_config(&new_config, pid).await?; }
+        policy_groups::runtime::restore(prepared).await?;
         bundles::select(prepared).await?;
         crate::commands::dns_runtime::confirm(prepared, pid).await?;
         crate::capture::confirm_runtime(prepared).await
@@ -324,6 +349,11 @@ async fn apply_runtime_inner(prepared: &str, verify_lan: bool) -> Result<(), Str
             if reload_needed { reload(&target).await?; }
             #[cfg(windows)]
             if check_tun { crate::commands::tun::confirm(settings::get_general_settings()?.controller_port, old_tun).await?; }
+            if let Some(choices) = &old_choices {
+                policy_groups::runtime::restore_choices(choices).await?;
+            } else {
+                policy_groups::runtime::restore(&old).await?;
+            }
             bundles::select(&old).await?;
             crate::commands::dns_runtime::confirm(&old, pid).await?;
             crate::capture::confirm_runtime(&old).await?;

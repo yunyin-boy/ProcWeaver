@@ -5,7 +5,8 @@
 // ==========================================================================
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { EyeOff, Globe, Plus } from "lucide-react";
+import { ChevronRight, EyeOff, Globe, Plus } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import {
   ProxyGroupItem,
   ProxyItem,
@@ -16,7 +17,7 @@ import {
 } from "../../types/proxy";
 import {
   fetchProxiesData,
-  switchGroupProxy,
+  selectGroupMember,
   testSingleDelay,
   testGroupBatchDelay,
   getHealthCache,
@@ -25,22 +26,34 @@ import {
   getIgnoredNodes,
   toggleIgnoreNode,
 } from "../../services/proxyService";
-import { PROFILE_CHANGED_EVENT } from "../../services/profileService";
+import { PROFILE_CHANGED_EVENT, notifyProfileChanged } from "../../services/profileService";
+import { isTauriEnvironment } from "../../services/client";
+import { fetchPolicyGroups, isManualGroup, savePolicyGroup, type PolicyGroup, type PolicyGroupChange,
+  type PolicyGroupRow, type PolicyGroupWorkbench } from "../../services/policyGroupsService";
 import { parseNodeMeta, isAdOrInfoNode, isRealProxyNode } from "../../utils/nodeParser";
+import { ConfirmModal } from "../../primitives/ConfirmModal";
 import { ProxiesToolbar } from "./ProxiesToolbar";
 import { ProxyGroupHeader } from "./ProxyGroupHeader";
 import { ProxyNodeCard } from "./ProxyNodeCard";
 
 import { LocalNodeModal } from "./LocalNodeModal";
 import { IgnoredNodesModal } from "./IgnoredNodesModal";
+import { SpeedtestEndpointModal } from "./SpeedtestEndpointModal";
+import { PolicyGroupEditor } from "./PolicyGroupEditor";
+import { PolicyMemberCard, POLICY_ACTIONS, resolveGroupMember } from "./PolicyMemberCard";
 
 interface ProxiesViewProps {
   routingMode?: string;
+  coreRunning: boolean;
   onShowNotice?: (msg: string) => void;
   onNavigateTab?: (tab: string) => void;
 }
 
-export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", onShowNotice, onNavigateTab }) => {
+const isNamedMainSelector = (group: ProxyGroupItem) => isManualGroup(group.type)
+  && (/^(PROXY|PROXIES|DEFAULT|SELECT|MANUAL)$/i.test(group.name.trim())
+    || /节点选择|手动选择|主节点|主力节点|核心节点/.test(group.name));
+
+export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", coreRunning, onShowNotice, onNavigateTab }) => {
   const [currentMode, setCurrentMode] = useState<string>(routingMode);
 
   useEffect(() => {
@@ -62,6 +75,15 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
   const [groups, setGroups] = useState<ProxyGroupItem[]>([]);
   const [proxies, setProxies] = useState<Record<string, ProxyItem>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [policy, setPolicy] = useState<PolicyGroupWorkbench | null>(null);
+  const [policyError, setPolicyError] = useState("");
+  const [editingGroup, setEditingGroup] = useState<{ context: PolicyGroupWorkbench; group?: PolicyGroupRow } | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState<{ context: PolicyGroupWorkbench; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const selectingRef = useRef(false);
+  const groupSections = useRef(new Map<string, HTMLElement>());
+  const advancedGroupSection = useRef<HTMLDetailsElement>(null);
 
   // 搜索与排版过滤状态
   const [searchQuery, setSearchQuery] = useState("");
@@ -86,28 +108,36 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
   // 模态弹窗显隐控制
   const [showLocalNodeModal, setShowLocalNodeModal] = useState(false);
   const [showIgnoredModal, setShowIgnoredModal] = useState(false);
+  const [showSpeedtestSettings, setShowSpeedtestSettings] = useState(false);
 
   // 1. 初始化拉取节点大盘数据
   const proxyLoad = useRef(0);
-  const loadedGroupNames = useRef(new Set<string>());
-  const loadData = useCallback(async () => {
+  const loadedGroups = useRef<{ profileId?: string; names: Set<string> }>({ names: new Set() });
+  const loadData = useCallback(async (showLoading = true) => {
     const request = ++proxyLoad.current;
-    setIsLoading(true);
+    if (showLoading) setIsLoading(true);
     try {
-      const snap = await fetchProxiesData();
+      const [snap, saved] = await Promise.all([fetchProxiesData(), fetchPolicyGroups().then(
+        value => ({ value, error: "" }),
+        reason => ({ value: null, error: reason instanceof Error ? reason.message : String(reason) }),
+      )]);
       if (request !== proxyLoad.current) return;
       setGroups(snap.groups);
       setProxies(snap.proxies);
+      setPolicy(saved.value);
+      if (saved.error) setPolicyError(saved.error);
 
-      // 智能默认折叠策略：仅展开 Proxy / 手动选择 / 节点选择，其余专项分流策略组默认折叠保持清爽
-      const previousGroupNames = loadedGroupNames.current;
-      loadedGroupNames.current = new Set(snap.groups.map(({ name }) => name));
+      const profileId = saved.value?.profileId ?? snap.activeProfile?.id;
+      const previous = loadedGroups.current;
+      loadedGroups.current = { profileId, names: new Set(snap.groups.map(({ name }) => name)) };
       setCollapsedGroups((previouslyCollapsed) => {
         const nextCollapsed = new Set<string>();
-        for (const { name } of snap.groups) {
-          const isMain = name === "PROXY" || name.includes("手动选择")
-            || name.includes("节点选择") || name.includes("Proxy");
-          const collapsed = previousGroupNames.has(name) ? previouslyCollapsed.has(name) : !isMain;
+        for (const group of snap.groups) {
+          const { name } = group;
+          const isMain = name === "PROXY" || name === saved.value?.primarySelector
+            || (!saved.value && isNamedMainSelector(group));
+          const alreadyLoaded = previous.profileId === profileId && previous.names.has(name);
+          const collapsed = alreadyLoaded ? previouslyCollapsed.has(name) : !isMain;
           if (collapsed) nextCollapsed.add(name);
         }
         return nextCollapsed;
@@ -127,12 +157,15 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
     };
     window.addEventListener("netbox-profile-changed", handleProfileChange);
     window.addEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
+    const subscription = isTauriEnvironment()
+      ? listen("procweaver-policy-groups-changed", () => { void loadData(false); }).catch(() => undefined) : undefined;
     return () => {
       ++proxyLoad.current;
       window.removeEventListener("netbox-profile-changed", handleProfileChange);
       window.removeEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
+      void subscription?.then(unlisten => unlisten?.());
     };
-  }, [loadData]);
+  }, [coreRunning, loadData]);
 
   // 2. 预计算每个节点的富元数据 (地区、协议、倍率、延迟、是否广告)
   const parsedMetas = useMemo(() => {
@@ -143,20 +176,56 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
     return map;
   }, [proxies]);
 
-  // 3. 切换活动出站节点
   const handleSelectNode = async (groupName: string, nodeName: string) => {
-    // 乐观即时更新当前 UI 选中态
-    setGroups((prev) =>
-      prev.map((g) => (g.name === groupName ? { ...g, now: nodeName } : g))
-    );
-
-    const ok = await switchGroupProxy(groupName, nodeName);
-    if (ok) {
-      if (onShowNotice) onShowNotice(`[${groupName}] 已切换出站节点: ${nodeName}`);
-    } else {
-      if (onShowNotice) onShowNotice(`切换出站节点失败: ${nodeName}`);
-      loadData();
+    if (selectingRef.current) return;
+    selectingRef.current = true;
+    setSelecting(true);
+    setPolicyError("");
+    try {
+      await selectGroupMember(groupName, nodeName, policy?.profileId);
+      await loadData(false);
+      onShowNotice?.("「" + groupName + "」已选择「" + nodeName + "」");
+    } catch (reason) {
+      setPolicyError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      selectingRef.current = false;
+      setSelecting(false);
     }
+  };
+
+  const saveGroup = async (context: PolicyGroupWorkbench, change: PolicyGroupChange) => {
+    setPolicyError("");
+    const saved = await savePolicyGroup(context, change);
+    setPolicy(saved);
+    notifyProfileChanged();
+    window.dispatchEvent(new Event("netbox-route-changed"));
+    onShowNotice?.(change.kind === "delete" ? "策略组已删除" : "策略组已保存");
+  };
+
+  const removeGroup = async () => {
+    if (!deletingGroup || deleting) return;
+    setDeleting(true);
+    try {
+      await saveGroup(deletingGroup.context, { kind: "delete", name: deletingGroup.name });
+    } catch (reason) {
+      setPolicyError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDeletingGroup(null);
+      setDeleting(false);
+    }
+  };
+
+  const revealGroup = (name: string) => {
+    setSearchQuery("");
+    setCollapsedGroups(previous => {
+      const next = new Set(previous);
+      next.delete(name);
+      return next;
+    });
+    requestAnimationFrame(() => {
+      if (name === "PROXY" && advancedGroupSection.current) advancedGroupSection.current.open = true;
+      groupSections.current.get(name)?.scrollIntoView({ block: "nearest" });
+    });
   };
 
   // 4. 单节点测速
@@ -332,18 +401,6 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
     });
   };
 
-  const allCollapsed = useMemo(() => {
-    return groups.length > 0 && groups.every((g) => collapsedGroups.has(g.name));
-  }, [groups, collapsedGroups]);
-
-  const handleToggleAllCollapsed = () => {
-    if (allCollapsed) {
-      setCollapsedGroups(new Set());
-    } else {
-      setCollapsedGroups(new Set(groups.map((g) => g.name)));
-    }
-  };
-
   // 11. 节点智能过滤与排序算法 (广告、策略组、非真实节点直接过滤不显示)
   const filterAndSortNodes = useCallback(
     (nodeNames: string[]) => {
@@ -411,113 +468,41 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
     ).length;
   }, [proxies, ignoredNodes]);
 
-  // 辅助判断策略组是否为主手动出站选择组 (节点选择 / PROXY / PROXIES / 手动选择 等)
-  const isMasterSelectorGroup = useCallback(
-    (group: ProxyGroupItem): boolean => {
-      const gType = (group.type || "").toLowerCase();
-      if (gType !== "select" && gType !== "selector") {
-        return false;
-      }
-      const name = group.name.trim();
-      const nameUpper = name.toUpperCase();
+  const definitions = useMemo(() => new Map(policy?.groups.map(group => [group.name, group])), [policy?.groups]);
+  const entryLabels = useMemo(() => new Map(policy?.entries.map(entry => [entry.name, entry.label])), [policy?.entries]);
+  const allGroups = useMemo(() => {
+    const live = new Set(groups.map(group => group.name));
+    const offline: ProxyGroupItem[] = (policy?.groups ?? []).filter(group => !live.has(group.name)).map(group => ({
+      name: group.name,
+      type: group.strategy === "select" ? "Selector" : "URLTest",
+      now: "",
+      all: [...group.members.filter(member => !group.missingMembers.includes(member)), ...group.automaticMembers],
+    }));
+    return [...groups, ...offline];
+  }, [groups, policy?.groups]);
+  const groupDetails = useMemo(() => new Map(allGroups.map(group => [group.name, group])), [allGroups]);
+  const primaryName = policy ? policy.primarySelector : allGroups.find(group =>
+    !group.hidden && !group.name.startsWith("PW-") && !group.name.startsWith("本地方案")
+    && group.name !== "PROXY" && isNamedMainSelector(group))?.name
+    ?? (groupDetails.has("PROXY") ? "PROXY" : null);
+  const proxySelection = groupDetails.get("PROXY")?.now;
+  const proxyFollowsMain = Boolean(primaryName && primaryName !== "PROXY" && proxySelection === primaryName);
+  const proxyTitle = primaryName === "PROXY" ? "节点选择"
+    : primaryName && proxySelection && !proxyFollowsMain ? "公共出口" : "PROXY";
+  const displayName = (name: string) => name === "PROXY" ? proxyTitle : name;
+  const label = (name: string) => POLICY_ACTIONS.get(name) ?? (name === "PROXY" ? proxyTitle : entryLabels.get(name)) ?? name;
 
-      // 必须包含足够数量的真实出站代理节点，代表主力出站
-      const realCount = group.all.filter((n) => {
-        const p = proxies[n];
-        return isRealProxyNode(p) && !ignoredNodes.has(n);
-      }).length;
-
-      const isBroad =
-        totalAvailableNodes > 0 &&
-        (realCount >= totalAvailableNodes * 0.4 || realCount >= Math.min(totalAvailableNodes, 5));
-
-      if (!isBroad && totalAvailableNodes > 0) {
-        return false;
-      }
-
-      // 名称命中主控特征词
-      if (
-        nameUpper === "PROXY" ||
-        nameUpper === "PROXIES" ||
-        nameUpper === "DEFAULT" ||
-        name === "节点选择" ||
-        name === "手动选择" ||
-        name.includes("节点选择") ||
-        name.includes("手动选择") ||
-        name.includes("主节点") ||
-        name.includes("主力节点") ||
-        name.includes("核心节点")
-      ) {
-        return true;
-      }
-
-      return false;
-    },
-    [proxies, ignoredNodes, totalAvailableNodes]
-  );
-
-  // 仅保留面向用户且包含真实出站代理节点的策略组（排除内部自动化分流锚点 PW-*、本地方案*与无真实节点空组）
-  // 方案 A 实施:
-  // 1. 规则模式/直连模式下过滤隐藏内核保留的 GLOBAL 组
-  // 2. 原生主组（如“节点选择”/“手动选择”）存在时，过滤隐藏系统底层注入的同构 PROXY 镜像组
-  // 3. 用户硬性约束: 手动选择/proxy/PROXIES/节点选择 需要排第一位 (权重 100)
   const visibleGroups = useMemo(() => {
-    if (totalAvailableNodes === 0) return [];
-
-    // 1. 初步过滤：排除内部特定自动化组、无真实节点空组
-    const baseCandidates = groups.filter((g) => {
-      if (g.name.startsWith("PW-") || g.name.startsWith("本地方案")) {
-        return false;
-      }
-      const realCount = g.all.filter((name) => {
-        const item = proxies[name];
-        return isRealProxyNode(item) && !ignoredNodes.has(name);
-      }).length;
-      return realCount > 0;
-    });
-
-    // 2. 识别原生业务主选择组 (排除系统注入的 PROXY 和内核 GLOBAL)
-    const nativeMasterGroup = baseCandidates.find((g) => {
-      const u = g.name.trim().toUpperCase();
-      if (u === "PROXY" || u === "GLOBAL") return false;
-      return isMasterSelectorGroup(g);
-    });
-
-    // 3. 模式与同构去重过滤
-    const isGlobalMode = (currentMode || "").toLowerCase() === "global";
-    const filtered = baseCandidates.filter((g) => {
-      const u = g.name.trim().toUpperCase();
-
-      // 在非全局模式下，隐藏内核保留的 GLOBAL 组
-      if (u === "GLOBAL" && !isGlobalMode) {
-        return false;
-      }
-
-      // 若原订阅中已存在原生业务主选择组（如“节点选择”），则隐藏底层注入的同构 PROXY 镜像组
-      if (u === "PROXY" && nativeMasterGroup) {
-        return false;
-      }
-
-      return true;
-    });
-
-    // 4. 严格排序权重：手动选择/proxy/PROXIES/节点选择 必须排第一 (权重 100)
+    const isGlobalMode = currentMode.toLowerCase() === "global";
+    const filtered = allGroups.filter(group =>
+      !group.hidden && !group.name.startsWith("PW-") && !group.name.startsWith("本地方案")
+      && (group.name !== "GLOBAL" || isGlobalMode));
     const getGroupWeight = (g: ProxyGroupItem): number => {
       const u = g.name.trim().toUpperCase();
       const name = g.name.trim();
 
-      // 识别是否为主手动选择组
-      let isMaster = false;
-      if (nativeMasterGroup) {
-        isMaster = g.name === nativeMasterGroup.name;
-      } else {
-        isMaster = u === "PROXY" || isMasterSelectorGroup(g);
-      }
-
-      // 核心要求: 手动选择/proxy/PROXIES/节点选择 需要排第一
-      if (isMaster) {
-        return 100;
-      }
+      if (g.name === primaryName) return 100;
+      if (g.name === "PROXY") return proxyFollowsMain ? 0 : 95;
 
       // 本地自建节点排第二
       if (name.includes("自建") || u.includes("CUSTOM") || u.includes("LOCAL")) {
@@ -581,16 +566,30 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
     };
 
     return [...filtered].sort((a, b) => getGroupWeight(b) - getGroupWeight(a));
-  }, [groups, proxies, ignoredNodes, totalAvailableNodes, currentMode, isMasterSelectorGroup]);
+  }, [allGroups, currentMode, primaryName, proxyFollowsMain]);
 
-  const displayedGroups = visibleGroups
-    .map((group) => ({ group, nodes: filterAndSortNodes(group.all) }))
-    .filter(({ nodes }) => !searchQuery || nodes.length > 0);
-  const hasNodes = totalAvailableNodes > 0 && visibleGroups.length > 0;
+  const allCollapsed = visibleGroups.length > 0 && visibleGroups.every(group => collapsedGroups.has(group.name));
+  const handleToggleAllCollapsed = () => {
+    setCollapsedGroups(new Set(allCollapsed ? [] : visibleGroups.map(group => group.name)));
+    if (advancedGroupSection.current) advancedGroupSection.current.open = allCollapsed;
+  };
 
+  const term = searchQuery.trim().toLowerCase();
+  const displayedGroups = visibleGroups.map(group => ({
+    group,
+    nodes: filterAndSortNodes(group.all),
+    choices: group.all.filter(name => !isRealProxyNode(proxies[name])
+      && (groupDetails.has(name) || POLICY_ACTIONS.has(name))
+      && !name.startsWith("PW-")
+      && (!term || name.toLowerCase().includes(term) || label(name).toLowerCase().includes(term))),
+  })).filter(({ group, nodes, choices }) => !term || nodes.length > 0 || choices.length > 0
+    || group.name.toLowerCase().includes(term) || displayName(group.name).toLowerCase().includes(term));
+  const hasGroups = visibleGroups.some(group => group.name !== "PROXY" || policy?.profileId !== "default"
+    || policy.primarySelector === "PROXY" || totalAvailableNodes > 0 || definitions.size > 0);
+  const groupVisible = new Set(visibleGroups.map(group => group.name));
   return (
     <div className="workbench-view workbench-proxies">
-      {hasNodes && (
+      {hasGroups && (
         <ProxiesToolbar
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
@@ -606,15 +605,20 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
           healthProgress={healthProgress}
           onTestAllHealth={handleTestAllHealth}
           totalNodes={totalAvailableNodes}
+          onNewGroup={policy ? () => setEditingGroup({ context: policy }) : undefined}
+          onSpeedtestSettings={() => setShowSpeedtestSettings(true)}
           onOpenLocalNodeModal={() => setShowLocalNodeModal(true)}
           ignoredCount={ignoredNodes.size}
           onOpenIgnoredModal={() => setShowIgnoredModal(true)}
         />
       )}
 
+      {policyError && (
+        <p role="alert" className="rounded-xl bg-[var(--workbench-danger-bg)] px-4 py-3 text-xs text-[var(--workbench-danger)]">{policyError}</p>
+      )}
       {isLoading ? (
         <div className="p-8 text-center text-xs text-[var(--text-muted)]" role="status">正在加载出口节点…</div>
-      ) : !hasNodes ? (
+      ) : !hasGroups ? (
         <section className="workbench-panel flex flex-wrap items-start gap-4 px-5 py-6" aria-labelledby="proxy-empty-title">
           <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--workbench-selected)] text-[var(--workbench-accent)]">
             <Globe size={21} aria-hidden="true" />
@@ -637,6 +641,9 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
               <button type="button" className="workbench-action workbench-action-ghost" data-size="md" onClick={() => setShowLocalNodeModal(true)}>
                 <Plus size={15} aria-hidden="true" /> 添加自建节点
               </button>
+              {policy && <button type="button" className="workbench-action" data-size="md" onClick={() => setEditingGroup({ context: policy })}>
+                <Plus size={15} aria-hidden="true" /> 新建策略组
+              </button>}
               {ignoredNodes.size > 0 && (
                 <button type="button" className="workbench-action workbench-action-ghost" data-size="md" onClick={() => setShowIgnoredModal(true)}>
                   <EyeOff size={15} aria-hidden="true" /> 已隐藏 <span className="tabular-nums">{ignoredNodes.size}</span>
@@ -649,64 +656,120 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
         <div className="p-8 text-center text-xs text-[var(--text-muted)]" role="status">没有匹配的出口节点</div>
       ) : (
         <div className="grid gap-5">
-          {displayedGroups.map(({ group, nodes }) => {
+          {displayedGroups.map(({ group, nodes, choices }) => {
             const isCollapsed = collapsedGroups.has(group.name);
             const isTestingGroup = testingGroups.has(group.name);
-            return (
-              <section key={group.name} className="workbench-panel grid gap-3 p-3.5" aria-label={group.name}>
+            const definition = definitions.get(group.name);
+            const selectable = !selecting && (policy?.running ?? true) && isManualGroup(group.type);
+            const selected = group.now && resolveGroupMember(group.now, proxies);
+            const currentLabel = group.now ? (isManualGroup(group.type) ? "已选 " : "当前 ") + label(group.now)
+              + (selected !== group.now ? " · 当前 " + label(selected) : "") : undefined;
+            const title = displayName(group.name);
+            const nodeCards = isCollapsed ? [] : nodes.map(nodeName => {
+              const meta = parsedMetas[nodeName] || {
+                rawName: nodeName,
+                cleanName: nodeName,
+                regionCode: "GLB",
+                regionName: "通用节点",
+                multiplier: 1,
+                protocolBadge: "PROXY",
+                protocolColor: "text-[var(--text-muted)]",
+                isAdOrInfo: false,
+              };
+              const localName = nodeName.startsWith("PW-L-") ? entryLabels.get(nodeName) : undefined;
+              return (
+                <ProxyNodeCard key={nodeName} layout={viewMode} meta={localName ? { ...meta, cleanName: localName } : meta}
+                  health={nodeHealthMap[nodeName]} isSelected={group.now === nodeName}
+                  isTesting={testingNodes.has(nodeName) || isTestingGroup || isTestingAll}
+                  onSelect={selectable ? () => { void handleSelectNode(group.name, nodeName); } : undefined}
+                  onTest={event => handleTestSingle(nodeName, event)}
+                  onToggleIgnore={event => handleToggleIgnoreNode(nodeName, event)} />
+              );
+            });
+            const panel = (
+              <section key={group.name} className="workbench-panel grid gap-3 p-3.5" aria-label={title}
+                ref={element => { if (element) groupSections.current.set(group.name, element); else groupSections.current.delete(group.name); }}>
                 <ProxyGroupHeader
                   group={group}
-                  nodeCount={nodes.length}
+                  displayName={title}
+                  nodeCount={nodes.length + choices.length}
                   isCollapsed={isCollapsed}
                   isTestingGroup={isTestingGroup}
                   isTestingGroupHealth={testingHealthGroups.has(group.name)}
+                  currentLabel={currentLabel}
+                  custom={Boolean(definition)}
+                  automaticCount={definition?.automatic ? definition.automaticMembers.length : undefined}
+                  onEdit={definition && policy ? () => setEditingGroup({ context: policy, group: definition }) : undefined}
+                  onDelete={definition && policy ? () => setDeletingGroup({ context: policy, name: group.name }) : undefined}
                   onToggleCollapse={() => handleToggleCollapse(group.name)}
                   onTestGroup={(event) => handleTestGroup(group, event)}
                   onTestGroupHealth={(event) => handleTestGroupHealth(group, event)}
                 />
 
-                {!isCollapsed && (nodes.length === 0 ? (
-                  <p className="p-4 text-center text-xs text-[var(--text-muted)]">未找到符合过滤条件的可用节点</p>
-                ) : (
-                  <div className="workbench-node-list" data-layout={viewMode}>
-                    {viewMode === "list" && (
-                      <div className="workbench-node-columns" aria-hidden="true">
-                        <span>节点</span><span>协议</span><span>地区</span><span>健康与风控</span><span>延迟</span><span>状态</span><span />
-                      </div>
-                    )}
-                    <div className="workbench-node-grid">
-                      {nodes.map((nodeName) => {
-                        const meta = parsedMetas[nodeName] || {
-                          rawName: nodeName,
-                          cleanName: nodeName,
-                          regionCode: "GLB",
-                          regionName: "通用节点",
-                          multiplier: 1,
-                          protocolBadge: "PROXY",
-                          protocolColor: "text-[var(--text-muted)]",
-                          isAdOrInfo: false,
-                        };
-                        return (
-                          <ProxyNodeCard
-                            key={nodeName}
-                            meta={meta}
-                            health={nodeHealthMap[nodeName]}
-                            isSelected={group.now === nodeName}
-                            isTesting={testingNodes.has(nodeName) || isTestingGroup || isTestingAll}
-                            onSelect={() => handleSelectNode(group.name, nodeName)}
-                            onTest={(event) => handleTestSingle(nodeName, event)}
-                            onToggleIgnore={(event) => handleToggleIgnoreNode(nodeName, event)}
-                          />
-                        );
-                      })}
-                    </div>
+                {!isCollapsed && definition && (definition.missingMembers.length > 0 || definition.missingParents.length > 0) && (
+                  <p role="status" className="break-all px-1 text-xs text-[var(--workbench-warning)]">
+                    失效成员或上级组 · {[...definition.missingMembers, ...definition.missingParents].join("、")}
+                  </p>
+                )}
+                {!isCollapsed && choices.length > 0 && (
+                  <div className="workbench-policy-choices workbench-node-grid" role="group" aria-label="策略组与内置动作">
+                    {choices.map(name => {
+                      const child = groupDetails.get(name);
+                      const physical = child?.now ? resolveGroupMember(child.now, proxies) : "";
+                      return <PolicyMemberCard key={name} name={name} group={child} label={label(name)}
+                        physical={physical ? label(physical) : undefined} delay={parsedMetas[physical]?.latestDelay}
+                        selected={group.now === name} onSelect={selectable ? () => { void handleSelectNode(group.name, name); } : undefined}
+                        onReveal={child && groupVisible.has(name) ? () => revealGroup(name) : undefined} />;
+                    })}
                   </div>
-                ))}
+                )}
+                {!isCollapsed && nodes.length === 0 && choices.length === 0 && (
+                  <p className="p-4 text-center text-xs text-[var(--text-muted)]">未找到符合过滤条件的可用成员</p>
+                )}
+                {nodeCards.length > 0 && (
+                  <div className="workbench-node-results" data-layout={viewMode}>
+                    {viewMode === "list" ? (
+                      <table className="workbench-node-table" aria-label="出口节点">
+                        <thead>
+                          <tr>
+                            <th scope="col">节点名称</th>
+                            <th scope="col" className="workbench-node-table-protocol">协议</th>
+                            <th scope="col" className="workbench-node-table-region">地区</th>
+                            <th scope="col" className="workbench-node-table-health">健康与风控</th>
+                            <th scope="col" className="workbench-node-table-latency">延迟</th>
+                            <th scope="col" className="workbench-node-table-actions">操作</th>
+                          </tr>
+                        </thead>
+                        <tbody>{nodeCards}</tbody>
+                      </table>
+                    ) : <div className="workbench-node-grid">{nodeCards}</div>}
+                  </div>
+                )}
               </section>
+            );
+            if (group.name !== "PROXY" || !proxyFollowsMain) return panel;
+            return (
+              <details key={"advanced:" + (policy?.profileId ?? group.name)} ref={advancedGroupSection}
+                className="group/advanced" open={term ? true : undefined}>
+                <summary className="workbench-panel flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-[13px] font-semibold [&::-webkit-details-marker]:hidden">
+                  <ChevronRight size={15} aria-hidden="true" className="group-open/advanced:rotate-90" />
+                  高级策略组
+                </summary>
+                <div className="mt-3">{panel}</div>
+              </details>
             );
           })}
         </div>
       )}
+
+      {editingGroup && <PolicyGroupEditor context={editingGroup.context} liveContext={policy} current={editingGroup.group}
+        onClose={() => setEditingGroup(null)} onSave={async (group: PolicyGroup) => {
+          await saveGroup(editingGroup.context, { kind: editingGroup.group ? "update" : "create", group });
+          setEditingGroup(null);
+        }} />}
+      {deletingGroup && <ConfirmModal isOpen title="删除策略组" description={deletingGroup.name}
+        confirmText="删除策略组" isLoading={deleting} onConfirm={removeGroup}
+        onCancel={() => { if (!deleting) setDeletingGroup(null); }} />}
 
       <LocalNodeModal
         isOpen={showLocalNodeModal}
@@ -714,6 +777,8 @@ export const ProxiesView: React.FC<ProxiesViewProps> = ({ routingMode = "rule", 
         onNodesUpdated={loadData}
         onShowNotice={onShowNotice}
       />
+      <SpeedtestEndpointModal isOpen={showSpeedtestSettings} onClose={() => setShowSpeedtestSettings(false)}
+        onEndpointChanged={() => { void loadData(false); }} onShowNotice={onShowNotice} />
       <IgnoredNodesModal
         isOpen={showIgnoredModal}
         onClose={() => setShowIgnoredModal(false)}

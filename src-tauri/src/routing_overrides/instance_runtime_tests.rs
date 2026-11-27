@@ -59,7 +59,9 @@ fn same_path_instance_owners_reach_distinct_core_outlets_and_preserve_fallback()
         // Domain-preservation capability is checked by the production entry.
         // Below this point we exercise only the lower-level IP context compiler.
         assert!(prepare(&raw, &config, "default").is_ok());
-        let prepared = prepare_plan(&raw, &config, "default", false, &crate::local_nodes::Store::default(), None).unwrap();
+        let rules = custom_rules::Store::default();
+        let groups = policy_groups::Store::default();
+        let prepared = prepare_plan(&raw, &config, "default", false, &crate::local_nodes::Store::default(), None, &rules, &groups).unwrap();
         let resolved = crate::capture::windivert::ports::resolve_for_apply(&prepared, 0).await.unwrap();
         let yaml: serde_yaml::Value = serde_yaml::from_str(&resolved).unwrap();
         let plan: Plan = serde_yaml::from_value(yaml[KEY].clone()).unwrap();
@@ -70,7 +72,7 @@ fn same_path_instance_owners_reach_distinct_core_outlets_and_preserve_fallback()
         // Changing all child PIDs and paths cannot alter the core configuration.
         let mut new_child = child(211, "a"); new_child.executable_path = Some(r"D:\new\worker.exe".into()); new_child.name = "worker.exe".into();
         tracker::reconcile(vec![new_child, child(212, "b")], true);
-        let after = prepare_plan(&raw, &config, "default", false, &crate::local_nodes::Store::default(), None).unwrap();
+        let after = prepare_plan(&raw, &config, "default", false, &crate::local_nodes::Store::default(), None, &rules, &groups).unwrap();
         assert_eq!(bundles::structural(&prepared).unwrap(), bundles::structural(&after).unwrap());
         let restored = crate::capture::current_instance_plan(&yaml).unwrap();
         assert!(restored.port_for(path, 201, 100).is_none(), "rollback must not restore an exited PID from disk");

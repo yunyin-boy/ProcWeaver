@@ -6,7 +6,45 @@
 // ==========================================================================
 
 import { invokeCommand, isTauriEnvironment } from "./client";
-import { RuleItem, RuleProviderItem, RouteSimulateResult } from "../types/rules";
+import type { CustomRule, RuleItem, RuleProviderItem, RuleWorkbenchState, RouteSimulateResult } from "../types/rules";
+
+let previewWorkbench: RuleWorkbenchState = {
+  profileId: "default",
+  profileName: "预览方案",
+  sourceLabel: "本地方案规则",
+  running: true,
+  revision: 0,
+  outlets: [],
+  rules: [],
+  sourceRules: [{
+    order: 1,
+    expression: "DOMAIN-SUFFIX,example.com,DIRECT",
+    copy: { condition: { kind: "DOMAIN-SUFFIX", value: "example.com", options: [] }, action: { kind: "direct" } },
+  }],
+};
+
+export function fetchCustomRuleWorkbench(): Promise<RuleWorkbenchState> {
+  return invokeCommand("get_custom_rule_workbench", undefined, () => previewWorkbench);
+}
+
+export function saveCustomRules(context: RuleWorkbenchState, rules: CustomRule[]): Promise<RuleWorkbenchState> {
+  const request = {
+    profileId: context.profileId,
+    revision: context.revision,
+    rules: rules.map(({ id, profileId, enabled, condition, action }) => ({ id, profileId, enabled, condition, action })),
+  };
+  return invokeCommand("save_custom_rules", { request }, () => {
+    if (previewWorkbench.revision !== request.revision || previewWorkbench.profileId !== request.profileId) {
+      throw new Error("自定义规则已变更，请刷新后重试");
+    }
+    previewWorkbench = {
+      ...previewWorkbench,
+      revision: request.revision + 1,
+      rules: rules.map((rule) => ({ ...rule, availability: "ready" })),
+    };
+    return previewWorkbench;
+  });
+}
 
 // 常见中国顶级与常见直连域名特征
 const DOMESTIC_SUFFIXES = [

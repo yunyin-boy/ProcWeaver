@@ -484,6 +484,9 @@ pub async fn update_profile(id: String) -> Result<ProfileItem, String> {
     }
 
     refresh::commit(&list, &list[idx], &full_path, &final_content).await?;
+    if list[idx].is_selected {
+        crate::routing_overrides::policy_groups::admission::wake();
+    }
     Ok(list[idx].clone())
 }
 
@@ -1471,6 +1474,27 @@ pub fn compose_business_channels(raw: &str, channels: &[BusinessChannelSpec]) ->
     serde_yaml::to_string(&yaml).map_err(|e| e.to_string())
 }
 
+pub(crate) fn smart_group_value(name: &str, rule_type: &str, members: &[String], tolerance: Option<u32>) -> Result<serde_yaml::Value, String> {
+    if name.trim().is_empty() { return Err("策略组名称不能为空".into()); }
+    let (kind, interval) = match rule_type {
+        "select" => ("select", None),
+        "url-test" => ("url-test", Some(300)),
+        "fallback" => ("fallback", Some(300)),
+        "sticky" => ("fallback", Some(600)),
+        "relay" => ("relay", None),
+        _ => return Err("策略组类型无效".into()),
+    };
+    let mut value = serde_json::json!({"name": name, "type": kind, "proxies": members});
+    if let Some(interval) = interval {
+        value["url"] = "https://cp.cloudflare.com/generate_204".into();
+        value["interval"] = interval.into();
+        value["lazy"] = true.into();
+        if let Some(tolerance) = tolerance.filter(|value| *value > 0 && kind == "url-test") {
+            value["tolerance"] = tolerance.into();
+        }
+    }
+    serde_yaml::to_value(value).map_err(|error| error.to_string())
+}
 #[tauri::command]
 pub async fn sync_smart_groups_to_core(
     groups: Vec<SmartGroupInjectSpec>,
@@ -1553,32 +1577,9 @@ pub async fn sync_smart_groups_to_core(
         }
     }
 
-    // 3. 注入本次传入的期望自建组集合
     for group in &groups {
-        if group.name.trim().is_empty() { return Err("策略组名称不能为空".into()); }
-        let (kind, is_sticky) = match group.group_type.as_str() {
-            "select" => ("select", false),
-            "url-test" => ("url-test", false),
-            "fallback" => ("fallback", false),
-            "sticky" => ("fallback", true), // 极稳接力模式在内核映射为顺位 fallback，配合客户端锁定首位节点实现不死不切
-            "relay" => ("relay", false),   // 链式中继模式（前置+后置双跳）
-            _ => return Err("策略组类型无效".into()),
-        };
-        let mut value = serde_json::json!({"name": group.name, "type": kind, "proxies": group.proxies});
-        if kind != "select" && kind != "relay" {
-            value["url"] = "https://cp.cloudflare.com/generate_204".into();
-            // 极稳模式使用更长探活周期 (600s)，url-test 使用 300s；统一开启 lazy 杜绝无流量盲测
-            value["interval"] = if is_sticky { 600.into() } else { 300.into() };
-            value["lazy"] = true.into();
-            if let Some(tol) = group.tolerance {
-                if kind == "url-test" && tol > 0 {
-                    value["tolerance"] = tol.into();
-                }
-            }
-        }
-        entries.push(serde_yaml::to_value(value).map_err(|e| e.to_string())?);
+        entries.push(smart_group_value(&group.name, &group.group_type, &group.proxies, group.tolerance)?);
     }
-
     // 4. 将本次生效的自建策略组追加到主 select 策略组 (如 PROXY, 节点选择 等) 的可选列表中
     let smart_group_names: Vec<String> = groups.iter().map(|g| g.name.clone()).collect();
     for item in entries.iter_mut() {
