@@ -1,6 +1,6 @@
 # ProcWeaver
 
-**Windows 网络调试工具 · v3.0.0**
+**Windows 网络调试工具 · v3.0.1**
 
 ProcWeaver 用于观察 Windows 应用的联网行为。你可以查看某个进程连接了哪些域名和端口、上传和下载了多少数据，以及连接是正常结束还是在解析、建立连接或传输时遇到问题。调试多个应用时，可以用进程套件限定要处理的进程、目标和端口。
 
@@ -13,7 +13,7 @@ ProcWeaver 用于观察 Windows 应用的联网行为。你可以查看某个进
 
 ## 下载与启动
 
-| 版本 | 适用场景 | 启动程序 | Windows x64 绿色便携包 |
+| 版本 | 适用场景 | 启动程序 | 已发布的 v3.0.0 Windows x64 绿色便携包 |
 | --- | --- | --- | --- |
 | 完整版 | 结合实时流量、活跃与历史连接、规则试算和运行日志综合排障。 | `ProcWeaver.exe` | [下载完整版](https://github.com/yunyin-boy/ProcWeaver/releases/download/v3.0.0/ProcWeaver_v3.0.0_x64_Portable.zip) |
 | 独立进程版 | 围绕指定应用或进程套件，查看连接记录、失败信息和本地诊断日志。 | `ProcWeaverProcess.exe` | [下载独立进程版](https://github.com/yunyin-boy/ProcWeaver/releases/download/v3.0.0/ProcWeaverProcess_v3.0.0_x64_Portable.zip) |

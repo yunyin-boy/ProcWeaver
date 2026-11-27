@@ -1,129 +1,125 @@
-import type { ReactNode } from "react";
-import { Package, Radio, Activity, Settings } from "lucide-react";
+import { PortableUpdatePrompt } from "../components/function-mode/PortableUpdates";
+import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { Activity, Globe, Settings, Workflow, X } from "lucide-react";
 import { useBundleRuntime } from "../hooks/useBusinessBundles";
 import { useBundleTools } from "../hooks/useBundleTools";
 import { useExternalProxyEditor } from "../hooks/useExternalProxyEditor";
-import { useProcessWorkspace, type ProcessTab } from "../hooks/useProcessWorkspace";
+import { useProcessWorkspace } from "../hooks/useProcessWorkspace";
+import { useTheme } from "../context/ThemeContext";
 import { BusinessBundleView } from "./BusinessBundleView";
 import { ExternalProxyDialog } from "../components/business-bundle/ExternalProxyDialog";
 import { BundleToolsDialog } from "../components/business-bundle/BundleToolsDialog";
-import { ProcessAccessBar, ProcessDiagnostics, ProcessSettings } from "../components/function-mode/ProcessWorkspacePanels";
-import { ThemeToggle } from "../components/ThemeToggle";
-import { WindowControls } from "../components/WindowControls";
-import { CloseConfirmModal } from "../components/CloseConfirmModal";
-import type { FunctionModeView } from "../types/functionMode";
-import { windowStartDragging, windowToggleMaximize } from "../api";
-import appIcon from "../assets/app-icon.png";
+import { ProcessDiagnostics, ProcessSettings } from "../components/function-mode/ProcessWorkspacePanels";
+import type { BundleLocalInstance } from "../types/businessBundle";
+import { isTauri } from "../api";
+import { externalProxyApi } from "../api/externalProxy";
+import { CloseConfirmModal } from "../../src-next/components/CloseConfirmModal";
+import { ConfirmModal } from "../../src-next/primitives/ConfirmModal";
+import { WorkbenchLayout } from "../../src-next/shell/WorkbenchLayout";
 
-export function ProcessProxyView({
-  modeControl,
-  capability,
-  onFull,
-  standalone = false,
-}: {
-  modeControl?: ReactNode;
-  capability: FunctionModeView;
-  onFull?: () => void;
-  standalone?: boolean;
-  maintenance?: ReactNode;
-}) {
+const navigation = [
+  [
+    { id: "bundles", label: "进程分流", icon: Workflow },
+    { id: "external", label: "外部代理", icon: Globe },
+  ],
+  [
+    { id: "diagnostics", label: "连接与诊断", icon: Activity },
+    { id: "settings", label: "系统首选项", icon: Settings },
+  ],
+] as const;
+
+interface HotResetPrompt { ticket: string; bundles: string[]; connectionCount: number }
+
+export function ProcessProxyView() {
   useBundleRuntime();
+  const { theme, setTheme } = useTheme();
   const tools = useBundleTools();
   const state = useProcessWorkspace();
   const editor = useExternalProxyEditor(state.tab === "external", null, () => {});
+  const [outletTarget, setOutletTarget] = useState<BundleLocalInstance | null>(null);
+  const outletEditor = useExternalProxyEditor(outletTarget !== null, outletTarget, () => setOutletTarget(null));
+  const [hotReset, setHotReset] = useState<HotResetPrompt | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [status, setStatus] = useState("");
 
-  const tabs: { id: ProcessTab; label: string; icon: React.ReactNode; badge?: string }[] = [
-    { id: "bundles", label: "业务包", icon: <Package className="w-3.5 h-3.5" /> },
-    { id: "external", label: "外部代理", icon: <Radio className="w-3.5 h-3.5" /> },
-    { id: "diagnostics", label: "连接与诊断", icon: <Activity className="w-3.5 h-3.5" /> },
-    { id: "settings", label: "偏好设置", icon: <Settings className="w-3.5 h-3.5" /> },
-  ];
+  useEffect(() => {
+    if (!isTauri()) return;
+    const listener = listen<{ prompt?: HotResetPrompt; warning?: string }>("procweaver-external-hot-reset", ({ payload }) => {
+      if (payload.warning) setStatus(payload.warning);
+      if (payload.prompt) setHotReset(payload.prompt);
+    });
+    void listener.catch(error => setStatus(String(error)));
+    return () => { void listener.then(unlisten => unlisten(), () => {}); };
+  }, []);
+
+  const confirmHotReset = async (refresh: boolean) => {
+    if (!hotReset || refreshing) return;
+    setRefreshing(true);
+    try {
+      const result = await externalProxyApi.confirmHotReset(hotReset.ticket, refresh);
+      if (refresh) setStatus(`已刷新 ${result.refreshed} 条旧连接${result.failed ? `，${result.failed} 条未能刷新` : ""}。`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRefreshing(false);
+      setHotReset(current => current?.ticket === hotReset.ticket ? null : current);
+    }
+  };
+
+  const captureMode = state.capture.state.view?.mode;
+  const captureLabel = captureMode === "windivert" ? "WinDivert" : captureMode === "user_mode" ? "用户态 Hook" : "App-Proxy";
+  const readyCount = state.external?.states.filter(item => item.ready).length ?? 0;
+  const captureActive = Boolean(state.external?.enabled && state.capture.state.view?.active);
+  const statusLabel = !state.external ? "正在读取" : !state.external.enabled ? "分流已暂停" : captureActive ? "分流已就绪" : "分流待就绪";
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-800 font-sans">
-      {/* 顶部标题与导航栏 */}
-      <header className="relative shrink-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800/80 z-50 shadow-2xs">
-        {/* 顶部标题栏与窗口控制 */}
-        <div
-          className="flex flex-wrap items-center justify-between gap-3 px-5 py-2.5 border-b border-slate-100 dark:border-slate-800/60"
-          onMouseDown={(event) => {
-            if (event.button !== 0 || (event.target as HTMLElement).closest("button,select,input,a,label,[data-no-drag]")) return;
-            if (event.detail === 2) void windowToggleMaximize();
-            else void windowStartDragging();
-          }}
-        >
-          {/* 左侧 Logo 与模式徽标 */}
-          <div className="flex items-center gap-2.5 select-none">
-            <img src={appIcon} alt="" className="h-7 w-7 drop-shadow-xs" draggable={false} />
-            <div className="flex items-center space-x-2">
-              <span className="font-bold text-sm tracking-tight text-slate-900 dark:text-white">{standalone ? "ProcWeaver Process" : "ProcWeaver"}</span>
-              <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-mono text-[10px] font-semibold border border-indigo-200/60 dark:border-indigo-800/60">
-                {standalone ? "独立进程版" : "进程代理功能"}
-              </span>
+    <>
+      <WorkbenchLayout
+        navigation={navigation}
+        currentTab={state.tab}
+        onSelectTab={state.actions.setTab}
+        sidebarStorageKey="procweaver_process_sidebar_collapsed"
+        chrome={{
+          productName: "ProcWeaver Process",
+          isRunning: captureActive,
+          statusLabel,
+          theme,
+          onToggleTheme: () => setTheme(theme === "dark" ? "light" : theme === "light" ? "system" : "dark"),
+        }}
+        statusBar={
+          <footer className="workbench-statusbar">
+            <div className="flex flex-wrap items-center gap-x-3">
+              {captureMode && <span>捕获方式 <strong className="font-medium text-[var(--text-primary)]">{captureLabel}</strong></span>}
+              {state.external && <span>就绪入口 <strong className="font-medium tabular-nums text-[var(--text-primary)]">{readyCount}</strong></span>}
             </div>
-          </div>
-
-          {/* 右侧：模式切换下拉 + 主题切换 + 窗口控制 */}
-          <div className="flex items-center gap-2">
-            {modeControl}
-            <div className="h-4 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block mx-1" />
-            <ThemeToggle compact />
-            <WindowControls />
-          </div>
-        </div>
-
-        {/* 导航 Tab 栏 */}
-        <nav aria-label="进程代理导航" className="px-4 flex gap-1.5 overflow-x-auto pt-1 pb-1">
-          {tabs.map((tab) => {
-            const isActive = state.tab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                aria-current={isActive ? "page" : undefined}
-                onClick={() => state.actions.setTab(tab.id)}
-                className={`shrink-0 px-3.5 py-1.5 text-xs rounded-xl font-medium transition flex items-center space-x-1.5 cursor-pointer select-none border ${
-                  isActive
-                    ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold border-indigo-200 dark:border-indigo-800/80 shadow-2xs"
-                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100/80 dark:hover:bg-slate-800/60 border-transparent"
-                }`}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-                {tab.badge && (
-                  <span className={`text-[9px] px-1 py-0.2 rounded-full font-mono ${
-                    isActive ? "bg-indigo-200/70 dark:bg-indigo-800/80 text-indigo-800 dark:text-indigo-200 font-bold" : "bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-                  }`}
-                  >
-                    {tab.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
-      </header>
-
-      {/* 进程代理控制栏 (仅在业务包 Tab 或诊断 Tab 展示) */}
-      {state.tab === "bundles" && (
-        <ProcessAccessBar state={state} capability={capability} onFull={onFull} />
-      )}
-
-      {/* 主体视图区域 */}
-      <main className="flex-1 min-h-0 overflow-auto relative z-0">
-        {state.tab === "bundles" && <BusinessBundleView mode={null} processOnly />}
+            {state.external && <span>连接记录 <strong className="font-medium tabular-nums text-[var(--text-primary)]">{state.external.records.length}</strong></span>}
+          </footer>
+        }
+      >
+        {status && <div role="status" className="workbench-panel mb-4 flex items-center justify-between gap-3 px-4 py-2 text-xs">
+          <span>{status}</span>
+          <button type="button" onClick={() => setStatus("")} className="workbench-title-button shrink-0" aria-label="关闭通知"><X size={14} aria-hidden="true" /></button>
+        </div>}
+        {state.tab === "bundles" && <BusinessBundleView mode={null} processWorkspace={state} onOpenExternalOutlet={setOutletTarget} />}
         {state.tab === "external" && <ExternalProxyDialog inline open state={editor} onClose={() => {}} />}
         {state.tab === "diagnostics" && <ProcessDiagnostics state={state} />}
-        {state.tab === "settings" && (
-          <ProcessSettings
-            state={state}
-            standalone={standalone}
-          />
-        )}
-      </main>
+        {state.tab === "settings" && <ProcessSettings state={state} />}
+      </WorkbenchLayout>
 
-      <BundleToolsDialog {...tools} />
-      <CloseConfirmModal appName={standalone ? "ProcWeaver Process" : "ProcWeaver"} />
-    </div>
+      <BundleToolsDialog {...tools} workbench />
+      <ExternalProxyDialog open={outletTarget !== null} bundleName={outletTarget?.definition.packageName} state={outletEditor}
+        onClose={() => setOutletTarget(null)}
+        onManageOutlets={() => { setOutletTarget(null); state.actions.setTab("external"); }}
+      />
+      {hotReset && <ConfirmModal
+        isOpen title="刷新旧连接" variant="warning"
+        description={'「' + hotReset.bundles.join("、") + '」有 ' + hotReset.connectionCount + ' 条旧 TCP 连接。刷新后由应用自行重连。'}
+        confirmText="刷新连接" cancelText="保留旧连接" isLoading={refreshing}
+        onConfirm={() => confirmHotReset(true)} onCancel={() => confirmHotReset(false)}
+      />}
+      <CloseConfirmModal appName="ProcWeaver Process" />
+      <PortableUpdatePrompt />
+    </>
   );
 }

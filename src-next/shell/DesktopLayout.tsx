@@ -1,9 +1,9 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import {
   Activity, ArrowLeftRight, ClipboardList, Globe, LayoutDashboard,
-  Monitor, PanelLeftClose, PanelLeftOpen, Power, Radio, ScrollText, Settings, Workflow,
+  Monitor, Power, Radio, ScrollText, Settings, Workflow,
 } from "lucide-react";
-import { WindowChrome } from "./WindowChrome";
+import { WorkbenchLayout } from "./WorkbenchLayout";
 import { StatusBar } from "./StatusBar";
 import { CapsuleToggle } from "../primitives/CapsuleToggle";
 import { RoutingModeControl, ROUTING_MODES } from "../primitives/RoutingModeControl";
@@ -157,135 +157,51 @@ export const DesktopLayout: React.FC<DesktopLayoutProps> = ({
   onToggleSystemProxy,
   children,
 }) => {
-  const workbenchRef = useRef<HTMLDivElement>(null);
-  const navigationId = useId();
-  const [sidebarPreference, setSidebarPreference] = useState<boolean | null>(() => {
-    try {
-      const saved = localStorage.getItem(SIDEBAR_STORAGE_KEY);
-      if (saved === "true" || saved === "false") return saved === "true";
-    } catch {}
-    return null;
-  });
-  const [narrowWorkbench, setNarrowWorkbench] = useState(false);
-  useEffect(() => {
-    if (sidebarPreference !== null || !workbenchRef.current) return;
-    const observer = new ResizeObserver(([entry]) => setNarrowWorkbench(entry.contentRect.width <= 760));
-    observer.observe(workbenchRef.current);
-    return () => observer.disconnect();
-  }, [sidebarPreference]);
-
-  const isMini = formFactor === "mini";
-  const collapsed = sidebarPreference ?? (formFactor === "compact" || narrowWorkbench);
-  const SidebarIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
-  const sidebarToggleLabel = collapsed ? "展开侧栏" : "收起侧栏";
-  const pageLabel = isMini ? "桌面挂件" : navigation.flat().find(({ id }) => id === currentTab)?.label;
   const systemProxyLabel = systemProxyEnabled ? "系统代理已接管" : "系统代理未接管";
-
   const workbench = (
-    <div
-      ref={workbenchRef}
-      className="workbench-window"
-      data-mini={isMini || undefined}
-      data-sidebar={isMini ? undefined : collapsed ? "collapsed" : "expanded"}
-    >
-      <WindowChrome
-        isRunning={isRunning}
-        onToggleCore={onToggleCore}
-        theme={theme}
-        onToggleTheme={onToggleTheme}
-        formFactor={formFactor}
-        onSetFormFactor={onSetFormFactor}
-        isPinnedTop={isPinnedTop}
-        onTogglePinTop={onTogglePinTop}
-        sidebarToggle={!isMini && (
-          <button
-            type="button"
-            className="workbench-title-button workbench-rail-toggle"
-            aria-label={sidebarToggleLabel}
-            aria-expanded={!collapsed}
-            aria-controls={navigationId}
-            title={sidebarToggleLabel}
-            onClick={() => {
-              setSidebarPreference(!collapsed);
-              try {
-                localStorage.setItem(SIDEBAR_STORAGE_KEY, String(!collapsed));
-              } catch {}
-            }}
-          >
-            <SidebarIcon size={16} aria-hidden="true" />
-          </button>
-        )}
-      />
+    <WorkbenchLayout
+      navigation={navigation}
+      currentTab={currentTab}
+      onSelectTab={onSelectTab}
+      sidebarStorageKey={SIDEBAR_STORAGE_KEY}
+      chrome={{ isRunning, onToggleCore, theme, onToggleTheme, formFactor, onSetFormFactor, isPinnedTop, onTogglePinTop }}
+      railControls={(collapsed) => currentTab !== "overview" && (onChangeMode || onToggleSystemProxy) && (
+        <div className="workbench-rail-quick" aria-label="网络快捷操作">
+          {onChangeMode && (collapsed ? (
+            <SidebarRoutingMode mode={mode} onChange={onChangeMode} />
+          ) : (
+            <div className="grid gap-1">
+              <span className="px-1 text-xs text-[var(--text-muted)]">分流模式</span>
+              <RoutingModeControl mode={mode} onChange={onChangeMode} />
+            </div>
+          ))}
 
-      <div className="workbench-body">
-        {!isMini && (
-          <aside className="workbench-rail" data-collapsed={collapsed || undefined}>
-            <nav id={navigationId} className="workbench-nav" aria-label="工作台导航">
-              {navigation.map((group, index) => (
-                <div key={group[0].id} className={index ? "workbench-nav workbench-nav-group" : "workbench-nav"}>
-                  {group.map(({ id, label, icon: Icon }) => (
-                    <button
-                      key={id}
-                      type="button"
-                      className="workbench-nav-button"
-                      aria-label={label}
-                      aria-current={currentTab === id ? "page" : undefined}
-                      title={collapsed ? undefined : label}
-                      onClick={() => onSelectTab(id)}
-                    >
-                      <Icon size={16} className="shrink-0" aria-hidden="true" />
-                      <span className={collapsed ? "workbench-rail-tooltip" : "truncate"} aria-hidden="true">{label}</span>
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </nav>
-
-            {currentTab !== "overview" && (onChangeMode || onToggleSystemProxy) && (
-              <div className="workbench-rail-quick" aria-label="网络快捷操作">
-                {onChangeMode && (collapsed ? (
-                  <SidebarRoutingMode mode={mode} onChange={onChangeMode} />
-                ) : (
-                  <div className="grid gap-1">
-                    <span className="px-1 text-xs text-[var(--text-muted)]">分流模式</span>
-                    <RoutingModeControl mode={mode} onChange={onChangeMode} />
-                  </div>
-                ))}
-
-                {onToggleSystemProxy && (collapsed ? (
-                  <button
-                    type="button"
-                    role="switch"
-                    className="workbench-action workbench-rail-icon"
-                    aria-checked={systemProxyEnabled}
-                    aria-label="系统代理"
-                    onClick={() => onToggleSystemProxy(!systemProxyEnabled)}
-                  >
-                    <Power size={17} aria-hidden="true" />
-                    <span className="workbench-rail-tooltip" aria-hidden="true">{systemProxyLabel}</span>
-                  </button>
-                ) : (
-                  <div className="flex items-center justify-between gap-2 rounded-lg bg-[var(--workbench-control)] px-2 py-1.5">
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium">系统代理</p>
-                      <p className="truncate text-[11px] text-[var(--text-muted)]">
-                        {systemProxyEnabled ? "127.0.0.1:" + mixedPort : "未接管"}
-                      </p>
-                    </div>
-                    <CapsuleToggle checked={systemProxyEnabled} onChange={onToggleSystemProxy} title={systemProxyLabel} />
-                  </div>
-                ))}
+          {onToggleSystemProxy && (collapsed ? (
+            <button
+              type="button"
+              role="switch"
+              className="workbench-action workbench-rail-icon"
+              aria-checked={systemProxyEnabled}
+              aria-label="系统代理"
+              onClick={() => onToggleSystemProxy(!systemProxyEnabled)}
+            >
+              <Power size={17} aria-hidden="true" />
+              <span className="workbench-rail-tooltip" aria-hidden="true">{systemProxyLabel}</span>
+            </button>
+          ) : (
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-[var(--workbench-control)] px-2 py-1.5">
+              <div className="min-w-0">
+                <p className="text-xs font-medium">系统代理</p>
+                <p className="truncate text-[11px] text-[var(--text-muted)]">
+                  {systemProxyEnabled ? "127.0.0.1:" + mixedPort : "未接管"}
+                </p>
               </div>
-            )}
-          </aside>
-        )}
-
-        <main className="workbench-main" data-page={isMini ? undefined : currentTab} aria-label={pageLabel}>
-          <div className="workbench-main-inner">{children}</div>
-        </main>
-      </div>
-
-      {!isMini && (
+              <CapsuleToggle checked={systemProxyEnabled} onChange={onToggleSystemProxy} title={systemProxyLabel} />
+            </div>
+          ))}
+        </div>
+      )}
+      statusBar={
         <StatusBar
           bandwidth={bandwidth}
           mixedPort={mixedPort}
@@ -294,8 +210,10 @@ export const DesktopLayout: React.FC<DesktopLayoutProps> = ({
           memoryUsageBytes={memoryUsageBytes}
           onOpenCommandPalette={onOpenCommandPalette}
         />
-      )}
-    </div>
+      }
+    >
+      {children}
+    </WorkbenchLayout>
   );
 
   if (isTauriEnvironment()) return workbench;

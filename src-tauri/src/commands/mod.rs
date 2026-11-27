@@ -12,6 +12,10 @@ mod profile_delete_tests;
 pub mod sysproxy;
 pub mod geo;
 pub mod settings;
+#[cfg(not(target_os = "android"))]
+pub mod lan_access;
+#[cfg(not(target_os = "android"))]
+pub mod tun;
 pub mod health_probe;
 pub(crate) mod node_catalog;
 pub mod local_rules;

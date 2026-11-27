@@ -399,6 +399,10 @@ async fn start_core_inner(core_mode: Option<String>, state: &CoreStateMutex) -> 
     // 监听端口与控制接口均就绪才报告成功，供自动重启事务判断是否回滚。
     let ready = async {
         wait_for_core_ready(&mut child, preferences.controller_port, preferences.mixed_port).await?;
+        #[cfg(windows)]
+        if preferences.traffic_mode == "tun" {
+            super::tun::confirm(preferences.controller_port, true).await?;
+        }
         let raw = std::fs::read_to_string(&core_config).map_err(|_| "读取核心启动配置失败")?;
         super::dns_runtime::confirm(&raw, child.id()).await?;
         crate::routing_overrides::bundles::select(&raw).await?;

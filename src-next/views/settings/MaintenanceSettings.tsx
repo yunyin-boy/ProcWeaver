@@ -1,3 +1,4 @@
+import { PortableUpdateSettings, usesPortableUpdates } from "../../../src/components/function-mode/PortableUpdates";
 import React, { useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, RefreshCw, Trash2, Upload } from "lucide-react";
 import { Button } from "../../primitives/Button";
@@ -76,7 +77,7 @@ export function MaintenanceSettings({ busy, restoring, onRestore, networkAction,
   useEffect(() => {
     void refreshCore();
     void refreshGeo();
-    void findAppUpdate();
+    if (!usesPortableUpdates()) void findAppUpdate();
   }, []);
 
   const updateApp = async () => {
@@ -201,6 +202,7 @@ export function MaintenanceSettings({ busy, restoring, onRestore, networkAction,
         )}
       </SettingsSection>
 
+      {usesPortableUpdates() ? <PortableUpdateSettings title="ProcWeaver 更新" busy={busy} /> : (
       <SettingsSection title="ProcWeaver 更新" tools={
         <Button type="button" onClick={() => void findAppUpdate()} loading={appAction === "check"} disabled={updateButtonsLocked}>
           {appAction !== "check" && <RefreshCw size={14} aria-hidden="true" />}检查更新
@@ -234,6 +236,7 @@ export function MaintenanceSettings({ busy, restoring, onRestore, networkAction,
           </div>
         )}
       </SettingsSection>
+      )}
 
       <SettingsSection title="Geo 离线数据库" tools={
         geoReadFailed

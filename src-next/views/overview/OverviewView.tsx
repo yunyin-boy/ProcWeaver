@@ -7,12 +7,11 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { Globe, ChevronRight, Copy, Power } from "lucide-react";
 import { RoutingModeControl } from "../../primitives/RoutingModeControl";
 import { Button } from "../../primitives/Button";
-import { CapsuleToggle } from "../../primitives/CapsuleToggle";
 import { ExclusionsModal } from "./ExclusionsModal";
 import { CoreStatusSnapshot } from "../../types/core";
 import { BandwidthSnapshot } from "../../types/telemetry";
 import { ExitIpHealthInfo } from "../../types/exitHealth";
-import { GeneralSettings, DEFAULT_GENERAL_SETTINGS } from "../../types/settings";
+import type { GeneralSettings } from "../../types/settings";
 import { BundleSummary } from "../../types/bundle";
 import {
   formatBitrate,
@@ -25,12 +24,18 @@ import { generateSvgWave } from "../../utils/trafficWave";
 import { fetchExitIpHealth, getCachedExitHealth } from "../../services/exitHealthService";
 import { toggleSystemProxy, getSystemProxyState } from "../../services/systemProxyService";
 import { flushDns, reloadCoreConfig } from "../../services/dnsService";
-import { getGeneralSettings, saveGeneralSettings } from "../../services/settingsService";
+import { getGeneralSettings, saveBypassList } from "../../services/settingsService";
 import { getBundleSummary } from "../../services/bundleService";
+import { LanAccessToggle } from "../../components/LanAccessToggle";
+import { TunToggle } from "../../components/TunToggle";
+import type { LanAccess } from "../../utils/useLanAccess";
+import { describeCaptureMode, type TunAccess } from "../../utils/useTunAccess";
 
 interface OverviewViewProps {
   status: CoreStatusSnapshot;
   bandwidth: BandwidthSnapshot;
+  lanAccess: LanAccess;
+  tunAccess: TunAccess;
   onNavigateTab: (tab: string) => void;
   onShowNotice: (msg: string) => void;
   onToggleCore: (start: boolean) => Promise<void>;
@@ -41,6 +46,8 @@ interface OverviewViewProps {
 export const OverviewView: React.FC<OverviewViewProps> = ({
   status,
   bandwidth,
+  lanAccess,
+  tunAccess,
   onNavigateTab,
   onShowNotice,
   onToggleCore,
@@ -211,35 +218,21 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   );
 
   // 5. 首选项设置 (TUN 模式、允许局域网、排除名单)
-  const [settings, setSettings] = useState<GeneralSettings>({
-    ...DEFAULT_GENERAL_SETTINGS,
-    bypassList: ["*.cn", "10.0.0.0/8", "192.168.0.0/16", "localhost"],
-  });
+  const [settings, setSettings] = useState<GeneralSettings | null>(null);
   const [isExclusionsOpen, setIsExclusionsOpen] = useState(false);
 
   useEffect(() => {
     getGeneralSettings().then(setSettings);
   }, []);
 
-  const handleToggleTun = async (val: boolean) => {
-    const next = { ...settings, tunMode: val, trafficMode: val ? ("tun" as const) : ("app_proxy" as const) };
-    setSettings(next);
-    await saveGeneralSettings(next);
-    onShowNotice(val ? "TUN 虚拟网卡已接管系统流量" : "TUN 虚拟网卡已停用");
-  };
-
-  const handleToggleLan = async (val: boolean) => {
-    const next = { ...settings, allowLan: val };
-    setSettings(next);
-    await saveGeneralSettings(next);
-    onShowNotice(val ? "已允许局域网设备接入" : "已关闭局域网连接");
-  };
+  const updateBypassList = useCallback((list: string[]) => {
+    setSettings((current) => current && { ...current, bypassList: list });
+  }, []);
 
   const handleSaveBypass = async (list: string[]) => {
-    const next = { ...settings, bypassList: list };
-    setSettings(next);
-    await saveGeneralSettings(next);
-    onShowNotice(`排除名单已更新 (${list.length} 条生效)`);
+    const saved = await saveBypassList(list);
+    updateBypassList(saved);
+    onShowNotice(`排除名单已保存 (${saved.length} 条)`);
   };
 
   // 6. 快捷运维动作 (重载配置 & 清理 DNS)
@@ -325,7 +318,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const upFormatted = formatBitrate(bandwidth.uploadRateBytes);
   const totalDownFormatted = formatTrafficBytes(bandwidth.downloadTotalBytes);
   const totalUpFormatted = formatTrafficBytes(bandwidth.uploadTotalBytes);
-  const bypassList = settings.bypassList ?? [];
+  const bypassList = settings?.bypassList ?? [];
 
   const linkedProperties = [
     {
@@ -496,6 +489,11 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               常驻 {formattedUptime}
             </span>
           </header>
+          <p role="status" aria-label="当前接管方式" title={tunAccess.status?.detail ?? undefined}
+            className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+            <span className="text-[var(--text-muted)]">接管方式</span>
+            <strong className="font-medium">{describeCaptureMode(tunAccess.status, tunAccess.pending)}</strong>
+          </p>
           <div className="workbench-proxy-entry flex-1 content-center">
             <button
               type="button"
@@ -517,35 +515,28 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </p>
           </div>
           <div className="workbench-network-switches min-h-11" role="group" aria-label="网络开关">
-            <div className="workbench-network-switch-row">
-              <span>TUN 虚拟网卡</span>
-              <CapsuleToggle checked={settings.tunMode} onChange={handleToggleTun} title="TUN 虚拟网卡" />
-            </div>
-            <div className="workbench-network-switch-row">
-              <span>允许局域网</span>
-              <CapsuleToggle checked={settings.allowLan} onChange={handleToggleLan} title="允许局域网" />
-            </div>
+            <TunToggle access={tunAccess} disabled={lanAccess.pending} onShowNotice={onShowNotice} />
+            <LanAccessToggle access={lanAccess} disabled={tunAccess.pending} onShowNotice={onShowNotice} />
           </div>
           <div className="grid gap-1">
             <span className="text-xs font-medium">分流模式</span>
             <RoutingModeControl mode={status.mode} onChange={onChangeMode} />
           </div>
-          <button type="button" className="workbench-control-row min-h-11 w-full text-left" onClick={() => setIsExclusionsOpen(true)}>
+          <button type="button" className="workbench-control-row min-h-11 w-full text-left" disabled={!settings} onClick={() => setIsExclusionsOpen(true)}>
             <div className="min-w-0">
               <p>排除名单</p>
               {bypassList.length > 0 && <span className="block truncate" title={bypassList.join(" · ")}>{bypassList.slice(0, 2).join(" · ")}</span>}
             </div>
-            <span className="inline-flex shrink-0 items-center gap-1 tabular-nums">{bypassList.length} 条 <ChevronRight size={13} aria-hidden="true" /></span>
+            <span className="inline-flex shrink-0 items-center gap-1 tabular-nums">{settings ? `${bypassList.length} 条` : "读取中…"} <ChevronRight size={13} aria-hidden="true" /></span>
           </button>
         </section>
       </div>
 
-      <ExclusionsModal
-        isOpen={isExclusionsOpen}
+      {isExclusionsOpen && <ExclusionsModal
         onClose={() => setIsExclusionsOpen(false)}
-        bypassList={bypassList}
+        onLoad={updateBypassList}
         onSave={handleSaveBypass}
-      />
+      />}
     </div>
   );
 };

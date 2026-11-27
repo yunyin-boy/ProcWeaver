@@ -13,6 +13,8 @@ import {
 
 interface WindowChromeProps {
   isRunning: boolean;
+  productName?: string;
+  statusLabel?: string;
   onToggleCore?: (start: boolean) => void;
   theme: "light" | "dark" | "system";
   onToggleTheme: () => void;
@@ -25,6 +27,8 @@ interface WindowChromeProps {
 
 export const WindowChrome: React.FC<WindowChromeProps> = ({
   isRunning,
+  productName = "ProcWeaver",
+  statusLabel = isRunning ? "核心运行中" : "核心就绪",
   onToggleCore,
   theme,
   onToggleTheme,
@@ -100,13 +104,13 @@ export const WindowChrome: React.FC<WindowChromeProps> = ({
         {sidebarToggle}
         <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-semibold text-[var(--text-primary)]">
           <span className="workbench-mark shrink-0"><img src={appIcon} alt="" className="size-4" /></span>
-          <span className="truncate">ProcWeaver</span>
+          <span className="truncate">{productName}</span>
           <span className="hidden font-mono text-[11px] font-normal text-[var(--text-muted)] sm:inline">v{appVersion}</span>
         </div>
         <StatusBadge
           status={isRunning ? "healthy" : "inactive"}
-          label={isRunning ? "核心运行中" : "核心就绪"}
-          title={isRunning ? "停止网络核心" : "启动网络核心"}
+          label={statusLabel}
+          title={onToggleCore ? (isRunning ? "停止网络核心" : "启动网络核心") : statusLabel}
           onClick={onToggleCore ? () => onToggleCore(!isRunning) : undefined}
           className="shrink-0 whitespace-nowrap"
         />

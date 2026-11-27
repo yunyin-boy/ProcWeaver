@@ -9,6 +9,7 @@ export const externalProxyApi = {
   openLogs: () => call<void>("open_process_log_directory"),
   apply: (revision: number, bundles: ExternalBundle[], enabled: boolean) => call<ExternalProxyView>("apply_external_bundles", { revision, bundles, enabled }),
   settings: (input: ExternalSettingsInput) => call<ExternalProxyView>("save_external_proxy_settings", { input }),
+  confirmHotReset: (ticket: string, refresh: boolean) => call<{ refreshed: number; failed: number }>("confirm_external_hot_reset", { ticket, refresh }),
   test: (endpointId: string, host: string, port: number, protocol = "tcp", queryName?: string, timeoutMs = 10000) => call<string>("test_external_proxy", { endpointId, host, port, protocol, queryName, timeoutMs }),
 };
 export type ExternalProxyApi = typeof externalProxyApi;

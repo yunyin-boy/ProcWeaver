@@ -66,7 +66,10 @@ export interface ProcessBundleItem {
   updatedAt?: string;
 }
 
-export function usesExistingBundleRules(bundle: Pick<ProcessBundleItem, "mode" | "policy">): boolean {
+export function usesExistingBundleRules(bundle: {
+  mode: BundleTrafficMode;
+  policy: Pick<BundlePolicyConfig, "useExistingRules">;
+}): boolean {
   return bundle.mode === "sandbox" && bundle.policy?.useExistingRules === true;
 }
 
@@ -99,6 +102,7 @@ export interface LiveProcessItem {
 }
 
 export type ProcessTrafficDriver = "windivert_v1" | "user_mode" | "app_proxy";
+export type CaptureMode = ProcessTrafficDriver | "tun";
 
 export interface ProcessDriverOption {
   id: ProcessTrafficDriver;
@@ -143,7 +147,7 @@ export interface ProcessRoutingState {
   bundlesEnabled: boolean; // 业务包总开关
   processEnabled: boolean; // 进程分流总开关
   driverActive: boolean; // 驱动是否就绪
-  engineMode: ProcessTrafficDriver; // 目标驱动模式 (windivert_v1 | user_mode | app_proxy)
+  engineMode: CaptureMode; // 已选择的接管模式
   activeDriverName?: string; // 内核实际运行状态 (windivert | windivert_pending | user_mode | app_proxy)
   isAdmin?: boolean; // 是否拥有管理员权限
   matchedProcessCount: number; // 当前匹配已启用规则的进程数

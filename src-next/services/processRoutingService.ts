@@ -6,6 +6,7 @@
 // ==========================================================================
 
 import { invokeCommand, isTauriEnvironment } from "./client";
+import { saveGeneralSettings } from "./settingsService";
 import type { LaunchOutcome } from "../../src/api/bundleTools";
 import type { RoutingTarget } from "../../src/types/routingOverrides";
 import type { BundleLocalInstance, BundleProcessMember } from "../../src/types/businessBundle";
@@ -160,11 +161,12 @@ export async function fetchProcessRoutingState({ strict = false }: { strict?: bo
       ]);
 
       if (strict && !overrides?.config) throw new Error("进程分流状态不可用");
-      let engineMode: ProcessTrafficDriver = "app_proxy";
+      let engineMode: ProcessRoutingState["engineMode"] = "app_proxy";
       if (
         settings?.trafficMode &&
         (settings.trafficMode === "user_mode" ||
           settings.trafficMode === "app_proxy" ||
+          settings.trafficMode === "tun" ||
           settings.trafficMode === "windivert_v1")
       ) {
         engineMode = settings.trafficMode;
@@ -174,7 +176,8 @@ export async function fetchProcessRoutingState({ strict = false }: { strict?: bo
       const driverActive =
         activeDriver === "windivert" ||
         (activeDriver === "user_mode" && matchedProcessCount > 0) ||
-        activeDriver === "app_proxy";
+        activeDriver === "app_proxy" ||
+        activeDriver === "tun";
 
       return {
         bundlesEnabled: overrides?.config?.bundlesEnabled ?? false,
@@ -236,14 +239,10 @@ export async function switchProcessDriver(
 ): Promise<ProcessRoutingState> {
   if (isTauriEnvironment()) {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const current = await invoke<any>("get_general_settings");
-      const updated = {
-        ...current,
+      await saveGeneralSettings({
         trafficMode: driver,
         tunMode: false, // 严格遵循用户指令：进程分流不加 TUN
-      };
-      await invoke("save_general_settings", { settings: updated });
+      });
       window.dispatchEvent(new Event("netbox-settings-saved"));
       window.dispatchEvent(new Event("netbox-route-changed"));
 
@@ -1124,7 +1123,10 @@ export async function importBundleItem(bundle: ProcessBundleItem): Promise<Proce
   return next;
 }
 
-export function isRepositoryPackageMounted(bundles: ProcessBundleItem[], item: RepositoryPackage): boolean {
+export function isRepositoryPackageMounted(
+  bundles: readonly Pick<ProcessBundleItem, "packageId" | "repositoryOrigin">[],
+  item: RepositoryPackage,
+): boolean {
   return bundles.some((bundle) => bundle.packageId === item.definition.packageId
     && bundle.repositoryOrigin?.repositoryKey === item.origin.repositoryKey);
 }

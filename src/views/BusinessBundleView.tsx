@@ -7,6 +7,7 @@ import {
 } from "../types/businessBundle";
 import {
   getBundleInstances,
+  createPresetBundleInstance,
   installPresetBundle,
   updateBundleInstance,
   deleteBundleInstance,
@@ -31,11 +32,19 @@ import { RepositoryCenter } from "../components/business-bundle/RepositoryCenter
 import { useBundleRepositories } from "../hooks/useBundleRepositories";
 import { repositoryPage } from "../services/bundleRepositories";
 import type { RepositoryPackage } from "../types/bundleRepository";
-import { type BundlePolicy, defaultBundlePolicy } from "../types/businessBundle";
+import { type BundlePolicy, defaultBundlePolicy, normalizeBundlePolicy } from "../types/businessBundle";
 import { usePlatform } from "../context/PlatformContext";
 import { getGeneralSettings } from "../api/settings";
 import { bundleExes, processKey, bundleProcesses } from "../utils/bundlePlatform";
 import { toggleDnsGuard, getDnsGuardInfo, isTauri } from "../api";
+import type { useProcessWorkspace } from "../hooks/useProcessWorkspace";
+import { ProcessToolbar } from "../../src-next/views/process/ProcessToolbar";
+import { BundleCard } from "../../src-next/views/process/BundleCard";
+import { GithubBundleModal } from "../../src-next/views/process/GithubBundleModal";
+import { PROCESS_DRIVER_OPTIONS } from "../../src-next/types/processRouting";
+import { isRepositoryPackageMounted } from "../../src-next/services/processRoutingService";
+import { ConfirmModal } from "../../src-next/primitives/ConfirmModal";
+import { ProcessBundleEditor } from "../components/business-bundle/ProcessBundleEditor";
 import {
   Wrench,
   Download,
@@ -45,10 +54,12 @@ import {
 
 interface Props {
   mode: string | null;
-  processOnly?: boolean;
+  processWorkspace?: ReturnType<typeof useProcessWorkspace>;
+  onOpenExternalOutlet?: (instance: BundleLocalInstance) => void;
 }
 
-export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly = false }) => {
+export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processWorkspace, onOpenExternalOutlet }) => {
+  const processOnly = Boolean(processWorkspace);
   const platform = usePlatform();
   const os = platform.os === "android" ? "android" : platform.os === "macos" ? "macos" : "windows";
   const bundleState = useBusinessBundles();
@@ -65,7 +76,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   const [selectExitTarget, setSelectExitTarget] = useState<BundleLocalInstance | null>(null);
   const openExit = (instance: BundleLocalInstance) => {
     if (processOnly) {
-      showToast("独立进程版请前往顶部【外部代理】页面管理和分配代理出口");
+      onOpenExternalOutlet?.(instance);
       return;
     }
     setSelectExitTarget(instance);
@@ -79,6 +90,9 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     connections: StaleTcpConnectionItem[];
   } | null>(null);
   const [isImportOpen, setIsImportOpen] = useState<boolean>(false);
+  const [isGithubOpen, setIsGithubOpen] = useState(false);
+  const [creatingBundle, setCreatingBundle] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<BundleLocalInstance | null>(null);
   const [isModeGuideOpen, setIsModeGuideOpen] = useState<boolean>(false);
   const [currentTrafficMode, setCurrentTrafficMode] = useState<string>("app_proxy");
 
@@ -96,11 +110,12 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   // 1. 加载可用节点列表
   useEffect(() => {
     void bundleController.refresh();
+    if (processOnly) return;
 
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const refreshDns = () => {
-      if (!processOnly && platform.dnsGuard) {
+      if (platform.dnsGuard) {
         void getDnsGuardInfo().then(info => {
           if (!disposed) {
             setDnsGuardEnabled(info.enabled);
@@ -130,14 +145,14 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
       window.removeEventListener("procweaver-dns-guard-changed", refreshDns);
       window.removeEventListener("netbox-settings-saved", refreshTrafficMode);
     };
-  }, []);
+  }, [processOnly, platform.dnsGuard]);
 
   // 2. 业务包守护由独立入口检测负责，不修改其他进程使用的旧版全局守护。
-  const persistAndSync = useCallback((nextInstances: BundleLocalInstance[]) => {
-    void bundleController.apply(nextInstances).then(async success => {
-      if (!success) { setBannerToast(""); return; }
-      if (isTauri()) await bundleTools.refreshEntries();
-    });
+  const persistAndSync = useCallback(async (nextInstances: BundleLocalInstance[]) => {
+    const success = await bundleController.apply(nextInstances);
+    if (!success) setBannerToast("");
+    else if (isTauri()) await bundleTools.refreshEntries();
+    return success;
   }, []);
 
   const getExternalLabel = useCallback((inst?: BundleLocalInstance | null) => {
@@ -203,6 +218,11 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
 
   // 切换开关
   const handleToggleSwitch = (instanceId: string, nextState: boolean) => {
+    if (processOnly) {
+      void persistAndSync(instances.map(inst => inst.instanceId === instanceId
+        ? { ...inst, enabled: nextState, updatedAt: Date.now() } : inst));
+      return;
+    }
     const next = updateBundleInstance(instanceId, (prev) => ({
       ...prev,
       enabled: nextState,
@@ -213,7 +233,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
       const isBound = targetInst?.backend === "external"
         ? Boolean(targetInst.externalEndpointId || bundleState.external?.defaultEndpointId)
         : Boolean(targetInst?.slotBindings.main);
-      if (targetInst && isBound) {
+      if (targetInst && isBound && targetInst.backend !== "external") {
         void checkStaleConnectionsForInstance(targetInst);
       }
     }
@@ -271,13 +291,22 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   };
 
   // 导入完成处理
-  const handleImportConfirm = (
+  const handleImportConfirm = async (
     bundle: BusinessBundleDefinition,
     autoEnable: boolean,
     boundNode: string | null
   ) => {
-    const installed = installPresetBundle(bundle, processOnly ? false : autoEnable, processOnly ? null : boundNode);
-    if (processOnly) updateBundleInstance(installed.instanceId, prev => ({ ...prev, backend: "external" }));
+    if (processOnly) {
+      const current = bundleController.getSnapshot();
+      if (current.pending) throw new Error("套件设置正在应用，请稍后再试");
+      const instance = createPresetBundleInstance(bundle);
+      if (!await persistAndSync([...current.instances, { ...instance, backend: "external" }])) {
+        throw new Error(bundleController.getSnapshot().error || "规则包导入失败");
+      }
+      showToast(`已导入「${bundle.packageName}」，可选择出口后启用。`);
+      return;
+    }
+    installPresetBundle(bundle, autoEnable, boundNode);
     const next = getBundleInstances();
     persistAndSync(next);
     setActiveTab("installed");
@@ -291,7 +320,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
   // 预设中心装载
   const handleInstallFromPreset = (item: RepositoryPackage) => {
     const def = item.definition;
-    try { const installed = installPresetBundle(def, false, null, item.origin); if (processOnly) updateBundleInstance(installed.instanceId, prev => ({ ...prev, backend: "external" })); }
+    try { installPresetBundle(def, false, null, item.origin); }
     catch (e) { showToast(e instanceof Error ? e.message : "装载失败，请重试"); return; }
     const next = getBundleInstances();
     persistAndSync(next);
@@ -299,9 +328,23 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     showToast(`📦 已将「${def.packageName}」装载到本机列表（已停用跟随系统默认）！`);
   };
 
+  const repositoryBundles = instances.map(inst => ({
+    packageId: inst.definition.packageId, repositoryOrigin: inst.repositoryOrigin,
+  }));
+  const handleMountFromGithub = async (item: RepositoryPackage) => {
+    const current = bundleController.getSnapshot();
+    if (current.pending) throw new Error("套件设置正在应用，请稍后再试");
+    if (isRepositoryPackageMounted(current.instances.map(inst => ({
+      packageId: inst.definition.packageId, repositoryOrigin: inst.repositoryOrigin,
+    })), item)) return;
+    const instance = createPresetBundleInstance(item.definition, false, null, item.origin);
+    if (!await persistAndSync([...current.instances, { ...instance, backend: "external" }])) {
+      throw new Error(bundleController.getSnapshot().error || "规则包应用失败，请重试");
+    }
+  };
+
   // 自定义工坊保存装载回调
   const handleSaveCustomBundle = (_newInstance: BundleLocalInstance) => {
-    if (processOnly) updateBundleInstance(_newInstance.instanceId, prev => ({ ...prev, backend: "external", enabled: false }));
     const next = getBundleInstances();
     persistAndSync(next);
     setActiveTab("installed");
@@ -402,12 +445,134 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
     }
   };
 
+  const capture = processWorkspace?.capture;
+  const captureView = capture?.state.view;
+  const engineMode = captureView?.mode === "windivert" ? "windivert_v1" : captureView?.mode ?? "app_proxy";
+  const requestedDriver = PROCESS_DRIVER_OPTIONS.find(({ id }) =>
+    id === (capture?.state.requested === "windivert" ? "windivert_v1" : capture?.state.requested));
+  const captureError = capture?.state.error || captureView?.error;
+  const external = processWorkspace?.external;
+  const captureReady = Boolean(external?.enabled && (engineMode === "app_proxy" || captureView?.active));
+  const filteredInstances = instances.filter(inst => (
+    `${inst.definition.packageName} ${bundleExes(inst.definition, os).join(" ")}`.toLowerCase().includes(search.trim().toLowerCase())
+  ));
+  const detailIndex = instances.findIndex(inst => inst.instanceId === detailTarget?.instanceId);
+
   return (
-    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-slate-50 dark:bg-[#08090a] text-slate-900 dark:text-zinc-100 font-sans p-4 md:p-6 select-none transition-colors duration-200">
+    <>
+    {processWorkspace && capture ? (
+      <div className="workbench-view">
+        <ProcessToolbar
+          state={{
+            engineMode, isAdmin: captureView?.admin ?? false, processEnabled: Boolean(external?.enabled),
+            driverActive: captureReady,
+          }}
+          captureSummary={external ? `${external.states.filter(item => item.ready).length} 个入口就绪` : "正在读取状态…"}
+          bundleCount={instances.length}
+          isPending={!external || bundleState.pending || capture.state.pending}
+          driverDisabled={!captureView || bundleState.pending || capture.state.pending}
+          onToggleMaster={() => void processWorkspace.actions.toggle()}
+          onSwitchDriver={(driver) => capture.actions.request(driver === "windivert_v1" ? "windivert" : driver)}
+          searchQuery={search}
+          onSearchChange={setSearch}
+          onOpenAddModal={() => setCreatingBundle(true)}
+          onOpenImportModal={() => setIsImportOpen(true)}
+          onOpenGithubModal={() => setIsGithubOpen(true)}
+        />
+
+        {(processWorkspace.runtimeError || (captureError && !requestedDriver)) && (
+          <div role="alert" className="workbench-panel flex items-center justify-between gap-3 px-4 py-2 text-xs text-[var(--workbench-warning)]">
+            <span className="min-w-0 break-words">{processWorkspace.runtimeError || captureError}</span>
+            <button type="button" className="workbench-action shrink-0" onClick={() => {
+              if (bundleState.error) void persistAndSync(instances);
+              else void processWorkspace.actions.refresh();
+              void capture.actions.refresh();
+            }} disabled={bundleState.pending}>重试</button>
+          </div>
+        )}
+        {bannerToast && (
+          <p role="status" className="workbench-panel px-4 py-2.5 text-xs text-[var(--text-secondary)]">{bannerToast}</p>
+        )}
+
+        {filteredInstances.length ? (
+          <section className="workbench-bundle-list" aria-label="业务规则包">
+            {filteredInstances.map(inst => {
+              const def = inst.definition;
+              const exes = [...new Map(bundleExes(def, os).map(exe => [processKey(exe, os), exe])).values()];
+              const policy = normalizeBundlePolicy(inst.policy ?? def.policy);
+              const outlet = getExternalLabel(inst);
+              return (
+                <BundleCard
+                  key={inst.instanceId}
+                  bundle={{
+                    name: def.packageName, description: def.description, exes,
+                    mainExe: bundleProcesses(def, os).find(member => member.role === "main")?.exe ?? exes[0] ?? "无",
+                    enabled: inst.enabled, mode: def.mode, targetProxy: outlet ?? "", policy,
+                  }}
+                  busy={bundleState.pending || capture.state.pending}
+                  isGlobalActive={captureReady}
+                  entryStatus={entryStates[inst.instanceId]}
+                  outletUnavailable={Boolean(inst.externalEndpointId && external && !outlet)}
+                  notice={engineMode === "app_proxy" && policy.disallowProxyArgs ? "已禁用启动代理参数，纯应用层模式下启动会直连。" : undefined}
+                  onToggleEnabled={(enabled) => {
+                    if (enabled && !outlet) openExit(inst);
+                    else handleToggleSwitch(inst.instanceId, enabled);
+                  }}
+                  onOpenOutletPicker={() => openExit(inst)}
+                  onToggleSubprocesses={(enabled) => {
+                    const nextPolicy = { ...policy, proxySubprocesses: enabled };
+                    void persistAndSync(instances.map(item => item.instanceId === inst.instanceId
+                      ? { ...item, policy: nextPolicy, definition: { ...def, policy: nextPolicy }, isModified: true, updatedAt: Date.now() }
+                      : item));
+                  }}
+                  onOpenDetail={() => setDetailTarget(inst)}
+                  onEdit={() => setEditingTarget(inst)}
+                  onExport={() => setExportTarget(inst)}
+                  onDelete={() => setDeleteTarget(inst)}
+                  onLaunch={inst.backend === "external" ? () => bundleTools.launch({ instanceId: inst.instanceId }) : undefined}
+                />
+              );
+            })}
+          </section>
+        ) : (
+          <section className="workbench-panel grid justify-items-center gap-2.5 px-4 py-10 text-sm">
+            <p role="status">{instances.length ? "暂无匹配的业务规则包" : "暂无业务规则包"}</p>
+            {!instances.length && <button type="button" className="workbench-action workbench-action-primary" onClick={() => setIsGithubOpen(true)}>从 GitHub 获取</button>}
+          </section>
+        )}
+
+        <GithubBundleModal isOpen={isGithubOpen} onClose={() => setIsGithubOpen(false)} existingBundles={repositoryBundles} onMount={handleMountFromGithub} />
+        {requestedDriver && <ConfirmModal
+          isOpen title={`切换为${requestedDriver.title}`} variant="primary"
+          description={<>
+            <p>{requestedDriver.id === "windivert_v1"
+              ? "需要 Windows 管理员权限。切换后，新连接按业务包和外部代理设置转发。"
+              : requestedDriver.id === "user_mode"
+                ? "从业务包启动应用时加载 Hook。切换过程中，正在接管的连接可能断开。"
+                : "将停止透明接管。应用通过启动参数或环境变量接入，禁用启动代理参数的应用可能直连。"}</p>
+            {captureError && <p role="alert" className="mt-2 text-[var(--workbench-danger)]">{captureError}</p>}
+          </>}
+          confirmText="确认切换" isLoading={capture.state.pending}
+          onCancel={capture.actions.cancel} onConfirm={async () => { await capture.actions.confirm(); }}
+        />}
+        {deleteTarget && <ConfirmModal
+          isOpen title="删除业务规则包" description={`删除「${deleteTarget.definition.packageName}」的本机套件和绑定？`}
+          confirmText="删除" isLoading={bundleState.pending}
+          onCancel={() => { if (!bundleState.pending) setDeleteTarget(null); }}
+          onConfirm={async () => {
+            await persistAndSync(bundleController.getSnapshot().instances.filter(inst => inst.instanceId !== deleteTarget.instanceId));
+            setDeleteTarget(null);
+          }}
+        />}
+      </div>
+    ) : (
+    <div className="flex h-full flex-1 select-none flex-col overflow-y-auto bg-slate-50 p-4 font-sans text-slate-900 transition-colors duration-200 dark:bg-[#08090a] dark:text-zinc-100 md:p-6">
       <div className="max-w-6xl w-full mx-auto space-y-4">
         {(bundleState.error || bundleState.readError || bundleState.pending) && (
           <div role={bundleState.pending ? "status" : "alert"} className="p-3 rounded-xl border border-amber-400/50 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 text-xs flex flex-wrap items-center gap-2">
-            <span className="flex-1 min-w-0 break-words">{bundleState.pending ? "正在保存本次变更；未修改的业务包保持原配置。节点切换仅影响该包的新连接。" : `${bundleState.error || bundleState.readError}。本次变更未确认生效；已选择出口不代表实际出口，请查看各业务包的应用状态和新连接记录。`}</span>
+            <span className="flex-1 min-w-0 break-words">{bundleState.pending
+              ? "正在应用套件设置。"
+              : `${bundleState.error || bundleState.readError}。请核对套件的应用状态后重试。`}</span>
             <button type="button" disabled={bundleState.pending} onClick={() => persistAndSync(instances)} className="px-3 py-1 rounded border border-current disabled:opacity-50">重新应用</button>
           </div>
         )}
@@ -429,7 +594,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         )}
 
         {/* 顶部全局状态与控制栏 (去框一体化平铺工具带, 极致纯净) */}
-        {!processOnly && <header className="px-1 py-1 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0 relative z-10 transition-colors">
+        <header className="px-1 py-1 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0 relative z-10 transition-colors">
           {/* 左侧：全局分流总开关 + 底层接管模式下拉 + 核心状态 */}
           <div className="flex items-center space-x-3">
             {/* 业务包分流总开关 */}
@@ -593,10 +758,10 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               </div>
             </div>
           </div>
-        </header>}
+        </header>
 
         {/* 主导航切换器与动作区 (Linear 标志性无缝下沉胶囊分段条 + 物理反光高光主按钮) */}
-        <nav className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 dark:border-white/[0.06] pb-3">
+        <nav className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 pb-3 dark:border-white/[0.06]">
           <div className="flex items-center p-0.5 rounded-xl bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] shrink-0">
             <button
               type="button"
@@ -607,7 +772,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
-              <span>📦 已装载套件</span>
+              <span>业务规则包</span>
               <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-[10px] font-mono font-bold">
                 {instances.length}
               </span>
@@ -624,7 +789,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                   : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
               }`}
             >
-              <span>🌐 仓库中心</span>
+              <span>GitHub 业务包</span>
               <span className="px-1.5 py-0.2 rounded-md bg-black/5 dark:bg-white/10 text-[10px] font-mono font-bold">
                 {loadingRepo ? "..." : repoCount}
               </span>
@@ -640,7 +805,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               }`}
             >
               <Wrench className="w-3.5 h-3.5 text-amber-400" />
-              <span>自定义工坊</span>
+              <span>新建业务套件</span>
             </button>
           </div>
 
@@ -652,7 +817,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
               className="px-3.5 py-1.5 rounded-xl font-semibold bg-zinc-100 hover:bg-white text-zinc-950 shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0_0_rgba(255,255,255,0.8)] flex items-center space-x-1.5 cursor-pointer transition select-none active:scale-[0.98]"
             >
               <Download className="w-3.5 h-3.5 text-zinc-950" />
-              <span>导入规则包 (.pwpack)</span>
+              <span>导入规则包</span>
             </button>
           </div>
         </nav>
@@ -660,20 +825,18 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         {/* ================= 视图 1：已装载套件列表 ================= */}
         {activeTab === "installed" && (
           <main className="space-y-2.5">
-            {processOnly && <label className="block text-xs text-slate-500">搜索业务包<input aria-label="搜索业务包" value={search} onChange={e => setSearch(e.target.value)} placeholder="名称或进程文件名" className="block mt-1 w-full sm:max-w-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-slate-800 dark:text-slate-100 focus-visible:ring-2 focus-visible:ring-indigo-500 outline-none" /></label>}
             {instances.length === 0 ? (
-              <div className="p-12 text-center rounded-2xl bg-white dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 space-y-3 shadow-xs">
-                <div className="text-3xl">📦</div>
-                <div className="text-sm font-bold text-slate-900 dark:text-white">暂未装载任何业务规则包</div>
+              <div className="space-y-3 rounded-2xl border border-slate-200/80 bg-white p-12 text-center shadow-xs dark:border-slate-800 dark:bg-slate-900/60">
+                <div className="text-sm font-semibold">暂无业务规则包</div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   您可以前往「仓库中心」挑选常用套件，或导入现有的 .pwpack.json 规则包。
                 </p>
                 <button
                   type="button"
                   onClick={() => setActiveTab("presets")}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer transition inline-block shadow-md"
+                  className="cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
                 >
-                  前往仓库中心浏览
+                  从 GitHub 获取
                 </button>
               </div>
             ) : (
@@ -692,9 +855,8 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                 </div>
 
                 {/* 列表项 (统一黑曜石发丝底座, 内部去卡片化发丝平铺) */}
-                {search && !instances.some(instance => `${instance.definition.packageName} ${bundleExes(instance.definition, os).join(" ")}`.toLowerCase().includes(search.toLowerCase())) && <p role="status" className="py-8 text-center text-sm text-slate-500">没有匹配的业务包，请调整搜索条件。</p>}
-                <div className="rounded-2xl bg-white/70 dark:bg-[#121316]/50 border border-slate-200/80 dark:border-white/[0.08] overflow-hidden shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
-                  {instances.map((instance, idx) => (!search || `${instance.definition.packageName} ${bundleExes(instance.definition, os).join(" ")}`.toLowerCase().includes(search.toLowerCase())) && (
+                <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/70 dark:border-white/[0.08] dark:bg-[#121316]/50">
+                  {instances.map((instance, idx) => (
                     <BundleRow
                       key={instance.instanceId}
                       instance={instance}
@@ -703,8 +865,6 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
                       proxyLabels={bundleState.view?.targetLabels}
                       externalLabel={getExternalLabel(instance)}
                       trafficMode={currentTrafficMode}
-                      unavailable={processOnly && instance.backend !== "external"}
-                      compact={processOnly}
                       masterEnabled={bundleState.view?.config.bundlesEnabled !== false}
                       onLaunch={() => void bundleTools.launch({ instanceId: instance.instanceId })}
                       onShortcuts={() => void bundleTools.shortcuts(instance.instanceId)}
@@ -737,7 +897,7 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         {/* ================= 视图 3：自定义工坊 (全新重构) ================= */}
         {activeTab === "studio" && (
           <BundleStudio
-            remoteDns={platform.os === "windows" && !processOnly}
+            remoteDns={platform.os === "windows"}
             os={os}
             existingInstances={instances}
             availableProxies={availableProxies}
@@ -749,6 +909,8 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         )}
 
       </div>
+    </div>
+    )}
 
       {/* 业务出口选择弹窗 (弹窗形式选择出口) */}
       <SelectExitModal
@@ -773,14 +935,17 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         onChangeWatcherMode={handleChangeWatcherMode}
         onShortcuts={(id) => void bundleTools.shortcuts(id)}
         onLaunch={(id) => void bundleTools.launch({ instanceId: id })}
-        onEdit={(inst) => setEditingTarget(inst)}
+        onEdit={(inst) => { setDetailTarget(null); setEditingTarget(inst); }}
         onOpenSelectExit={openExit}
         onClose={() => setDetailTarget(null)}
+        onMoveUp={processOnly && detailIndex > 0 ? () => handleMoveInstance(detailIndex, "up") : undefined}
+        onMoveDown={processOnly && detailIndex >= 0 && detailIndex < instances.length - 1 ? () => handleMoveInstance(detailIndex, "down") : undefined}
       />
 
       {/* 导入向导弹窗 */}
       <ImportBundleModal
         isOpen={isImportOpen}
+        workbench={processOnly}
         availableProxies={availableProxies}
         proxyLabels={bundleState.view?.targetLabels}
         onConfirm={handleImportConfirm}
@@ -790,17 +955,37 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
       {/* 导出向导弹窗 */}
       <ExportBundleModal
         isOpen={Boolean(exportTarget)}
+        workbench={processOnly}
         instance={exportTarget}
         onClose={() => setExportTarget(null)}
       />
 
       {/* 规则包二次编辑弹窗 (B03) */}
-      <EditBundleModal
+      {processOnly && (creatingBundle || editingTarget) && <ProcessBundleEditor
+        key={editingTarget?.instanceId ?? "new"}
+        instance={editingTarget}
+        processTreeSupported={Boolean(platform.processTree)}
+        isHttpUpstream={external?.endpoints.find(endpoint =>
+          endpoint.id === (editingTarget?.externalEndpointId || external.defaultEndpointId)
+        )?.protocol === "http"}
+        onClose={() => { setCreatingBundle(false); setEditingTarget(null); }}
+        onSave={async (saved) => {
+          const current = bundleController.getSnapshot();
+          if (current.pending) throw new Error("套件设置正在应用，请稍后再试");
+          const next = current.instances.some(inst => inst.instanceId === saved.instanceId)
+            ? current.instances.map(inst => inst.instanceId === saved.instanceId ? saved : inst)
+            : [...current.instances, saved];
+          if (!await persistAndSync(next)) throw new Error(bundleController.getSnapshot().error || "套件保存失败");
+          setCreatingBundle(false);
+          setEditingTarget(null);
+        }}
+      />}
+      {!processOnly && <EditBundleModal
         isOpen={Boolean(editingTarget)}
         bundleInstance={editingTarget}
         onSave={handleSaveEdit}
         onCancel={() => setEditingTarget(null)}
-      />
+      />}
 
       {/* 规则包高级防护策略弹窗 */}
       <BundlePolicyModal
@@ -827,6 +1012,6 @@ export const BusinessBundleView: React.FC<Props> = ({ mode: _mode, processOnly =
         onIgnore={handleIgnoreStale}
         onClose={handleIgnoreStale}
       />
-    </div>
+    </>
   );
 };

@@ -5,17 +5,21 @@ import { validateAndParseBundlePackage } from "../../services/bundleStorage";
 import { Download, X, Upload, CheckCircle2, AlertCircle } from "lucide-react";
 import { usePlatform } from "../../context/PlatformContext";
 import { bundleProcesses } from "../../utils/bundlePlatform";
+import { Button } from "../../../src-next/primitives/Button";
+import { Modal } from "../../../src-next/primitives/Modal";
 
 interface Props {
   isOpen: boolean;
+  workbench?: boolean;
   availableProxies: string[];
   proxyLabels?: Record<string, string>;
-  onConfirm: (bundle: BusinessBundleDefinition, autoEnable: boolean, boundNode: string | null) => void;
+  onConfirm: (bundle: BusinessBundleDefinition, autoEnable: boolean, boundNode: string | null) => void | Promise<void>;
   onCancel: () => void;
 }
 
 export const ImportBundleModal: React.FC<Props> = ({
   isOpen,
+  workbench = false,
   availableProxies,
   proxyLabels = {},
   onConfirm,
@@ -26,17 +30,14 @@ export const ImportBundleModal: React.FC<Props> = ({
   const [parsedBundle, setParsedBundle] = useState<BusinessBundleDefinition | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [selectedNode, setSelectedNode] = useState("");
+  const [importing, setImporting] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      const res = validateAndParseBundlePackage(content);
+  const handleFile = async (file?: File) => {
+    if (!file || importing) return;
+    try {
+      const res = validateAndParseBundlePackage(await file.text());
       if (res.valid && res.bundle) {
         setParsedBundle(res.bundle);
         setErrorMsg("");
@@ -44,8 +45,15 @@ export const ImportBundleModal: React.FC<Props> = ({
         setParsedBundle(null);
         setErrorMsg(res.error || "解析规则包失败");
       }
-    };
-    reader.readAsText(file);
+    } catch {
+      setParsedBundle(null);
+      setErrorMsg("无法读取规则包文件");
+    }
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    void handleFile(event.target.files?.[0]);
+    event.target.value = "";
   };
 
   const handleClose = () => {
@@ -54,6 +62,43 @@ export const ImportBundleModal: React.FC<Props> = ({
     setSelectedNode("");
     onCancel();
   };
+
+  if (workbench) return (
+    <Modal isOpen title="导入规则包" onClose={() => { if (!importing) handleClose(); }}>
+      <div className="grid gap-4">
+        <input type="file" ref={fileInputRef} accept=".json,.pwpack.json" onChange={handleFileChange} className="hidden" />
+        <div className="grid justify-items-start gap-2 rounded-lg bg-[var(--workbench-row-hover)] p-3"
+          onDragOver={event => event.preventDefault()} onDrop={event => {
+            event.preventDefault();
+            void handleFile(event.dataTransfer.files[0]);
+          }}>
+          {parsedBundle ? (
+            <div className="min-w-0">
+              <p className="text-sm font-semibold [overflow-wrap:anywhere]">{parsedBundle.packageName}</p>
+              <p className="text-xs text-[var(--text-muted)]">{parsedBundle.packageVersion} · {parsedBundle.processes.length} 个进程</p>
+              {parsedBundle.description && <p className="mt-1 text-xs [overflow-wrap:anywhere]">{parsedBundle.description}</p>}
+            </div>
+          ) : <p className="text-xs text-[var(--text-muted)]">选择或拖入 .pwpack.json 文件。</p>}
+          <Button type="button" size="sm" disabled={importing} onClick={() => fileInputRef.current?.click()}>
+            <Upload size={14} aria-hidden="true" /> {parsedBundle ? "更换文件" : "选择文件"}
+          </Button>
+        </div>
+        {errorMsg && <p role="alert" className="workbench-setting-feedback">{errorMsg}</p>}
+        {parsedBundle && <p className="text-xs text-[var(--text-muted)]">导入后可选择外部代理，再启用套件。</p>}
+        <div className="flex justify-end gap-2">
+          <Button type="button" disabled={importing} onClick={handleClose}>取消</Button>
+          <Button type="button" variant="primary" disabled={!parsedBundle} loading={importing} onClick={async () => {
+            if (!parsedBundle || importing) return;
+            setImporting(true);
+            setErrorMsg("");
+            try { await onConfirm(parsedBundle, false, null); handleClose(); }
+            catch (error) { setErrorMsg(error instanceof Error ? error.message : String(error)); }
+            finally { setImporting(false); }
+          }}>导入</Button>
+        </div>
+      </div>
+    </Modal>
+  );
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 font-sans" data-no-drag>

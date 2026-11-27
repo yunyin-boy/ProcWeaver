@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "./index.css";
+import "../src-next/styles/globals.css";
+import "../src-next/styles/workbench.css";
+import "./process-workbench.css";
 import { ThemeProvider } from "./context/ThemeContext";
 import { PlatformContext } from "./context/PlatformContext";
 import { initializePlatform } from "./services/platform";
@@ -18,10 +20,7 @@ async function bootstrap() {
     document.documentElement.dataset.platform = platform.os;
     configureDesktopContextMenu(platform.os !== "android");
     root.render(<React.StrictMode><PlatformContext.Provider value={platform}><ThemeProvider>
-      <ProcessProxyView standalone capability={{
-        mode: "process_proxy", coreRunning: false, independentWinDivert: true,
-        winDivertReason: "WinDivert 需管理员权限；与完整版同时运行时请使用纯应用层",
-      }} />
+      <ProcessProxyView />
     </ThemeProvider></PlatformContext.Provider></React.StrictMode>);
   } catch (error) {
     root.render(<div className="p-8 space-y-4"><p role="alert">启动失败：{String(error)}</p>

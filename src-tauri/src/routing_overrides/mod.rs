@@ -273,6 +273,15 @@ pub(crate) async fn change_system_proxy(enable: bool, change: impl FnOnce() -> R
 
 /// 所有调用方已持有 LIFECYCLE。超时也可能已应用，因此错误时必须重新加载旧配置。
 pub async fn apply_runtime(prepared: &str) -> Result<(), String> {
+    apply_runtime_inner(prepared, false).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn apply_lan_runtime(prepared: &str) -> Result<(), String> {
+    apply_runtime_inner(prepared, true).await
+}
+
+async fn apply_runtime_inner(prepared: &str, verify_lan: bool) -> Result<(), String> {
     if !process::ACTIVE.load(Ordering::SeqCst) {
         let target = crate::storage::data_dir().join("core_data/config.yaml");
         return crate::storage::replace_atomic(&target, prepared.as_bytes());
@@ -285,14 +294,26 @@ pub async fn apply_runtime(prepared: &str) -> Result<(), String> {
     let prepared = resolved.as_str();
     let target = crate::storage::data_dir().join("core_data/config.yaml");
     let old = std::fs::read_to_string(&target).map_err(|_| "读取旧运行配置失败")?;
-    // Android also reconciles package-owned connections and selections in its host.
-    let reload_needed = cfg!(target_os = "android") || bundles::structural(&old)? != bundles::structural(prepared)?;
+    let old_config = bundles::structural(&old)?;
+    let new_config = bundles::structural(prepared)?;
+    // An explicit LAN request can repair a listener even when the YAML already matches.
+    let reload_needed = verify_lan || cfg!(target_os = "android") || old_config != new_config;
+    #[cfg(windows)]
+    let old_tun = old_config["tun"]["enable"].as_bool() == Some(true);
+    #[cfg(windows)]
+    let new_tun = new_config["tun"]["enable"].as_bool() == Some(true);
+    #[cfg(windows)]
+    let check_tun = reload_needed && (old_tun || new_tun);
     let pid = process::PID.load(Ordering::SeqCst);
     crate::commands::dns_runtime::preflight(prepared, pid).await?;
     let applied = async {
         if reload_needed { crate::capture::pause(); }
         crate::storage::replace_atomic(&target, prepared.as_bytes())?;
         if reload_needed { reload(&target).await?; }
+        #[cfg(windows)]
+        if check_tun { crate::commands::tun::confirm(settings::get_general_settings()?.controller_port, new_tun).await?; }
+        #[cfg(windows)]
+        if verify_lan { crate::commands::lan_access::confirm_config(&new_config, pid).await?; }
         bundles::select(prepared).await?;
         crate::commands::dns_runtime::confirm(prepared, pid).await?;
         crate::capture::confirm_runtime(prepared).await
@@ -301,9 +322,14 @@ pub async fn apply_runtime(prepared: &str) -> Result<(), String> {
         crate::storage::replace_atomic(&target, old.as_bytes()).map_err(|_| format!("{error}；恢复旧运行文件失败，请使用备份恢复"))?;
         let restored = async {
             if reload_needed { reload(&target).await?; }
+            #[cfg(windows)]
+            if check_tun { crate::commands::tun::confirm(settings::get_general_settings()?.controller_port, old_tun).await?; }
             bundles::select(&old).await?;
             crate::commands::dns_runtime::confirm(&old, pid).await?;
-            crate::capture::confirm_runtime(&old).await
+            crate::capture::confirm_runtime(&old).await?;
+            #[cfg(windows)]
+            if verify_lan { crate::commands::lan_access::confirm_config(&old_config, pid).await?; }
+            Ok::<(), String>(())
         }.await;
         if let Err(restore) = restored { crate::capture::failed(&restore); return Err(format!("{error}；旧文件已恢复，但核心恢复未确认：{restore}")); }
         return Err(format!("{error}；已恢复旧运行配置"));

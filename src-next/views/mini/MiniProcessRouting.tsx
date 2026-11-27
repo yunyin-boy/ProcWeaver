@@ -3,6 +3,7 @@ import { ArrowUpRight, Package } from "lucide-react";
 import { Button } from "../../primitives/Button";
 import { CapsuleToggle } from "../../primitives/CapsuleToggle";
 import { fetchBundles, fetchProcessRoutingState, saveProcessRoutingState, updateBundleInstance } from "../../services/processRoutingService";
+import { PROFILE_CHANGED_EVENT } from "../../services/profileService";
 import { usesExistingBundleRules } from "../../types/processRouting";
 import type { ProcessBundleItem, ProcessRoutingState } from "../../types/processRouting";
 
@@ -39,9 +40,11 @@ export function MiniProcessRouting({ onManage, onShowNotice }: MiniProcessRoutin
     const reload = () => void load();
     reload();
     window.addEventListener("netbox-route-changed", reload);
+    window.addEventListener(PROFILE_CHANGED_EVENT, reload);
     return () => {
       ++readId.current;
       window.removeEventListener("netbox-route-changed", reload);
+      window.removeEventListener(PROFILE_CHANGED_EVENT, reload);
     };
   }, [load]);
 

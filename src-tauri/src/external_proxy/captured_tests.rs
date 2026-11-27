@@ -252,7 +252,7 @@ async fn stale_identity_and_http_udp_fail_closed() {
     stale.process.identity.push('x');
     assert!(!stale.valid());
     assert!(stale
-        .select(&Destination::new("match.test", 443).unwrap())
+        .select(&Destination::new("match.test", 443).unwrap(), None, Traffic::Tcp)
         .is_err());
     let (tx, rx) = mpsc::channel(4);
     let (out, _) = mpsc::channel(4);

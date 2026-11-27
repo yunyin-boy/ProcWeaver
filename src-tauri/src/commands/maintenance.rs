@@ -64,7 +64,7 @@ pub struct RulesRepoInfo {
     pub description: String,
 }
 
-fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {
@@ -109,7 +109,7 @@ pub const LINUX_DO_MAINTENANCE_NOTICE: &str = "仓库维护，点击前往 Linux
 pub const LINUX_DO_URL: &str = "https://linux.do/t/topic/2940957";
 
 /// 获取当前代理核心的混合端口（若正在运行）
-fn get_running_proxy_port(state: &State<'_, CoreStateMutex>) -> Option<u16> {
+pub(crate) fn get_running_proxy_port(state: &State<'_, CoreStateMutex>) -> Option<u16> {
     if let Ok(guard) = state.lock() {
         if guard.child.is_some() {
             return Some(guard.mixed_port);
@@ -119,6 +119,7 @@ fn get_running_proxy_port(state: &State<'_, CoreStateMutex>) -> Option<u16> {
 }
 
 /// 检测 ProcWeaver 主仓库及镜像通道 Release
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn check_app_update(
     state: State<'_, CoreStateMutex>,
@@ -195,18 +196,6 @@ pub async fn check_app_update(
     let mut asset_size_bytes = 0u64;
 
     if let Some(assets) = release_val.get("assets").and_then(|v| v.as_array()) {
-        // 先找 Portable zip
-        for asset in assets {
-            let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let lower = name.to_lowercase();
-            if cfg!(windows) && !lower.starts_with("procweaverprocess") && lower.ends_with(".zip") && !lower.contains("macos") && !lower.contains("darwin") && (lower.contains("portable") || lower.contains("procweaver")) {
-                asset_name = Some(name.to_string());
-                download_url = asset.get("browser_download_url").and_then(|v| v.as_str()).map(|s| s.to_string());
-                asset_size_bytes = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-                break;
-            }
-        }
-        // 若无 Portable zip，则找任意 Windows 安装包或压缩包
         if download_url.is_none() {
             for asset in assets {
                 let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -269,6 +258,7 @@ fn compare_semver(latest: &str, current: &str) -> bool {
 }
 
 /// 下载客户端更新包到本地缓存
+#[cfg(not(windows))]
 #[tauri::command]
 pub async fn download_app_update(
     download_url: String,
@@ -331,184 +321,22 @@ pub async fn download_app_update(
     Ok(dest_path.to_string_lossy().to_string())
 }
 
-/// 执行客户端更新替换安装（便携模式保护：绝不碰 data/ 目录）
+/// 安装移动端更新，macOS 使用系统打开下载的 DMG。
+#[cfg(not(windows))]
 #[tauri::command]
-pub async fn install_app_update(app: tauri::AppHandle, archive_path: String) -> Result<bool, String> {
+pub async fn install_app_update(archive_path: String) -> Result<bool, String> {
     #[cfg(target_os = "android")]
     {
-        let _: serde_json::Value = crate::platform::android::call_async("installUpdate", serde_json::json!({"path":archive_path})).await?;
-        return Ok(true);
+        let _: serde_json::Value = crate::platform::android::call_async(
+            "installUpdate", serde_json::json!({"path": archive_path}),
+        ).await?;
+        Ok(true)
     }
-    if !cfg!(windows) { return Err("macOS 请从版本页面下载对应架构的 DMG，退出应用后替换安装；当前不支持应用内覆盖安装".into()); }
-    let archive = PathBuf::from(&archive_path);
-    if !archive.exists() {
-        return Err("更新包文件不存在".into());
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = archive_path;
+        Err("macOS 请从版本页面下载对应架构的 DMG，退出应用后替换安装；当前不支持应用内覆盖安装".into())
     }
-
-    let current_exe = std::env::current_exe().map_err(|e| format!("获取当前程序路径失败: {}", e))?;
-    let app_dir = current_exe.parent().ok_or("无法获取应用所在目录")?.to_path_buf();
-    let current_pid = std::process::id();
-
-    let file_name_lower = archive.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-
-    // 若为独立 exe 安装器，直接拉起安装器
-    if file_name_lower.ends_with(".exe") {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            std::process::Command::new(&archive)
-                .creation_flags(0x00000008) // DETACHED_PROCESS
-                .spawn()
-                .map_err(|e| format!("启动安装程序失败: {}", e))?;
-            let app_clone = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
-                let _ = app_clone.exit(0);
-            });
-            return Ok(true);
-        }
-        #[cfg(not(windows))]
-        {
-            return Err("非 Windows 平台不支持该安装方式".into());
-        }
-    }
-
-    // 若为 ZIP 便携包：解压并利用独立脱机批处理完成全量无损替换（便携保护：绝不碰 data/ 目录）
-    if file_name_lower.ends_with(".zip") {
-        let temp_extract = app_dir.join(".update_cache").join("extracted");
-        let _ = std::fs::remove_dir_all(&temp_extract);
-        std::fs::create_dir_all(&temp_extract).map_err(|e| format!("创建解压目录失败: {}", e))?;
-
-        // 优先使用系统内置 tar 命令解压 zip，兼容 Windows 10/11
-        let mut tar_cmd = std::process::Command::new("tar");
-        tar_cmd
-            .arg("-xf")
-            .arg(&archive)
-            .arg("-C")
-            .arg(&temp_extract);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            tar_cmd.creation_flags(0x08000000);
-        }
-        let status = tar_cmd.status();
-
-        let extract_ok = match status {
-            Ok(s) if s.success() => true,
-            _ => {
-                // 降级使用 PowerShell Expand-Archive
-                let ps_cmd = format!(
-                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                    archive.to_string_lossy(),
-                    temp_extract.to_string_lossy()
-                );
-                let mut ps_process = std::process::Command::new("powershell");
-                ps_process.args(["-NoProfile", "-NonInteractive", "-Command", &ps_cmd]);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    ps_process.creation_flags(0x08000000);
-                }
-                let ps_status = ps_process.status();
-                matches!(ps_status, Ok(s) if s.success())
-            }
-        };
-
-        if !extract_ok {
-            return Err("解压更新包失败，请检查压缩文件完整性".into());
-        }
-
-        // 寻找新版根目录（定位包含 ProcWeaver.exe 的源目录）
-        let mut source_dir = temp_extract.clone();
-        if !source_dir.join("ProcWeaver.exe").exists() {
-            // 可能压缩包内套了一层目录，深入一层查找
-            if let Ok(entries) = std::fs::read_dir(&temp_extract) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() && path.join("ProcWeaver.exe").exists() {
-                        source_dir = path;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if !source_dir.join("ProcWeaver.exe").exists() {
-            return Err("更新包内未找到主程序 ProcWeaver.exe".into());
-        }
-
-        // 清理此前残留的临时备份文件（严格遵循 AGENTS.md 规范）
-        let old_exe_bak = app_dir.join("ProcWeaver.exe.old");
-        if old_exe_bak.exists() {
-            let _ = std::fs::remove_file(&old_exe_bak);
-        }
-
-        // 生成脱机独立无感热替换批处理脚本 apply_update.bat
-        let bat_path = app_dir.join(".update_cache").join("apply_update.bat");
-        let source_str = source_dir.to_string_lossy().to_string();
-        let app_dir_str = app_dir.to_string_lossy().to_string();
-        let extract_str = temp_extract.to_string_lossy().to_string();
-
-        let bat_content = format!(
-            "@echo off\r\n\
-            chcp 65001 >nul\r\n\
-            set TARGET_PID={pid}\r\n\
-            set RETRIES=0\r\n\
-            :WAIT_LOOP\r\n\
-            tasklist /fi \"PID eq %TARGET_PID%\" 2>nul | findstr /i \"%TARGET_PID%\" >nul\r\n\
-            if not errorlevel 1 (\r\n\
-                timeout /t 1 /nobreak >nul\r\n\
-                set /a RETRIES+=1\r\n\
-                if %RETRIES% GEQ 8 (\r\n\
-                    taskkill /f /pid %TARGET_PID% >nul 2>&1\r\n\
-                )\r\n\
-                goto WAIT_LOOP\r\n\
-            )\r\n\
-            taskkill /f /im mihomo.exe >nul 2>&1\r\n\
-            timeout /t 1 /nobreak >nul\r\n\
-            robocopy \"{src}\" \"{dst}\" /E /XD \"{dst}\\data\" \"{dst}\\.update_cache\" /NP /NFL /NDL >nul 2>&1\r\n\
-            cd /d \"{dst}\"\r\n\
-            start \"\" \"{dst}\\ProcWeaver.exe\"\r\n\
-            timeout /t 2 /nobreak >nul\r\n\
-            rmdir /s /q \"{ext}\" >nul 2>&1\r\n\
-            (goto) 2>nul & del \"%~f0\"\r\n\
-            exit\r\n",
-            pid = current_pid,
-            src = source_str,
-            dst = app_dir_str,
-            ext = extract_str
-        );
-
-        std::fs::write(&bat_path, bat_content).map_err(|e| format!("生成更新调度脚本失败: {}", e))?;
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const DETACHED_PROCESS: u32 = 0x00000008;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-            std::process::Command::new("cmd.exe")
-                .args(["/c", &bat_path.to_string_lossy()])
-                .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
-                .spawn()
-                .map_err(|e| format!("启动独立更新程序失败: {}", e))?;
-
-            // 延迟 600ms 平滑关闭当前主程序，让前端获得完成通知并优雅释放端口
-            let app_clone = app.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
-                let _ = app_clone.exit(0);
-            });
-
-            return Ok(true);
-        }
-        #[cfg(not(windows))]
-        {
-            return Err("非 Windows 平台不支持批处理更新".into());
-        }
-    }
-
-    Err("不受支持的更新包类型".into())
 }
 
 /// 重启应用

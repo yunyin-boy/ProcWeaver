@@ -1,11 +1,15 @@
 [package]
 name = "proc-weaver"
-version = "3.0.0"
+version = "3.0.1"
 license = "AGPL-3.0-only"
 description = "Modern Proxy Client powered by Mihomo and Tauri"
 authors = ["ProcWeaver Team"]
 edition = "2021"
 default-run = "ProcWeaver"
+
+[workspace]
+members = ["portable-update"]
+default-members = ["."]
 
 [features]
 default = []
@@ -52,6 +56,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "soc
 libc = "=0.2.189"
 
 [target.'cfg(windows)'.dependencies]
+procweaver-portable-update = { path = "portable-update" }
+ipnet = "2"
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 winreg = "0.52"
 windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Cryptography", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }

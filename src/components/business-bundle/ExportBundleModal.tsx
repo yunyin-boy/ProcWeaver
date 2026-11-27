@@ -4,14 +4,17 @@ import { saveTextFile } from "../../services/fileExport";
 import { BundleLocalInstance } from "../../types/businessBundle";
 import { exportBundlePackage } from "../../services/bundleStorage";
 import { Upload, X, ShieldCheck, Download } from "lucide-react";
+import { Button } from "../../../src-next/primitives/Button";
+import { Modal } from "../../../src-next/primitives/Modal";
 
 interface Props {
   isOpen: boolean;
+  workbench?: boolean;
   instance: BundleLocalInstance | null;
   onClose: () => void;
 }
 
-export const ExportBundleModal: React.FC<Props> = ({ isOpen, instance, onClose }) => {
+export const ExportBundleModal: React.FC<Props> = ({ isOpen, instance, onClose, workbench = false }) => {
   const [exportError, setExportError] = React.useState("");
   if (!isOpen || !instance) return null;
 
@@ -25,6 +28,23 @@ export const ExportBundleModal: React.FC<Props> = ({ isOpen, instance, onClose }
       if (await saveTextFile(`${def.packageName.replace(/[\/\\:*?"<>|]/g, "_")}.pwpack.json`, jsonString, "application/json")) onClose();
     } catch (error) { setExportError(String(error)); }
   };
+
+  if (workbench) return (
+    <Modal isOpen title="导出规则包" onClose={onClose}>
+      <div className="grid gap-4">
+        <div className="workbench-setting-row text-[13px]">
+          <span className="min-w-0 font-semibold [overflow-wrap:anywhere]">{def.packageName}</span>
+          <span className="workbench-tag">{def.packageVersion}</span>
+        </div>
+        <p className="text-xs leading-relaxed text-[var(--text-muted)]">文件包含规则定义与出口插槽。本机绑定、路径和代理凭据留在本机。</p>
+        {exportError && <p role="alert" className="workbench-setting-feedback">{exportError}</p>}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" onClick={onClose}>取消</Button>
+          <Button type="button" variant="primary" onClick={() => void handleDownload()}><Download size={14} aria-hidden="true" /> 下载 .pwpack.json</Button>
+        </div>
+      </div>
+    </Modal>
+  );
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 font-sans" data-no-drag>

@@ -1,6 +1,7 @@
 //! Trusted in-process entry for WinDivert. Never accepts a PID supplied by IPC.
 use super::{
     dns, identity,
+    model::Traffic,
     transport::{self, Destination},
     udp::Channel,
     diagnostics::{self, Trace},
@@ -13,7 +14,7 @@ use crate::{
         tracker::{self, ProcessEntry},
     },
 };
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::{IpAddr, SocketAddr}, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -134,12 +135,14 @@ impl Context {
     fn select(
         &self,
         target: &Destination,
+        original_address: Option<IpAddr>,
+        traffic: Traffic,
     ) -> Result<(Option<super::model::Endpoint>, Vec<u16>, u64, u64), String> {
         if !self.valid() {
             return Err("原始进程身份已改变或业务包已停用".into());
         }
         let (endpoint, reason, revision, ports) =
-            self.runtime.select(&self.id, &self.process, target)?;
+            self.runtime.select_flow(&self.id, &self.process, target, original_address, traffic)?;
         let record = self.runtime.record(
             &self.id,
             self.process.pid,
@@ -152,33 +155,20 @@ impl Context {
         Ok((endpoint, ports, revision, record))
     }
     async fn dns(&self, target: &Destination, query: &[u8], tcp: bool) -> Result<Vec<u8>, String> {
-        let question = dns::question(query)?;
-        if self.effective_block_ipv6() && question.kind == 28 {
-            return Ok(dns::empty_reply(query));
+        if !self.valid() {
+            return Err("配置或进程已改变".into());
         }
-        let policy = Destination::new(&question.name, 53)?;
-        let (endpoint, ports, revision, record) = self.select(&policy)?;
-        let result = dns::exchange_traced(endpoint.as_ref(), target, query, &ports, tcp,&Trace::new(Some(record))).await;
-        match result {
-            Ok(reply) if self.valid() && self.runtime.config().revision == revision => {
-                self.runtime.update(
-                    record,
-                    "response",
-                    "原始进程 DNS 响应已转发",
-                    (query.len() as u64, reply.len() as u64),
-                );
-                Ok(reply)
-            }
-            Ok(_) => {
-                self.runtime
-                    .update(record, "failed", "配置或进程已改变，丢弃旧响应", (0, 0));
-                Err("配置或进程已改变".into())
-            }
-            Err(e) => {
-                self.runtime.update(record, "failed", &e, (0, 0));
-                Err(e)
-            }
+        let generation = self.runtime.config.read().unwrap_or_else(|e| e.into_inner()).revision;
+        let reply = dns::answer(&self.runtime, &self.id, &self.process, query, Some(target), tcp, "WinDivert DNS").await?;
+        if !self.valid() || self.runtime.config.read().unwrap_or_else(|e| e.into_inner()).revision != generation {
+            return Err("配置或进程已改变".into());
         }
+        Ok(reply)
+    }
+
+    fn bypasses_lan(&self, address: IpAddr) -> bool {
+        self.runtime.config.read().unwrap_or_else(|e| e.into_inner()).bundles.iter()
+            .any(|bundle| bundle.id == self.id && bundle.bypasses_lan("", Some(address)))
     }
 }
 #[cfg(test)]
@@ -195,7 +185,7 @@ pub(crate) async fn tcp(
         use std::os::windows::io::AsRawSocket;
         crate::capture::windivert::runtime::configure_socket_keepalive(client.as_raw_socket());
     }
-    if context.effective_block_ipv6() && destination.is_ipv6() {
+    if context.effective_block_ipv6() && destination.is_ipv6() && !context.bypasses_lan(destination.ip()) {
         return Err("当前策略已阻断 IPv6 TCP 连接".into());
     }
     let _permit = context
@@ -230,13 +220,17 @@ pub(crate) async fn tcp(
                 .map_err(|_| "DNS TCP 写入失败")?;
         }
     }
-    let sniff = context.effective_sniff_sni()
+    let original_address = dns::alias(&target.host).is_none().then_some(destination.ip());
+    target = context.runtime.translate_token(&context.id, target)?;
+    let sniff = original_address.is_some() && (context.effective_sniff_sni()
         || context
             .runtime
             .config()
             .bundles
             .iter()
-            .any(|b| b.id == context.id && b.mode == "sandbox" && !b.domains.is_empty());
+            .any(|bundle| bundle.id == context.id && (bundle.mode == "sandbox" && !bundle.domains.is_empty()
+                || bundle.policy.as_ref().and_then(|policy| crate::routing_overrides::filters::Filters::parse(policy).ok())
+                    .is_some_and(|filters| filters.needs_host()))));
     let mut prefix = Vec::new();
     let mut policy = target.clone();
     if sniff {
@@ -254,20 +248,18 @@ pub(crate) async fn tcp(
                 super::sniff::Found::NeedMore => {}
                 super::sniff::Found::Done(host) => {
                     if let Some(host) = host {
-                        policy.host = host.clone();
-                        // 动态 SNI 纠偏：若开启 sniff_sni，将上游连接目标重定向为嗅探出的真实域名
-                        if context.effective_sniff_sni() {
-                            if let Ok(updated) = Destination::new(&host, destination.port()) {
-                                target = updated;
-                            }
-                        }
+                        policy.host = host;
                     }
                     break;
                 }
             }
         }
     }
-    let (endpoint, ports, _, record) = context.select(&policy)?;
+    let (endpoint, ports, _, record) = context.select(&policy, original_address, Traffic::Tcp)?;
+    let mut refresh = context.runtime.watch_tcp(record, &context.id, &policy, original_address, endpoint.clone());
+    if endpoint.is_some() && context.effective_sniff_sni() {
+        target = policy;
+    }
     let trace=Trace::new(Some(record)); let _activity=trace.activity("tcp");
     let result:Result<(u64,u64),String>=async {
         let mut upstream=transport::connect_traced(endpoint.as_ref(),&target,&ports,&trace).await?;
@@ -285,6 +277,7 @@ pub(crate) async fn tcp(
         let mut interval=tokio::time::interval(Duration::from_secs(1));
         let mut checkpoint=tokio::time::Instant::now();
         loop {tokio::select! {
+            _=refresh.refreshed()=>return Ok((prefix.len() as u64,0)),
             r=&mut copy=>return r.map(|(up,down)|(up+prefix.len()as u64,down)).map_err(|error| { trace.event("tcp.copy_failed","warning",transport::io_detail(&error)); "透明 TCP 连接中断，未直连重试".into() }),
             _=interval.tick()=>{if !context.valid_runtime(){return Err("业务包已停用".into());}if checkpoint.elapsed()>=Duration::from_secs(30){trace.event("tcp.tunnel_alive","info",serde_json::json!({"pid":context.process.pid}));checkpoint=tokio::time::Instant::now();}}
         }}
@@ -308,7 +301,7 @@ pub(crate) async fn udp(
     mut requests: mpsc::Receiver<Vec<u8>>,
     responses: mpsc::Sender<Vec<u8>>,
 ) -> Result<(), String> {
-    if context.effective_block_ipv6() && destination.is_ipv6() {
+    if context.effective_block_ipv6() && destination.is_ipv6() && !context.bypasses_lan(destination.ip()) {
         return Err("当前策略已阻断 IPv6 UDP 连接".into());
     }
     let _permit = context
@@ -339,7 +332,7 @@ pub(crate) async fn udp(
         }
     }
     // 优先于代理 UDP：禁止非 53 端口的通用 UDP（如 QUIC/443 等），迫使客户端秒级降级为 TCP
-    if context.effective_block_udp() {
+    if context.effective_block_udp() && !context.bypasses_lan(destination.ip()) {
         diagnostics::emit("udp.blocked", "info", serde_json::json!({
             "pid": context.process.pid,
             "target": destination.to_string(),
@@ -347,7 +340,9 @@ pub(crate) async fn udp(
         }));
         return Err("当前策略已禁止通用 UDP，促使客户端降级为 TCP".into());
     }
-    let (endpoint, ports, revision, record) = context.select(&target)?;
+    let original_address = dns::alias(&target.host).is_none().then_some(destination.ip());
+    let target = context.runtime.translate_token(&context.id, target)?;
+    let (endpoint, ports, revision, record) = context.select(&target, original_address, Traffic::Udp)?;
     let trace=Trace::new(Some(record)); let _activity=trace.activity("udp");
     let result:Result<(u64,u64),String>=async {
         let mut channel=Channel::open_traced(endpoint.as_ref(),&target,&ports,trace.clone()).await?;

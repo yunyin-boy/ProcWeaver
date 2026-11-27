@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{collections::HashSet, net::IpAddr};
+use crate::routing_overrides::filters::Filters;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Traffic {
+    Tcp,
+    Udp,
+    Dns,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -40,9 +48,20 @@ pub struct Bundle {
     #[serde(default, skip_serializing_if = "Option::is_none")] pub policy: Option<crate::routing_overrides::model::BundlePolicy>,
 }
 impl Bundle {
-    pub fn effective_block_ipv6(&self, global: &Config) -> bool { self.block_ipv6.unwrap_or(global.block_ipv6) }
-    pub fn effective_block_udp(&self, global: &Config) -> bool { self.block_udp.unwrap_or(global.block_udp) }
+    pub fn effective_block_ipv6(&self, global: &Config) -> bool {
+        self.block_ipv6.or_else(|| self.policy.as_ref().map(|policy| policy.block_ipv6)).unwrap_or(global.block_ipv6)
+    }
+    pub fn effective_block_udp(&self, global: &Config) -> bool {
+        self.block_udp.or_else(|| self.policy.as_ref().map(|policy| policy.block_udp)).unwrap_or(global.block_udp)
+    }
     pub fn effective_sniff_sni(&self, global: &Config) -> bool { self.sniff_sni.unwrap_or(global.sniff_sni) }
+
+    #[cfg(windows)]
+    pub(super) fn bypasses_lan(&self, host: &str, address: Option<IpAddr>) -> bool {
+        self.policy.as_ref().is_some_and(|policy| policy.bypass_lan)
+            && (host == "localhost" || host.ends_with(".localhost")
+                || address.is_some_and(crate::capture::packet::local))
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -91,6 +110,54 @@ pub fn endpoint<'a>(config: &'a Config, bundle: &Bundle) -> Result<&'a Endpoint,
     let id = bundle.endpoint_id.as_ref().or(config.default_endpoint_id.as_ref()).ok_or("请先配置默认或本包外部代理")?;
     config.endpoints.iter().find(|e| &e.id == id).ok_or_else(|| "所选外部代理已移除，请重新选择".into())
 }
+
+pub(super) fn select_exit<'a>(
+    config: &'a Config,
+    bundle: &Bundle,
+    host: &str,
+    port: u16,
+    address: Option<IpAddr>,
+    traffic: Traffic,
+) -> Result<(Option<&'a Endpoint>, &'static str), String> {
+    let address = address.or_else(|| host.parse().ok());
+    let domain = host.parse::<IpAddr>().is_err().then_some(host);
+    if let Some(policy) = &bundle.policy {
+        if traffic == Traffic::Dns && matches!(policy.dns_mode.as_str(), "system_native" | "system") {
+            return Ok((None, "系统原生 DNS"));
+        }
+        #[cfg(windows)]
+        if bundle.bypasses_lan(host, address) {
+            return Ok((None, "局域网直连"));
+        }
+        if traffic != Traffic::Dns && bundle.effective_block_ipv6(config) && address.is_some_and(|ip| ip.is_ipv6()) {
+            return Err("当前策略已阻断 IPv6 连接".into());
+        }
+        if traffic == Traffic::Udp && bundle.effective_block_udp(config) {
+            return Err("当前策略已禁止通用 UDP".into());
+        }
+        if (traffic == Traffic::Tcp && !policy.proxy_tcp) || (traffic == Traffic::Udp && !policy.proxy_udp) {
+            return Ok((None, "协议直连"));
+        }
+        let filters = Filters::parse(policy)?;
+        let accepted = if traffic == Traffic::Dns {
+            filters.accepts_dns(host)
+        } else {
+            filters.accepts_connection(port, domain, address)
+        };
+        if !accepted {
+            return Ok((None, "目标或端口过滤直连"));
+        }
+    }
+    if bundle.mode == "strict" || domain.is_some_and(|host| bundle.domains.iter().any(|rule| domain_matches(rule, host))) {
+        return Ok((Some(endpoint(config, bundle)?), "业务包"));
+    }
+    if bundle.fallback == "default" {
+        let endpoint = config.endpoints.iter().find(|endpoint| Some(&endpoint.id) == config.default_endpoint_id.as_ref())
+            .ok_or("默认代理不可用")?;
+        return Ok((Some(endpoint), "未命中→默认代理"));
+    }
+    Ok((None, "未命中→直连"))
+}
 pub fn validate(config: &mut Config) -> Result<(), String> {
     config.dns.server = config.dns.server.trim().trim_start_matches('[').trim_end_matches(']').to_string();
     let dns_ip = config.dns.server.parse::<std::net::IpAddr>().map_err(|_| "DNS 上游须填写 IP，避免引导解析依赖")?;
@@ -129,6 +196,9 @@ pub fn validate(config: &mut Config) -> Result<(), String> {
             if !crate::routing_overrides::model::domain(d.strip_prefix("*.").unwrap_or(d)) { return Err("域名须为纯域名或 *.域名，国际域名请使用 Punycode".into()); }
         }
         b.domains.sort(); b.domains.dedup();
+        if let Some(policy) = &b.policy {
+            Filters::parse(policy).map_err(|error| format!("「{}」{error}", b.name))?;
+        }
     }
     for b in config.bundles.iter().filter(|b| b.enabled && config.enabled) {
         endpoint(config, b)?;

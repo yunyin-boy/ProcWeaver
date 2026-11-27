@@ -1,3 +1,4 @@
+import { PortableUpdatePrompt } from "../src/components/function-mode/PortableUpdates";
 // ==========================================================================
 // ProcWeaver src-next 根组件
 // 规范溯源: tauri-desktop-layout-typography / ui-surface-elevation-hierarchy
@@ -24,6 +25,8 @@ import { BandwidthSnapshot } from "./types/telemetry";
 import { getCoreStatus, toggleCore, setEngineMode, toggleSystemProxy } from "./services/coreService";
 import { subscribeBandwidth } from "./services/telemetryService";
 import { useWindowFormFactor } from "./utils/useWindowFormFactor";
+import { useLanAccess } from "./utils/useLanAccess";
+import { useTunAccess } from "./utils/useTunAccess";
 import { isTauriEnvironment, invokeCommand } from "./services/client";
 import { syncRoutingToCore } from "./services/processRoutingService";
 import { getGeneralSettings } from "./services/settingsService";
@@ -222,6 +225,8 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
     activeProfile: "默认分流策略",
     uptimeSeconds: 0,
   });
+  const lanAccess = useLanAccess(status.running, status.mixedPort);
+  const tunAccess = useTunAccess(status.running);
 
   const [bandwidth, setBandwidth] = useState<BandwidthSnapshot>({
     uploadRateBytes: 0,
@@ -503,6 +508,8 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
           <MiniWidgetView
             status={status}
             bandwidth={bandwidth}
+            lanAccess={lanAccess}
+            tunAccess={tunAccess}
             onSetFormFactor={setFormFactor}
             onChangeMode={handleChangeMode}
             onToggleSystemProxy={handleToggleSystemProxy}
@@ -523,6 +530,8 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
               <OverviewView
                 status={status}
                 bandwidth={bandwidth}
+                lanAccess={lanAccess}
+                tunAccess={tunAccess}
                 onNavigateTab={(tab) => setCurrentTab(tab as NavTab)}
                 onShowNotice={showNotice}
                 onToggleCore={handleToggleCore}
@@ -541,6 +550,7 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
 
             <div className={currentTab === "process" ? "h-full w-full" : "hidden"}>
               <ProcessRoutingView
+                tunAccess={tunAccess}
                 onShowNotice={showNotice}
                 captureWarning={captureWarning}
                 onCaptureWarningChange={setCaptureWarning}
@@ -573,7 +583,7 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
             </div>
 
             <div className={currentTab === "settings" ? "h-full w-full" : "hidden"}>
-              <SettingsView onShowNotice={showNotice}
+              <SettingsView lanAccess={lanAccess} onShowNotice={showNotice}
                 onOpenGuide={firstUseAvailable ? () => void updateGuide({ ...guide, dismissed: false }, "overview") : undefined}
                 onOpenFirstUseNotice={firstUseAvailable ? () => setIsFirstUseNoticeOpen(true) : undefined} />
             </div>
@@ -598,6 +608,7 @@ function DesktopApp({ initialGuide, firstUseAvailable, theme, onToggleTheme }: D
 
       {/* 优雅关闭确认模态对话框 (响应点击关闭或系统事件) */}
       <CloseConfirmModal />
+      <PortableUpdatePrompt />
       {hotResetPrompt && (
         <ConfirmModal
           isOpen

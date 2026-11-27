@@ -22,17 +22,14 @@ use std::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Strategy {
+pub(crate) enum Strategy {
     Prompt,
     Auto,
     Keep,
 }
 
-fn strategy(bundle: &BundleRoute) -> Strategy {
-    match bundle
-        .policy
-        .as_ref()
-        .map(|policy| policy.stale_connection_strategy.as_str())
+pub(crate) fn strategy(policy: Option<&super::model::BundlePolicy>) -> Strategy {
+    match policy.map(|policy| policy.stale_connection_strategy.as_str())
     {
         Some("auto_reset" | "auto_close") => Strategy::Auto,
         Some("ignore" | "keep") => Strategy::Keep,
@@ -101,16 +98,16 @@ static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Prompt {
-    ticket: String,
-    bundles: Vec<String>,
-    connection_count: usize,
+    pub(crate) ticket: String,
+    pub(crate) bundles: Vec<String>,
+    pub(crate) connection_count: usize,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Notice {
-    prompt: Option<Prompt>,
-    warning: Option<String>,
+    pub(crate) prompt: Option<Prompt>,
+    pub(crate) warning: Option<String>,
 }
 
 async fn core_rows() -> Result<Vec<Value>, String> {
@@ -167,7 +164,7 @@ pub(super) async fn snapshot(
         };
         let previous = old.bundles.iter().find(|old| old.id == bundle.id);
         let previous_target = previous.and_then(outlet);
-        let strategy = strategy(bundle);
+        let strategy = strategy(bundle.policy.as_ref());
         if strategy == Strategy::Keep || previous_target == Some(target) {
             continue;
         }

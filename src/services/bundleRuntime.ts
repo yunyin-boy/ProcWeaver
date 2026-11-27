@@ -13,6 +13,7 @@ void initializeBundleStorage().then(instances => {
 
 // 清理旧版业务自动创建的系统护航；手动护航与业务生命周期独立。
 bundleController.subscribe(() => {
+  if (!document.documentElement.dataset.platform || document.documentElement.dataset.edition === "process") return;
   const snap = bundleController.getSnapshot();
   const hasActiveBundle = snap.instances.some(i => i.enabled && i.slotBindings.main && i.backend !== "external")
     && snap.view?.config.bundlesEnabled !== false;

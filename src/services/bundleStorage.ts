@@ -27,6 +27,8 @@ function normalizeInstancePolicy(policy?: Partial<BundlePolicy> | null): BundleP
     targetFilterMode: policy?.targetFilterMode ?? "all",
     targetRules: Array.isArray(policy?.targetRules) ? policy.targetRules : [],
     disallowProxyArgs: policy?.disallowProxyArgs ?? false,
+    staleConnectionStrategy: policy?.staleConnectionStrategy ?? "prompt",
+    useExistingRules: policy?.useExistingRules === true,
   };
 }
 
@@ -265,7 +267,7 @@ export function saveBundleInstances(instances: BundleLocalInstance[]): void {
 }
 
 // 从预设模板装载新实例
-export function installPresetBundle(
+export function createPresetBundleInstance(
   definition: BusinessBundleDefinition,
   autoEnable = false,
   boundNode: string | null = null,
@@ -275,7 +277,7 @@ export function installPresetBundle(
   let instanceId: string;
   do { instanceId = `inst-${definition.packageId}-${Date.now().toString(36)}-${(++installSerial).toString(36)}`; } while (instances.some(i => i.instanceId === instanceId));
 
-  const newInstance: BundleLocalInstance = {
+  return {
     instanceId,
     definition: JSON.parse(JSON.stringify(definition)),
     enabled: autoEnable && Boolean(boundNode),
@@ -289,7 +291,16 @@ export function installPresetBundle(
     updatedAt: Date.now(),
     ...(repositoryOrigin ? { repositoryOrigin: { ...repositoryOrigin } } : {}),
   };
+}
 
+export function installPresetBundle(
+  definition: BusinessBundleDefinition,
+  autoEnable = false,
+  boundNode: string | null = null,
+  repositoryOrigin?: BundleRepositoryOrigin
+): BundleLocalInstance {
+  const newInstance = createPresetBundleInstance(definition, autoEnable, boundNode, repositoryOrigin);
+  const instances = getBundleInstances();
   instances.push(newInstance);
   saveBundleInstances(instances);
   return newInstance;
@@ -319,7 +330,7 @@ export function deleteBundleInstance(instanceId: string): BundleLocalInstance[] 
 }
 
 // 创建自定义规则包
-export function createCustomBundle(
+export function createCustomBundleInstance(
   name: string,
   exes: string[],
   domains: string[],
@@ -334,7 +345,6 @@ export function createCustomBundle(
     policy?: BundlePolicy;
   }
 ): BundleLocalInstance {
-  const instances = getBundleInstances();
   const packageId = `custom-${Date.now().toString(36)}`;
   const bindings = platform === "android" ? [] : processBindings?.[platform] ?? [];
   validateProcessBindings(bindings, platform);
@@ -358,7 +368,7 @@ export function createCustomBundle(
     policy: options?.policy,
   };
 
-  const newInstance: BundleLocalInstance = {
+  return {
     instanceId: `inst-${packageId}`,
     definition,
     processBindings,
@@ -370,7 +380,11 @@ export function createCustomBundle(
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
+}
 
+export function createCustomBundle(...args: Parameters<typeof createCustomBundleInstance>): BundleLocalInstance {
+  const newInstance = createCustomBundleInstance(...args);
+  const instances = getBundleInstances();
   instances.push(newInstance);
   saveBundleInstances(instances);
   return newInstance;

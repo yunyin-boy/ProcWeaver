@@ -57,11 +57,12 @@ async fn serve(runtime: Arc<Engine>, id: String, stream: TcpStream, stop: watch:
             .max_buf_size(32768).serve_connection(TokioIo::new(stream), service).with_upgrades().await;
     }
 }
-fn selected(runtime: &Engine, id: &str, process: &ProcessEntry, destination: &Destination) -> Result<(Option<super::model::Endpoint>, Vec<u16>, u64), String> {
+fn selected(runtime: &Arc<Engine>, id: &str, process: &ProcessEntry, destination: &Destination) -> Result<(Option<super::model::Endpoint>, Vec<u16>, u64, super::hot_reset::Connection), String> {
     match runtime.select(id, process, destination) {
         Ok((endpoint, route, generation, ports)) => {
             let record = runtime.record(id, process.pid, process.executable_path.as_deref().unwrap_or(""), &destination.authority(), &route, generation, endpoint.as_ref());
-            Ok((endpoint, ports, record))
+            let watch = runtime.watch_tcp(record, id, destination, destination.host.parse().ok(), endpoint.clone());
+            Ok((endpoint, ports, record, watch))
         }
         Err(error) => {
             let record = runtime.record(id, process.pid, process.executable_path.as_deref().unwrap_or(""), &destination.authority(), "拒绝", 0, None);
@@ -69,13 +70,14 @@ fn selected(runtime: &Engine, id: &str, process: &ProcessEntry, destination: &De
         }
     }
 }
-async fn tunnel<A, B>(runtime: Arc<Engine>, record: u64, mut client: A, mut upstream: B, mut stop: watch::Receiver<bool>, _permits: Arc<(OwnedSemaphorePermit, OwnedSemaphorePermit)>)
+async fn tunnel<A, B>(runtime: Arc<Engine>, record: u64, mut client: A, mut upstream: B, mut stop: watch::Receiver<bool>, mut refresh: super::hot_reset::Connection, _permits: Arc<(OwnedSemaphorePermit, OwnedSemaphorePermit)>)
 where A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin, B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin {
     let trace=super::diagnostics::Trace::new(Some(record)); let _activity=trace.activity("tcp");
     if *stop.borrow() { runtime.update(record, "closed", "业务包已停用", (0, 0)); return; }
     runtime.update(record, "active", "TCP 隧道已建立", (0, 0));
     tokio::select! {
         _ = stop.changed() => { trace.event("tcp.tunnel_end","info",serde_json::json!({"reason":"bundle_stop"})); runtime.update(record, "closed", "业务包已停用", (0, 0)); },
+        _ = refresh.refreshed() => { runtime.update(record, "closed", "套件出口已切换，旧隧道已刷新", (0, 0)); },
         result = tokio::io::copy_bidirectional(&mut client, &mut upstream) => match result {
             Ok(bytes) => { trace.event("tcp.tunnel_end","info",serde_json::json!({"reason":"streams_completed","uploaded":bytes.0,"downloaded":bytes.1})); runtime.update(record, "closed", "连接结束", bytes); },
             Err(error) => { trace.event("tcp.copy_failed","warning",transport::io_detail(&error)); runtime.update(record, "failed", "隧道连接中断，未直连重试", (0, 0)); },
@@ -99,7 +101,12 @@ async fn http(runtime: Arc<Engine>, id: String, process: ProcessEntry, mut reque
         Destination::new(authority.host(), port)
     })();
     let destination = match destination { Ok(d) => d, Err(error) => return Ok(response(StatusCode::BAD_REQUEST, &error)) };
-    let (endpoint, ports, record) = match selected(&runtime, &id, &process, &destination) { Ok(v) => v, Err(error) => return Ok(response(StatusCode::FORBIDDEN, &error)) };
+    let token = super::dns::alias(&destination.host).is_some();
+    let destination = match runtime.translate_token(&id, destination) {
+        Ok(destination) => destination,
+        Err(error) => return Ok(response(StatusCode::FORBIDDEN, &error)),
+    };
+    let (endpoint, ports, record, refresh) = match selected(&runtime, &id, &process, &destination) { Ok(v) => v, Err(error) => return Ok(response(StatusCode::FORBIDDEN, &error)) };
     let trace=super::diagnostics::Trace::new(Some(record));
     if connect {
         match transport::connect_traced(endpoint.as_ref(), &destination, &ports,&trace).await {
@@ -107,7 +114,7 @@ async fn http(runtime: Arc<Engine>, id: String, process: ProcessEntry, mut reque
                 let upgraded = hyper::upgrade::on(&mut request);
                 tokio::spawn(async move {
                     match tokio::time::timeout(transport::HANDSHAKE, upgraded).await {
-                        Ok(Ok(client)) => tunnel(runtime, record, TokioIo::new(client), upstream, stop, permits).await,
+                        Ok(Ok(client)) => tunnel(runtime, record, TokioIo::new(client), upstream, stop, refresh, permits).await,
                         _ => runtime.update(record, "failed", "客户端未完成隧道升级", (0, 0)),
                     }
                 });
@@ -119,7 +126,7 @@ async fn http(runtime: Arc<Engine>, id: String, process: ProcessEntry, mut reque
     let upgrade = request.headers().get(header::UPGRADE).is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"));
     let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut request));
     let result = async {
-        let forward = endpoint.as_ref().is_some_and(|e| e.protocol == "http");
+        let forward = !token && endpoint.as_ref().is_some_and(|e| e.protocol == "http");
         let stream = if forward {
             let e = endpoint.as_ref().unwrap();
             tokio::time::timeout(transport::HANDSHAKE, transport::dial_traced(&e.host, e.port, &ports,&trace)).await.map_err(|_| "HTTP 代理连接超时")??
@@ -137,7 +144,8 @@ async fn http(runtime: Arc<Engine>, id: String, process: ProcessEntry, mut reque
         }
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.map_err(|_| "HTTP 转发握手失败")?;
         let mut connection_stop = stop.clone();
-        tokio::spawn(async move { tokio::select! { _ = connection_stop.changed() => {}, _ = connection.with_upgrades() => {} } });
+        let mut connection_refresh = refresh.clone();
+        tokio::spawn(async move { tokio::select! { _ = connection_stop.changed() => {}, _ = connection_refresh.refreshed() => {}, _ = connection.with_upgrades() => {} } });
         let mut result = tokio::time::timeout(Duration::from_secs(60), sender.send_request(request)).await.map_err(|_| "目标响应头超时")?.map_err(|_| "HTTP 请求转发失败")?;
         if forward && result.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED { return Err("HTTP 代理认证失败或认证方式不受支持（支持 Basic）".to_string()); }
         if result.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -146,7 +154,7 @@ async fn http(runtime: Arc<Engine>, id: String, process: ProcessEntry, mut reque
             let runtime = runtime.clone();
             tokio::spawn(async move {
                 match tokio::time::timeout(transport::HANDSHAKE, async { tokio::try_join!(client_upgrade, upstream_upgrade) }).await {
-                    Ok(Ok((client, upstream))) => tunnel(runtime, record, TokioIo::new(client), TokioIo::new(upstream), stop, permits).await,
+                    Ok(Ok((client, upstream))) => tunnel(runtime, record, TokioIo::new(client), TokioIo::new(upstream), stop, refresh, permits).await,
                     _ => runtime.update(record, "failed", "WebSocket 升级失败", (0, 0)),
                 }
             });
@@ -186,13 +194,28 @@ async fn socks(runtime: Arc<Engine>, id: String, mut stream: TcpStream, process:
         }
         return;
     }
-    let (endpoint, ports, record) = match selected(&runtime, &id, &process, &destination) {
+    if destination.host == super::dns::SUITE_DNS && destination.port == 53 {
+        if runtime.select(&id, &process, &destination).is_ok()
+            && stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_ok() {
+            let mut stop = stop;
+            tokio::select! {
+                _ = stop.changed() => {},
+                _ = super::dns::serve_tcp(runtime, id, stream, true) => {},
+            }
+        }
+        return;
+    }
+    let Ok(destination) = runtime.translate_token(&id, destination) else {
+        let _ = stream.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+        return;
+    };
+    let (endpoint, ports, record, refresh) = match selected(&runtime, &id, &process, &destination) {
         Ok(value) => value,
         Err(_) => { let _ = stream.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0]).await; return; }
     };
     match transport::connect_traced(endpoint.as_ref(), &destination, &ports,&super::diagnostics::Trace::new(Some(record))).await {
         Ok(upstream) => {
-            if stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_ok() { tunnel(runtime, record, stream, upstream, stop, permits).await; }
+            if stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_ok() { tunnel(runtime, record, stream, upstream, stop, refresh, permits).await; }
         }
         Err(error) => { runtime.update(record, "failed", &error, (0, 0)); let _ = stream.write_all(&[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]).await; }
     }

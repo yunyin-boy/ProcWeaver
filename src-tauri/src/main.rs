@@ -4,6 +4,8 @@
 fn main() {
     #[cfg(windows)]
     if proc_weaver_lib::capture::windivert::session::run_if_requested() { return; }
+    #[cfg(windows)]
+    if !proc_weaver_lib::portable_update::bootstrap_app() { return; }
     #[cfg(target_os = "macos")]
     if proc_weaver_lib::platform::macos::guardian::run_if_requested() { return; }
     proc_weaver_lib::run();

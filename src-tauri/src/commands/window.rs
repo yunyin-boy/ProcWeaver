@@ -139,9 +139,9 @@ pub fn window_set_form_factor(app: AppHandle, factor: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn window_execute_close(app: AppHandle, action: String, remember: Option<bool>) -> Result<(), String> {
+pub async fn window_execute_close(app: AppHandle, action: String, remember: Option<bool>) -> Result<(), String> {
     if remember.unwrap_or(false) && (action == "minimize" || action == "exit") {
-        let _ = crate::commands::settings::update_persisted_close_action(&action);
+        let _ = crate::commands::settings::update_persisted_close_action(&action).await;
     }
     let window = get_main_window(&app)?;
     if action == "minimize" {

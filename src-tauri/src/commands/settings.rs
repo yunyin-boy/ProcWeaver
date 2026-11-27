@@ -34,6 +34,8 @@ pub struct GeneralSettings {
     pub only_proxy_traffic: bool,
     #[serde(default = "default_traffic_mode")]
     pub traffic_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tun_resume_mode: Option<String>,
     #[serde(default = "default_routing_priority")]
     pub routing_priority: String,
     #[serde(default = "default_speed_test_url")]
@@ -104,6 +106,7 @@ impl Default for GeneralSettings {
             auto_start_process_routing: false,
             only_proxy_traffic: true,
             traffic_mode: default_traffic_mode(),
+            tun_resume_mode: None,
             routing_priority: "domain_first".into(),
             speed_test_url: "https://cp.cloudflare.com/generate_204".into(),
             speed_test_concurrency: default_speed_test_concurrency(),
@@ -130,7 +133,8 @@ pub fn update_persisted_run_mode(mode: &str) -> Result<(), String> {
     crate::storage::replace(&path, &bytes)?;
     Ok(())
 }
-pub fn update_persisted_close_action(action: &str) -> Result<(), String> {
+pub async fn update_persisted_close_action(action: &str) -> Result<(), String> {
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
     let path = crate::storage::data_dir().join("config/preferences.json");
     let mut settings = get_general_settings()?;
     settings.close_action = action.to_string();
@@ -140,8 +144,8 @@ pub fn update_persisted_close_action(action: &str) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-pub fn set_close_action(action: String) -> Result<(), String> {
-    update_persisted_close_action(&action)
+pub async fn set_close_action(action: String) -> Result<(), String> {
+    update_persisted_close_action(&action).await
 }
 #[tauri::command]
 pub fn get_general_settings() -> Result<GeneralSettings, String> {
@@ -169,10 +173,84 @@ pub async fn save_general_settings(settings: GeneralSettings, state: tauri::Stat
     save_and_restart(settings, &state).await
 }
 
-async fn save_and_restart(mut settings: GeneralSettings, state: &super::process::CoreStateMutex) -> Result<GeneralSettings, String> {
+async fn save_and_restart(settings: GeneralSettings, state: &super::process::CoreStateMutex) -> Result<GeneralSettings, String> {
     let _lifecycle = super::process::LIFECYCLE.lock().await;
     crate::function_mode::require_full()?;
     let previous = get_general_settings()?;
+    apply_general_settings(settings, previous, RuntimeRequests::default(), state).await
+}
+
+#[cfg(not(target_os = "android"))]
+impl GeneralSettings {
+    pub(crate) fn capture_mode(&self) -> &'static str {
+        match self.traffic_mode.as_str() {
+            "tun" => "tun",
+            "" if self.tun_mode => "tun",
+            "windivert" | "windivert_v1" => "windivert_v1",
+            "user_mode" => "user_mode",
+            _ => "app_proxy",
+        }
+    }
+}
+
+#[cfg(windows)]
+#[tauri::command]
+pub async fn set_tun_enabled(
+    enabled: bool,
+    state: tauri::State<'_, super::process::CoreStateMutex>,
+) -> Result<GeneralSettings, String> {
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
+    crate::function_mode::require_full()?;
+    let previous = get_general_settings()?;
+    if !enabled && previous.capture_mode() != "tun" {
+        return Ok(previous);
+    }
+    let mut settings = previous.clone();
+    settings.tun_mode = enabled;
+    settings.traffic_mode = if enabled {
+        "tun"
+    } else {
+        match previous.tun_resume_mode.as_deref() {
+            Some("user_mode") => "user_mode",
+            Some("windivert" | "windivert_v1") => "windivert_v1",
+            _ => "app_proxy",
+        }
+    }.into();
+    apply_general_settings(settings, previous, RuntimeRequests { tun: enabled, ..Default::default() }, &state).await
+}
+
+#[derive(Default)]
+struct RuntimeRequests {
+    lan: bool,
+    tun: bool,
+}
+
+#[tauri::command]
+pub async fn patch_general_settings(
+    patch: serde_json::Map<String, serde_json::Value>,
+    state: tauri::State<'_, super::process::CoreStateMutex>,
+) -> Result<GeneralSettings, String> {
+    let _lifecycle = super::process::LIFECYCLE.lock().await;
+    crate::function_mode::require_full()?;
+    let previous = get_general_settings()?;
+    let requested = RuntimeRequests {
+        lan: patch.contains_key("allowLan"),
+        tun: patch.get("tunMode").and_then(serde_json::Value::as_bool) == Some(true)
+            || patch.get("trafficMode").and_then(serde_json::Value::as_str) == Some("tun"),
+    };
+    let mut fields = serde_json::to_value(&previous).map_err(|_| "无法读取当前偏好")?;
+    fields.as_object_mut().ok_or("当前偏好格式无效")?.extend(patch);
+    let settings = serde_json::from_value(fields).map_err(|_| "设置内容无效")?;
+    apply_general_settings(settings, previous, requested, &state).await
+}
+
+// Callers hold LIFECYCLE from the preference read through runtime confirmation.
+async fn apply_general_settings(
+    mut settings: GeneralSettings,
+    previous: GeneralSettings,
+    requested: RuntimeRequests,
+    state: &super::process::CoreStateMutex,
+) -> Result<GeneralSettings, String> {
     // Retired controls are not sent by the new form. Preserve their saved values
     // for compatibility; DNS preferences are the current append-DNS writer.
     settings.append_system_dns = previous.append_system_dns;
@@ -182,46 +260,81 @@ async fn save_and_restart(mut settings: GeneralSettings, state: &super::process:
     if crate::routing_overrides::public_mode::enabled() { settings.run_mode = previous.run_mode.clone(); }
     crate::capture::validate_business_remote_dns(&crate::routing_overrides::read()?.effective(), &settings.traffic_mode, settings.tun_mode)?;
     #[cfg(windows)]
-    if settings.traffic_mode == crate::capture::windivert::plan::MODE && previous.traffic_mode != settings.traffic_mode {
-        crate::capture::windivert::assets::validate_resource(&crate::capture::windivert::assets::resource()?)?;
+    {
+        let from = previous.capture_mode();
+        let to = settings.capture_mode();
+        settings.tun_resume_mode = match (from, to) {
+            ("tun", "tun") => previous.tun_resume_mode.clone(),
+            (_, "tun") => Some(from.into()),
+            _ => None,
+        };
+        if from != to {
+            match to {
+                "windivert_v1" => crate::capture::windivert::assets::validate_resource(
+                    &crate::capture::windivert::assets::resource()?,
+                )?,
+                "user_mode" if !crate::capture::user_mode::hook_assets_ready() => {
+                    return Err("用户态 Hook 组件未就绪，无法切换接管方式".into());
+                }
+                _ => {}
+            }
+        }
     }
-    #[cfg(windows)]
-    if previous.shim_mode != settings.shim_mode {
-        let _ = super::windows_integration::apply_shim_mode(&settings.shim_mode);
-    }
-    let (restart, mode) = {
+    let (running, mode) = {
         let mut core = state.lock().map_err(|_| "读取核心状态失败")?;
         #[cfg(not(target_os = "android"))]
         let running = match core.child.as_mut() { Some(child) => child.try_wait().map_err(|_| "读取核心状态失败")?.is_none(), None => false };
         #[cfg(target_os = "android")]
         let running = crate::platform::android::call::<serde_json::Value>("status", ())?["running"] == true;
         let mode = core.core_mode.clone();
-        (running && core_settings_changed(&previous, &settings), mode)
+        (running, mode)
     };
-    let proxy_enabled = super::sysproxy::get_system_proxy_status()?;
+    let restart = running && core_settings_changed(&previous, &settings);
+    // An explicit enable request retries a saved setting if the adapter or routes disappeared.
+    #[cfg(windows)]
+    let restart = restart || (running && requested.tun && settings.traffic_mode == "tun"
+        && !super::tun::ready(previous.controller_port).await);
+    #[cfg(not(windows))]
+    let _ = requested.tun;
+    let apply_lan = running && (requested.lan || previous.allow_lan != settings.allow_lan);
+    let proxy_enabled = restart && super::sysproxy::get_system_proxy_status()?;
     let preference_path = crate::storage::data_dir().join("config/preferences.json");
     let original = if preference_path.exists() { Some(std::fs::read(&preference_path).map_err(|_| "备份偏好失败")?) } else { None };
-    let settings = persist_general_settings(settings, &state)?;
+    let settings = persist_general_settings(settings, state)?;
     if restart {
         let result = async {
             { let mut core = state.lock().map_err(|_| "读取核心状态失败")?; super::process::stop_owned_child_for_restart(&mut core, false)?; }
-            super::process::start_core_locked(mode.clone(), state).await?;
+            let started = super::process::start_core_locked(mode.clone(), state).await?;
+            #[cfg(windows)]
+            if previous.traffic_mode == "tun" && settings.traffic_mode != "tun" {
+                super::tun::confirm(settings.controller_port, false).await?;
+            }
+            #[cfg(windows)]
+            if apply_lan {
+                super::lan_access::confirm(settings.mixed_port, started.pid.ok_or("核心未启动")?, settings.allow_lan).await?;
+            }
+            #[cfg(not(windows))]
+            let _ = started;
             if proxy_enabled { super::sysproxy::set_system_proxy_locked(true, Some(settings.mixed_port)).await?; }
             Ok::<(), String>(())
         }.await;
         if let Err(error) = result {
-            persist_general_settings(previous.clone(), &state)?;
-            if let Some(bytes) = original { crate::storage::replace(&preference_path, &bytes)?; }
-            else { std::fs::remove_file(&preference_path).map_err(|_| "恢复旧偏好失败")?; }
+            restore_general_settings(&previous, state, &preference_path, original.as_deref())
+                .map_err(|restore| format!("新设置启动失败：{error}；旧偏好恢复失败：{restore}"))?;
             { let mut core = state.lock().map_err(|_| "读取核心状态失败")?; super::process::stop_owned_child_for_restart(&mut core, false).map_err(|e| format!("旧设置已恢复，但核心清理失败：{e}"))?; }
             let recovery = super::process::start_core_locked(mode, state).await;
             if let Err(recovery_error) = recovery { return Err(format!("新设置启动失败：{error}；旧设置已恢复，但核心恢复失败：{recovery_error}")); }
             if proxy_enabled { super::sysproxy::set_system_proxy_locked(true, Some(previous.mixed_port)).await?; }
             return Err(format!("新设置启动失败，已恢复旧设置和核心：{error}"));
         }
-    } else if previous.allow_lan != settings.allow_lan {
-        // Mihomo 原生支持热重载 allow-lan，无需杀进程硬重启，彻底避免 Windows 端口释放竞争
-        #[cfg(not(target_os = "android"))]
+    } else if apply_lan || (!cfg!(windows) && previous.allow_lan != settings.allow_lan) {
+        #[cfg(windows)]
+        if let Err(error) = super::lan_access::apply().await {
+            restore_general_settings(&previous, state, &preference_path, original.as_deref())
+                .map_err(|restore| format!("局域网设置应用失败：{error}；旧偏好恢复失败：{restore}"))?;
+            return Err(format!("局域网设置应用失败，已恢复旧偏好：{error}"));
+        }
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             if let Ok(base) = super::mihomo_api::base_url() {
                 if let Ok(client) = super::mihomo_api::controller_client().build() {
@@ -234,9 +347,9 @@ async fn save_and_restart(mut settings: GeneralSettings, state: &super::process:
         {
             let _ = crate::platform::android::call_async::<serde_json::Value>("allow_lan", serde_json::json!({ "allowLan": settings.allow_lan })).await;
         }
-        // 同步更新 core_data/config.yaml，保证磁盘配置文件与内核热状态同步
-        let core_config_path = crate::storage::data_dir().join("core_data/config.yaml");
-        if core_config_path.exists() {
+        #[cfg(not(windows))]
+        {
+            let core_config_path = crate::storage::data_dir().join("core_data/config.yaml");
             if let Ok(text) = std::fs::read_to_string(&core_config_path) {
                 if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&text) {
                     if let Some(map) = val.as_mapping_mut() {
@@ -250,10 +363,28 @@ async fn save_and_restart(mut settings: GeneralSettings, state: &super::process:
         }
     }
     #[cfg(windows)]
+    if previous.shim_mode != settings.shim_mode {
+        let _ = super::windows_integration::apply_shim_mode(&settings.shim_mode);
+    }
+    #[cfg(windows)]
     if previous.traffic_mode == crate::capture::user_mode::MODE && settings.traffic_mode != previous.traffic_mode {
         crate::capture::user_mode::control::retain_core(&[], true);
     }
     Ok(settings)
+}
+
+fn restore_general_settings(
+    previous: &GeneralSettings,
+    state: &super::process::CoreStateMutex,
+    path: &std::path::Path,
+    original: Option<&[u8]>,
+) -> Result<(), String> {
+    persist_general_settings(previous.clone(), state)?;
+    if let Some(bytes) = original {
+        crate::storage::replace(path, bytes)
+    } else {
+        std::fs::remove_file(path).map_err(|_| "无法移除新偏好文件".into())
+    }
 }
 
 pub(crate) fn persist_general_settings(mut settings: GeneralSettings, state: &super::process::CoreStateMutex) -> Result<GeneralSettings, String> {

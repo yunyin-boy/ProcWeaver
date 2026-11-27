@@ -28,6 +28,8 @@ pub fn run() {
         .manage(state)
         .setup(|app| {
             crate::storage::initialize_process(app.handle())?;
+            #[cfg(windows)]
+            crate::portable_update::watch_trial(app.handle());
             external_proxy::diagnostics::initialize(&crate::storage::data_dir());
             function_mode::initialize();
             process_capture::initialize();
@@ -72,6 +74,7 @@ pub fn run() {
             process_capture::get_process_capture, process_capture::set_process_capture,
             external_proxy::get_external_proxy, external_proxy::save_external_proxy_settings,
             external_proxy::apply_external_bundles, external_proxy::test_external_proxy,
+            external_proxy::confirm_external_hot_reset,
             external_proxy::diagnostics::open_process_log_directory,
             crate::bundle_repository::read_bundle_repository_file,
             crate::bundle_repository::cancel_bundle_repository_request,
@@ -88,8 +91,12 @@ pub fn run() {
             commands::window::window_set_form_factor, commands::window::window_set_always_on_top,
             commands::settings::set_close_action,
             commands::system::check_is_admin,
-            crate::process_update::check_process_update, crate::process_update::download_process_update,
-            crate::process_update::open_process_update_folder,
+            #[cfg(windows)]
+            crate::portable_update::check_app_update,
+            #[cfg(windows)]
+            crate::portable_update::apply_portable_update,
+            #[cfg(windows)]
+            crate::portable_update::portable_workbench_ready,
             commands::maintenance::restart_app,
         ])
         .on_window_event(|window, event| {

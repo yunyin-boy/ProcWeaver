@@ -149,8 +149,9 @@ export const BundleRow: React.FC<Props> = ({
     <div
       onContextMenu={handleContextMenu}
       onDoubleClick={() => onOpenDetail(instance)}
-      className={`group relative flex ${compact ? "flex-wrap gap-3" : ""} items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-white/[0.04] last:border-b-0 hover:bg-slate-100/60 dark:hover:bg-white/[0.04] transition-all select-none cursor-pointer ${
-        isObservedActive
+      className={`group relative flex items-center justify-between px-4 py-3 transition-all select-none cursor-pointer ${
+        compact ? "workbench-panel flex-wrap gap-3" : "border-b border-slate-100 dark:border-white/[0.04] last:border-b-0 hover:bg-slate-100/60 dark:hover:bg-white/[0.04]"
+      } ${compact ? "" : isObservedActive
           ? "bg-emerald-500/[0.02] dark:bg-emerald-500/[0.04] border-l-2 border-l-emerald-500 dark:border-l-emerald-400"
           : isEnabled
           ? "border-l-2 border-l-emerald-500/50 dark:border-l-emerald-500/40"

@@ -28,9 +28,10 @@ type Props = {
   onClose: () => void;
   onProcesses: (items: BundleProcessBinding[]) => void;
   onDomains: (domains: string[]) => void;
+  workbench?: boolean;
 };
 
-const buttonBase =
+const legacyButton =
   "px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 text-xs transition cursor-pointer";
 
 function Tooltip({
@@ -86,9 +87,11 @@ function DiscoveryDialog({
   onClose,
   onProcesses,
   onDomains,
+  workbench = false,
   model,
 }: Props & { model: ReturnType<typeof useProcessDiscovery> }) {
   const { state, actions } = model;
+  const buttonBase = workbench ? "workbench-action" : legacyButton;
   const [query, setQuery] = useState("");
   const [hideSystem, setHideSystem] = useState(true);
   const [descendants, setDescendants] = useState(true);
@@ -297,7 +300,7 @@ function DiscoveryDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[9999] bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 animate-in fade-in duration-150 font-sans"
+      className={"fixed inset-0 z-[9999] flex items-center justify-center p-4 font-sans " + (workbench ? "workbench-dialog-backdrop" : "bg-black/60 backdrop-blur-xs")}
       data-no-drag
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -308,28 +311,31 @@ function DiscoveryDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={title}
-        className="w-full max-w-3xl max-h-[92vh] flex flex-col rounded-2xl shadow-2xl bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-800 text-xs overflow-hidden animate-in zoom-in-95 duration-150"
+        data-workbench-discovery={workbench || undefined}
+        className={"flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden text-xs " + (
+          workbench ? "workbench-dialog" : "rounded-2xl border border-slate-200 bg-white text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100"
+        )}
       >
         {/* Header */}
         <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 shrink-0">
           <div>
-            <h3 id={title} className="text-sm font-bold flex items-center gap-2">
+            <h3 id={title} className={workbench ? "workbench-panel-title" : "flex items-center gap-2 text-sm font-bold"}>
               <span>{mode === "processes" ? "从运行进程选择" : "检测已连接域名"}</span>
-              {mode === "processes" && (
+              {!workbench && mode === "processes" && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-mono font-medium">
                   卡片聚合模式
                 </span>
               )}
             </h3>
             <p className="text-slate-500 dark:text-slate-400 mt-0.5 text-[11px]">
-              当前模式：{state.mode} · 纯应用层、TUN、WinDivert 共用此选择器
+              当前模式 {state.mode}
             </p>
           </div>
           <button
             type="button"
             aria-label="关闭选择窗口"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+            className={workbench ? "workbench-title-button" : "cursor-pointer rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"}
           >
             <X size={16} />
           </button>

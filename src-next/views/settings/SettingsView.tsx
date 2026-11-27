@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Check, RotateCcw } from "lucide-react";
 import { Button } from "../../primitives/Button";
 import { flushDns, getDnsSettings, reloadCoreConfig, saveDnsSettings } from "../../services/dnsService";
-import { getGeneralSettings, restoreConfigSnapshot, saveGeneralSettings } from "../../services/settingsService";
+import { getGeneralSettings, restoreConfigSnapshot } from "../../services/settingsService";
 import { DEFAULT_DNS_SETTINGS, type DnsSettings } from "../../types/dns";
 import { DEFAULT_GENERAL_SETTINGS, type GeneralSettings } from "../../types/settings";
+import { describeLanAccess, type LanAccess } from "../../utils/useLanAccess";
 import { MaintenanceSettings } from "./MaintenanceSettings";
 import { AppPreferences, AppearanceSettings, DnsPreferences, NetworkSettings } from "./SettingsSections";
 
@@ -19,12 +20,13 @@ type Tab = typeof tabs[number]["id"];
 type Group = "general" | "dns";
 
 const networkKeys = [
-  "mixedPort", "controllerPort", "enableControllerPort", "allowLan", "ipv6",
+  "mixedPort", "controllerPort", "enableControllerPort", "ipv6",
   "tcpConcurrent", "unifiedDelay", "geoLowMemory", "autoCloseConnections",
   "speedTestUrl", "speedTestConcurrency", "healthProbeConcurrency",
 ] as const;
 
 interface SettingsViewProps {
+  lanAccess: LanAccess;
   onShowNotice?: (msg: string) => void;
   onOpenGuide?: () => void;
   onOpenFirstUseNotice?: () => void;
@@ -39,12 +41,13 @@ function getChangedFields<T extends object>(current: T | null, saved: T | null):
   ) as Partial<T>;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpenGuide, onOpenFirstUseNotice }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ lanAccess, onShowNotice, onOpenGuide, onOpenFirstUseNotice }) => {
   const [activeTab, setActiveTab] = useState<Tab>("app");
   const [maintenanceVisited, setMaintenanceVisited] = useState(false);
   const [general, setGeneral] = useState<GeneralSettings | null>(null);
   const [dns, setDns] = useState<DnsSettings | null>(null);
   const [savedGeneral, setSavedGeneral] = useState<GeneralSettings | null>(null);
+  const [lanDraft, setLanDraft] = useState<boolean | null>(null);
   const [savedDns, setSavedDns] = useState<DnsSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -52,11 +55,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
   const [networkAction, setNetworkAction] = useState<"repair" | "restart" | null>(null);
   const [saveError, setSaveError] = useState("");
 
-  const generalPatch = useMemo(() => getChangedFields(general, savedGeneral), [general, savedGeneral]);
+  const lanConfigured = lanAccess.status?.configured;
+  const lanChecked = lanAccess.checked;
+  const lanChanged = lanDraft !== null && (lanDraft !== lanConfigured || lanDraft !== lanChecked);
+  const generalPatch = useMemo(() => {
+    const patch = getChangedFields(general, savedGeneral);
+    delete patch.allowLan;
+    if (lanChanged) patch.allowLan = lanDraft;
+    return patch;
+  }, [general, savedGeneral, lanChanged, lanDraft]);
   const generalChanged = Object.keys(generalPatch).length > 0;
   const dnsChanged = useMemo(() => Object.keys(getChangedFields(dns, savedDns)).length > 0, [dns, savedDns]);
   const hasChanges = generalChanged || dnsChanged;
-  const busy = isLoading || isSaving || isRestoring || networkAction !== null;
+  const busy = isLoading || isSaving || isRestoring || networkAction !== null || lanAccess.pending;
 
   const loadSettings = async (group?: Group) => {
     setIsLoading(true);
@@ -98,6 +109,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
   };
 
   useEffect(() => { void loadSettings(); }, []);
+  useEffect(() => {
+    if (lanChecked === lanConfigured) setLanDraft((draft) => draft === lanChecked ? null : draft);
+  }, [lanChecked, lanConfigured]);
 
   const updateGeneral = <K extends keyof GeneralSettings>(field: K, value: GeneralSettings[K]) => {
     setGeneral((current) => current && { ...current, [field]: value });
@@ -105,6 +119,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
 
   const updateDns = <K extends keyof DnsSettings>(field: K, value: DnsSettings[K]) => {
     setDns((current) => current && { ...current, [field]: value });
+  };
+
+  const updateLanDraft = (checked: boolean) => {
+    setLanDraft(checked === lanConfigured && checked === lanChecked ? null : checked);
   };
 
   const save = async () => {
@@ -116,10 +134,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
     try {
       if (generalChanged && general) {
         try {
-          await saveGeneralSettings(generalPatch);
-          setSavedGeneral(general);
+          const { settings } = await lanAccess.save(generalPatch);
+          const next = { ...settings, bypassList: general.bypassList };
+          setGeneral(next);
+          setSavedGeneral(next);
+          setLanDraft(null);
           applied.push("常规与系统设置");
         } catch (error) {
+          setLanDraft(null);
           errors.push("常规与系统设置保存失败，" + (error instanceof Error ? error.message : String(error)));
         }
       }
@@ -145,6 +167,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
     if (activeTab === "general") {
       const defaults = Object.fromEntries(networkKeys.map((key) => [key, DEFAULT_GENERAL_SETTINGS[key]]));
       setGeneral((current) => current && { ...current, ...defaults });
+      if (lanAccess.status) updateLanDraft(DEFAULT_GENERAL_SETTINGS.allowLan);
     } else if (activeTab === "dns") {
       setDns({ ...DEFAULT_DNS_SETTINGS });
     }
@@ -173,6 +196,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
     setIsRestoring(true);
     try {
       await restoreConfigSnapshot(contents);
+      await lanAccess.refresh();
+      setLanDraft(null);
       setSaveError("");
       const loaded = await loadSettings();
       onShowNotice?.(loaded ? "配置快照已恢复" : "配置快照已恢复，部分设置读取失败");
@@ -220,7 +245,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowNotice, onOpen
       )}
       {activeTab !== "maintenance" && (
         <fieldset className="m-0 grid min-w-0 gap-4 border-0 p-0" disabled={busy}>
-          {activeTab === "general" && general && <NetworkSettings settings={general} update={updateGeneral} />}
+          {activeTab === "general" && general && (
+            <NetworkSettings settings={general} update={updateGeneral} lan={{
+              checked: lanChanged ? lanDraft : lanChecked,
+              disabled: !lanAccess.status,
+              onChange: updateLanDraft,
+              help: lanAccess.pending ? "正在应用…" : `${lanChanged ? "待保存 · " : ""}${describeLanAccess(lanAccess.status)}`,
+            }} />
+          )}
           {activeTab === "dns" && dns && (
             <DnsPreferences settings={dns} update={updateDns} onShowNotice={onShowNotice} />
           )}

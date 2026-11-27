@@ -19,8 +19,8 @@ export function SettingsSection({ title, tools, children }: { title: string; too
   );
 }
 
-function SettingSwitch({ title, help, checked, onChange }: {
-  title: string; help?: string; checked: boolean; onChange: (checked: boolean) => void;
+export function SettingSwitch({ title, help, checked, onChange, disabled }: {
+  title: string; help?: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean;
 }) {
   return (
     <div className="workbench-setting-row">
@@ -28,7 +28,7 @@ function SettingSwitch({ title, help, checked, onChange }: {
         <div className="text-[13px] font-medium">{title}</div>
         {help && <p className="mt-0.5 text-xs leading-relaxed text-[var(--text-muted)]">{help}</p>}
       </div>
-      <CapsuleToggle checked={checked} title={title} onChange={onChange} />
+      <CapsuleToggle checked={checked} title={title} onChange={onChange} disabled={disabled} />
     </div>
   );
 }
@@ -59,8 +59,8 @@ interface SettingOption<T extends string> {
   description: string;
 }
 
-function SettingOptions<T extends string>({ label, options, value, onChange }: {
-  label: string; options: readonly SettingOption<T>[]; value: T; onChange: (value: T) => void;
+export function SettingOptions<T extends string>({ label, options, value, onChange, disabled }: {
+  label: string; options: readonly SettingOption<T>[]; value: T; onChange: (value: T) => void; disabled?: boolean;
 }) {
   const selected = options.find((option) => option.id === value);
   return (
@@ -68,7 +68,7 @@ function SettingOptions<T extends string>({ label, options, value, onChange }: {
       <div className="text-[13px] font-medium">{label}</div>
       <div className="workbench-segments workbench-settings-segments w-fit max-w-full flex-wrap" role="group" aria-label={label}>
         {options.map((option) => (
-          <button type="button" key={option.id} aria-pressed={value === option.id} onClick={() => onChange(option.id)}>
+          <button type="button" key={option.id} aria-pressed={value === option.id} disabled={disabled} onClick={() => onChange(option.id)}>
             {option.label}
           </button>
         ))}
@@ -93,7 +93,11 @@ const performanceSwitches = [
 type UpdateGeneral = <K extends keyof GeneralSettings>(field: K, value: GeneralSettings[K]) => void;
 type UpdateDns = <K extends keyof DnsSettings>(field: K, value: DnsSettings[K]) => void;
 
-export function NetworkSettings({ settings, update }: { settings: GeneralSettings; update: UpdateGeneral }) {
+export function NetworkSettings({ settings, update, lan }: {
+  settings: GeneralSettings;
+  update: UpdateGeneral;
+  lan: { checked: boolean; disabled: boolean; help: string; onChange: (checked: boolean) => void };
+}) {
   return (
     <>
       <SettingsSection title="端口与网络访问">
@@ -105,7 +109,7 @@ export function NetworkSettings({ settings, update }: { settings: GeneralSetting
             <small>HTTP 和 SOCKS 代理共用的本地端口</small>
           </label>
           <div className="grid min-w-0 gap-2">
-            <SettingSwitch title="允许局域网" checked={settings.allowLan} onChange={(checked) => update("allowLan", checked)} />
+            <SettingSwitch title="允许局域网" {...lan} />
             <SettingSwitch title="启用 IPv6" checked={settings.ipv6} onChange={(checked) => update("ipv6", checked)} />
           </div>
         </div>

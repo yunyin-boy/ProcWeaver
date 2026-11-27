@@ -16,7 +16,7 @@ enum Target {
 }
 
 #[derive(Default)]
-pub(super) struct Filters {
+pub(crate) struct Filters {
     ports: Vec<(u16, u16)>,
     targets: Option<(TargetMode, Vec<Target>)>,
 }
@@ -31,8 +31,7 @@ pub(crate) fn active(bundle: &BundleRoute) -> bool {
 
 #[cfg(windows)]
 pub(crate) fn needs_domain(bundle: &BundleRoute) -> bool {
-    Filters::for_bundle(bundle).ok().and_then(|filter| filter.targets)
-        .is_some_and(|(_, targets)| targets.iter().any(|target| !matches!(target, Target::Network(..))))
+    Filters::for_bundle(bundle).is_ok_and(|filters| filters.needs_host())
 }
 
 pub(crate) fn validate_bundle(bundle: &BundleRoute) -> Result<(), String> {
@@ -84,7 +83,7 @@ pub(crate) fn validate_instance_changes(
 }
 
 impl Filters {
-    pub(super) fn parse(policy: &BundlePolicy) -> Result<Self, String> {
+    pub(crate) fn parse(policy: &BundlePolicy) -> Result<Self, String> {
         let ports = match policy.port_filter_mode.as_str() {
             "all" => Vec::new(),
             "web_only" => vec![(80, 80), (443, 443)],
@@ -167,7 +166,7 @@ impl Filters {
     }
 
     /// No outcome when the snapshot lacks an address needed for classification.
-    pub(super) fn accepts(
+    pub(crate) fn accepts(
         &self,
         port: u16,
         host: Option<&str>,
@@ -181,6 +180,28 @@ impl Filters {
         {
             return Some(false);
         }
+        self.accepts_target(host, ip)
+    }
+
+    pub(crate) fn accepts_connection(&self, port: u16, host: Option<&str>, ip: Option<IpAddr>) -> bool {
+        self.accepts(port, host, ip).unwrap_or_else(|| {
+            self.targets.as_ref().is_none_or(|(mode, _)| *mode != TargetMode::Include)
+        })
+    }
+
+    pub(crate) fn accepts_dns(&self, host: &str) -> bool {
+        // The query precedes the connection: its resolver port and the eventual
+        // address cannot determine which exit should resolve this name.
+        self.accepts_target(Some(host), None).unwrap_or(true)
+    }
+
+    pub(crate) fn needs_host(&self) -> bool {
+        self.targets.as_ref().is_some_and(|(_, targets)| {
+            targets.iter().any(|target| !matches!(target, Target::Network(..)))
+        })
+    }
+
+    fn accepts_target(&self, host: Option<&str>, ip: Option<IpAddr>) -> Option<bool> {
         let Some((mode, targets)) = &self.targets else {
             return Some(true);
         };

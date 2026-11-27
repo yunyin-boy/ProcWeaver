@@ -1,0 +1,51 @@
+.process-connection-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr) minmax(0, 1.3fr) minmax(76px, 0.75fr);
+  align-items: start;
+  gap: 6px 14px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.process-connection-row:hover {
+  background: var(--workbench-row-hover);
+}
+
+@container content (width < 560px) {
+  .process-connection-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+[data-workbench-policy] [data-policy-fields] > div {
+  border: 0;
+  border-radius: 8px;
+  background: var(--workbench-row-hover);
+  box-shadow: none;
+}
+
+[data-workbench-policy] [data-policy-fields] :is(input[type="text"], textarea) {
+  border: 0;
+  background: var(--workbench-control);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+[data-workbench-policy] input:is([type="radio"], [type="checkbox"]) {
+  accent-color: var(--workbench-accent-solid);
+}
+
+[data-workbench-discovery] input:not([type="checkbox"], [type="radio"]) {
+  background: var(--workbench-control);
+  color: var(--text-primary);
+  border: 0;
+}
+
+dialog[data-workbench-dialog]::backdrop {
+  background: rgb(12 18 29 / 0.42);
+}
+
+.dark dialog[data-workbench-dialog]::backdrop {
+  background: rgb(0 0 0 / 0.57);
+}

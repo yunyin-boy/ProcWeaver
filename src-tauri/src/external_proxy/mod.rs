@@ -1,5 +1,6 @@
 //! Independent application proxy runtime. Its lifecycle never starts/stops Mihomo.
 mod identity;
+mod hot_reset;
 pub mod model;
 mod server;
 mod secrets;
@@ -13,7 +14,7 @@ pub(crate) mod diagnostics;
 #[cfg(test)] mod tests;
 #[cfg(all(test, windows))] mod udp_tests;
 
-use model::{Bundle, Config, Endpoint};
+use model::{Bundle, Config, Endpoint, Traffic};
 use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, VecDeque}, path::PathBuf, sync::{Arc, LazyLock, Mutex, RwLock, atomic::{AtomicU64, Ordering}}};
 use tokio::{net::TcpListener, sync::{watch, Semaphore}};
@@ -27,6 +28,8 @@ pub(crate) struct Engine {
     listeners: Mutex<BTreeMap<String, Listener>>,
     dns_listeners: Mutex<BTreeMap<String, Listener>>,
     errors: Mutex<BTreeMap<String, String>>,
+    addresses: Mutex<dns::Addresses>,
+    hot_reset: hot_reset::State,
     records: Mutex<VecDeque<Record>>,
     serial: AtomicU64,
     capacity: Arc<Semaphore>,
@@ -54,6 +57,9 @@ pub struct View {
     pub dns: model::DnsSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<diagnostics::Status>,
+    #[cfg(windows)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hot_reset: Option<crate::routing_overrides::hot_reset::Notice>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -72,7 +78,7 @@ impl Engine {
             Err(_) => return Err("无法读取独立代理配置".into()),
         };
         model::validate(&mut config)?;
-        Ok(Arc::new(Self { root, config: RwLock::new(config), listeners: Mutex::new(BTreeMap::new()), dns_listeners: Mutex::new(BTreeMap::new()), errors: Mutex::new(BTreeMap::new()),
+        Ok(Arc::new(Self { root, config: RwLock::new(config), listeners: Mutex::new(BTreeMap::new()), dns_listeners: Mutex::new(BTreeMap::new()), errors: Mutex::new(BTreeMap::new()), addresses: Mutex::new(dns::Addresses::default()), hot_reset: hot_reset::State::default(),
             records: Mutex::new(VecDeque::new()), serial: AtomicU64::new(1), capacity: Arc::new(Semaphore::new(4096)) }))
     }
     fn config(&self) -> Config { self.config.read().unwrap_or_else(|e| e.into_inner()).clone() }
@@ -87,7 +93,8 @@ impl Engine {
             upstream: model::endpoint(&config, b).map(|e| e.name.clone()).unwrap_or_default(), error: errors.get(&b.id).cloned().unwrap_or_default() }).collect();
         View { revision: config.revision, enabled: config.enabled, default_endpoint_id: config.default_endpoint_id,
             endpoints: config.endpoints.iter().map(|e| EndpointView { id: e.id.clone(), name: e.name.clone(), protocol: e.protocol.clone(), host: e.host.clone(), port: e.port, username: e.username.clone(), has_password: !e.secret.is_empty() }).collect(),
-            dns: config.dns, bundles: config.bundles, states, records: self.records.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().take(100).cloned().collect(), supported: cfg!(windows), diagnostics: diagnostics::status() }
+            dns: config.dns, bundles: config.bundles, states, records: self.records.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().take(100).cloned().collect(), supported: cfg!(windows), diagnostics: diagnostics::status(),
+            #[cfg(windows)] hot_reset: None }
     }
     async fn apply(self: &Arc<Self>, mut next: Config) -> Result<View, String> {
         model::validate(&mut next)?;
@@ -119,6 +126,8 @@ impl Engine {
             if !e.username.is_empty() { secrets::reveal(&e.secret)?; }
         }
         next.revision = old.revision.checked_add(1).ok_or("配置版本已耗尽")?;
+        #[cfg(windows)]
+        let old_connections = self.hot_reset.snapshot(&old, &next);
         crate::storage::replace_atomic(&self.root.join("config/external-proxy.json"), &serde_json::to_vec_pretty(&next).map_err(|_| "生成独立代理配置失败")?).map_err(|_| "独立代理配置保存失败，原运行状态保留")?;
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
         diagnostics::emit("config.applied", "info", serde_json::json!({"revision":next.revision,"enabled":next.enabled,"enabledBundles":next.bundles.iter().filter(|b|b.enabled).count(),"endpoints":next.endpoints.len(),"dnsEnabled":next.dns.enabled}));
@@ -148,19 +157,45 @@ impl Engine {
         // A successful disable means its stable port has actually been released.
         for entry in stopped { let _ = entry.task.await; }
         self.errors.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        #[cfg(windows)]
+        {
+            let hot_reset = self.hot_reset.applied(next.revision, old_connections).await;
+            Ok(View { hot_reset, ..self.view() })
+        }
+        #[cfg(not(windows))]
         Ok(self.view())
     }
     fn select(&self, id: &str, process: &crate::routing_overrides::tracker::ProcessEntry, destination: &transport::Destination) -> Result<(Option<Endpoint>, String, u64, Vec<u16>), String> {
+        self.select_flow(id, process, destination, None, Traffic::Tcp)
+    }
+
+    fn select_flow(
+        &self,
+        id: &str,
+        process: &crate::routing_overrides::tracker::ProcessEntry,
+        destination: &transport::Destination,
+        original_address: Option<std::net::IpAddr>,
+        traffic: Traffic,
+    ) -> Result<(Option<Endpoint>, String, u64, Vec<u16>), String> {
         let config = self.config.read().unwrap_or_else(|e| e.into_inner());
-        let b = config.bundles.iter().find(|b| b.id == id).ok_or("业务包已移除")?;
-        if !config.enabled || !b.enabled { return Err("独立业务包已停用".into()); }
+        let bundle = config.bundles.iter().find(|b| b.id == id).ok_or("业务包已移除")?;
+        if !config.enabled || !bundle.enabled { return Err("独立业务包已停用".into()); }
         if identity::owner(&config.bundles, process) != Some(id) { return Err("连接进程不属于本业务包或归属不唯一，已拒绝转发".into()); }
-        let matched = b.mode == "strict" || b.domains.iter().any(|d| model::domain_matches(d, &destination.host));
-        let (endpoint, reason) = if matched { (Some(model::endpoint(&config, b)?.clone()), "业务包") }
-            else if b.fallback == "default" { (Some(config.endpoints.iter().find(|e| Some(&e.id) == config.default_endpoint_id.as_ref()).ok_or("默认代理不可用")?.clone()), "未命中→默认代理") }
-            else { (None, "未命中→直连") };
+        let literal = destination.host.parse::<std::net::IpAddr>().ok();
+        let known_host = literal.and_then(|address| {
+            self.addresses.lock().unwrap_or_else(|e| e.into_inner()).name(id, address)
+        });
+        let host = known_host.as_deref().unwrap_or(&destination.host);
+        let (endpoint, reason) = model::select_exit(&config, bundle, host, destination.port, original_address.or(literal), traffic)?;
         let ports = config.bundles.iter().flat_map(|b| [b.port, b.dns_port]).filter(|p| *p != 0).collect();
-        Ok((endpoint, reason.into(), config.revision, ports))
+        Ok((endpoint.cloned(), reason.into(), config.revision, ports))
+    }
+
+    fn translate_token(&self, id: &str, destination: transport::Destination) -> Result<transport::Destination, String> {
+        let Some(token) = dns::alias(&destination.host) else { return Ok(destination); };
+        let host = self.addresses.lock().unwrap_or_else(|e| e.into_inner()).domain(id, token)
+            .ok_or("Fake-IP 已失效或不属于当前套件，请重新解析")?;
+        Ok(transport::Destination { host, port: destination.port })
     }
     fn record(&self, bundle: &str, pid: u32, process: &str, target: &str, route: &str, generation: u64, endpoint: Option<&Endpoint>) -> u64 {
         let id = self.serial.fetch_add(1, Ordering::Relaxed);
@@ -311,7 +346,7 @@ pub fn shutdown() { if let Some(runtime) = ENGINE.lock().unwrap_or_else(|e| e.in
 #[tauri::command]
 pub fn get_external_proxy() -> Result<View, String> { Ok(engine()?.view()) }
 #[tauri::command]
-pub async fn save_external_proxy_settings(input: SettingsInput) -> Result<View, String> {
+pub async fn save_external_proxy_settings(_window: tauri::WebviewWindow, input: SettingsInput) -> Result<View, String> {
     let _lock = OPERATIONS.lock().await;
     let _core = crate::commands::process::LIFECYCLE.lock().await;
     let runtime = engine()?; let mut config = runtime.config();
@@ -331,10 +366,12 @@ pub async fn save_external_proxy_settings(input: SettingsInput) -> Result<View, 
     }
     config.endpoints = endpoints; config.default_endpoint_id = input.default_endpoint_id;
     if let Some(dns) = input.dns { config.dns = dns; }
-    runtime.apply(config).await
+    let view = runtime.apply(config).await?;
+    #[cfg(windows)] emit_hot_reset(&_window, &view);
+    Ok(view)
 }
 #[tauri::command]
-pub async fn apply_external_bundles(revision: u64, bundles: Vec<Bundle>, enabled: bool) -> Result<View, String> {
+pub async fn apply_external_bundles(_window: tauri::WebviewWindow, revision: u64, bundles: Vec<Bundle>, enabled: bool) -> Result<View, String> {
     let _lock = OPERATIONS.lock().await;
     let _core = crate::commands::process::LIFECYCLE.lock().await;
     let runtime = engine()?; let mut config = runtime.config();
@@ -351,11 +388,37 @@ pub async fn apply_external_bundles(revision: u64, bundles: Vec<Bundle>, enabled
     let view = runtime.apply(config).await?;
     #[cfg(windows)]
     {
+        emit_hot_reset(&_window, &view);
         let config = runtime.config();
         crate::capture::user_mode::control::retain_external(|id, port| config.enabled
             && config.bundles.iter().any(|bundle| bundle.enabled && bundle.id == id && bundle.port == port));
     }
     Ok(view)
+}
+
+#[cfg(windows)]
+fn emit_hot_reset(window: &tauri::WebviewWindow, view: &View) {
+    use tauri::Emitter;
+    if let Some(notice) = &view.hot_reset {
+        let _ = window.emit_to(window.label(), "procweaver-external-hot-reset", notice);
+    }
+}
+
+#[tauri::command]
+pub async fn confirm_external_hot_reset(ticket: String, refresh: bool) -> Result<serde_json::Value, String> {
+    #[cfg(windows)]
+    {
+        let _operation = OPERATIONS.lock().await;
+        let _lifecycle = crate::commands::process::LIFECYCLE.lock().await;
+        let runtime = engine()?;
+        let revision = runtime.config.read().unwrap_or_else(|e| e.into_inner()).revision;
+        runtime.hot_reset.confirm(revision, &ticket, refresh).await
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (ticket, refresh);
+        Err("当前平台不支持刷新独立进程的旧连接".into())
+    }
 }
 #[tauri::command]
 pub async fn test_external_proxy(endpoint_id: String, host: String, port: u16, protocol: Option<String>, query_name: Option<String>, timeout_ms: Option<u64>) -> Result<String, String> {

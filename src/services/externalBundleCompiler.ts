@@ -26,15 +26,17 @@ export function compileExternalBundles(instances: BundleLocalInstance[]): Extern
     const bindings = i.processBindings?.windows ?? [];
     validateProcessBindings(bindings, "windows");
     const processes = bundleProcesses(i.definition, "windows");
+    const policy = i.policy ?? i.definition.policy;
+    const includeDescendants = policy?.proxySubprocesses !== false;
     const main = processes.find(p => p.role === "main")?.exe || processes[0]?.exe || "";
     const members = bundleExes(i.definition, "windows").flatMap<ExternalBundle["members"][number]>(exe => {
       const bound = bindings.filter(b => processKey(b.exe, "windows") === processKey(exe, "windows"));
-      return bound.length ? bound.map(b => ({ kind: "path" as const, value: b.executablePath, descendants: b.includeDescendants }))
-        : [{ kind: "name" as const, value: exe, descendants: processes.find(p => processKey(p.exe, "windows") === processKey(exe, "windows"))?.includeDescendants !== false }];
+      return bound.length ? bound.map(b => ({ kind: "path" as const, value: b.executablePath, descendants: includeDescendants && b.includeDescendants }))
+        : [{ kind: "name" as const, value: exe, descendants: includeDescendants && processes.find(p => processKey(p.exe, "windows") === processKey(exe, "windows"))?.includeDescendants !== false }];
     });
     return { id: i.instanceId, name: i.definition.packageName, mainExe: bindings.find(b => processKey(b.exe, "windows") === processKey(main, "windows"))?.executablePath || main,
       enabled: i.enabled, mode: i.definition.mode, domains: [...new Set((i.definition.domains || []).map(d => d.trim().toLowerCase().replace(/\.+$/, "").replace(/^\./, "*.")).filter(Boolean))].sort(),
-      members, endpointId: i.externalEndpointId || null, fallback: i.externalFallback || "direct", port: 0, policy: i.policy ?? i.definition.policy };
+      members, endpointId: i.externalEndpointId || null, fallback: i.externalFallback || "direct", port: 0, policy };
   });
 }
 // Native Serde and JavaScript construct member fields in different orders.

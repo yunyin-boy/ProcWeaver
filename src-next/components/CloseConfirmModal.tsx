@@ -11,11 +11,13 @@ import { isTauriEnvironment } from "../services/client";
 export interface CloseConfirmModalProps {
   isOpen?: boolean;
   onClose?: () => void;
+  appName?: string;
 }
 
 export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({
   isOpen: controlledIsOpen,
   onClose: controlledOnClose,
+  appName = "ProcWeaver",
 }) => {
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = controlledIsOpen !== undefined ? controlledIsOpen : internalOpen;
@@ -118,7 +120,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="关闭 ProcWeaver"
+        aria-label={`关闭 ${appName}`}
       >
         {/* 顶部标题栏与关闭叉号 */}
         <div className="flex items-start justify-between">
@@ -130,7 +132,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({
             </div>
             <div>
               <h3 className="text-[14px] font-semibold tracking-tight text-[var(--text-primary)]">
-                关闭 ProcWeaver
+                关闭 {appName}
               </h3>
               <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
                 请选择点击关闭窗口时的执行动作

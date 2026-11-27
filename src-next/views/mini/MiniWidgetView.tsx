@@ -1,27 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, ArrowUpRight, ChevronRight, Expand, Globe2, Power, RefreshCw, Search, Stethoscope } from "lucide-react";
 import { Button } from "../../primitives/Button";
-import { CapsuleToggle } from "../../primitives/CapsuleToggle";
 import { Modal } from "../../primitives/Modal";
 import { RoutingModeControl } from "../../primitives/RoutingModeControl";
+import { LanAccessToggle } from "../../components/LanAccessToggle";
+import { TunToggle } from "../../components/TunToggle";
 import { formatMemoryBytes } from "../../services/coreService";
 import { flushDns, reloadCoreConfig } from "../../services/dnsService";
 import { PROFILE_CHANGED_EVENT } from "../../services/profileService";
 import { fetchProxiesData, switchGroupProxy, type ProxiesSnapshot } from "../../services/proxyService";
-import { getGeneralSettings, saveGeneralSettings } from "../../services/settingsService";
 import { calculateAdaptiveCeilingBps, formatBitrate, formatTrafficBytes } from "../../services/telemetryService";
 import type { CoreStatusSnapshot, EngineMode } from "../../types/core";
 import type { ProxyItem } from "../../types/proxy";
-import type { GeneralSettings } from "../../types/settings";
 import type { BandwidthSnapshot } from "../../types/telemetry";
 import { isAdOrInfoNode } from "../../utils/nodeParser";
 import { generateSvgWave } from "../../utils/trafficWave";
 import type { FormFactor } from "../../utils/useWindowFormFactor";
+import type { LanAccess } from "../../utils/useLanAccess";
+import type { TunAccess } from "../../utils/useTunAccess";
 import { MiniProcessRouting } from "./MiniProcessRouting";
 
 interface MiniWidgetViewProps {
   status: CoreStatusSnapshot;
   bandwidth: BandwidthSnapshot;
+  lanAccess: LanAccess;
+  tunAccess: TunAccess;
   onSetFormFactor: (factor: FormFactor) => void;
   onChangeMode: (mode: EngineMode) => Promise<void>;
   onToggleSystemProxy: (enabled: boolean) => Promise<void>;
@@ -36,7 +39,6 @@ const tabs = [
 ] as const;
 
 type MiniTab = typeof tabs[number]["id"];
-type NetworkOptions = Pick<GeneralSettings, "tunMode" | "allowLan">;
 type ToolAction = "repair" | "restart";
 const MAX_TRAFFIC_SAMPLES = 30;
 const blockedTargets = new Set(["REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"]);
@@ -83,6 +85,8 @@ function describeTotal(bytes: number): string {
 export const MiniWidgetView: React.FC<MiniWidgetViewProps> = ({
   status,
   bandwidth,
+  lanAccess,
+  tunAccess,
   onSetFormFactor,
   onChangeMode,
   onToggleSystemProxy,
@@ -95,7 +99,6 @@ export const MiniWidgetView: React.FC<MiniWidgetViewProps> = ({
   const [nodeSearch, setNodeSearch] = useState("");
   const [pendingNode, setPendingNode] = useState("");
   const [nodeError, setNodeError] = useState("");
-  const [options, setOptions] = useState<NetworkOptions | null>();
   const [pendingControl, setPendingControl] = useState(false);
   const [toolAction, setToolAction] = useState<ToolAction | null>(null);
   const [traffic, setTraffic] = useState<{ down: number; up: number }[]>([]);
@@ -110,17 +113,6 @@ export const MiniWidgetView: React.FC<MiniWidgetViewProps> = ({
       if (id === outletRequest.current) setOutlets(null);
     }
   }, []);
-
-  const readNetworkOptions = useCallback(async () => {
-    try {
-      const { tunMode, allowLan } = await getGeneralSettings({ strict: true });
-      setOptions({ tunMode, allowLan });
-    } catch {
-      setOptions(null);
-    }
-  }, []);
-
-  useEffect(() => { void readNetworkOptions(); }, [readNetworkOptions]);
 
   useEffect(() => {
     const reload = () => void refreshOutlets();
@@ -199,17 +191,6 @@ export const MiniWidgetView: React.FC<MiniWidgetViewProps> = ({
     finally { setPendingControl(false); }
   };
 
-  const changeNetworkOption = (key: keyof NetworkOptions, checked: boolean) => {
-    if (!options) return;
-    void runControl(async () => {
-      await saveGeneralSettings(key === "tunMode"
-        ? { tunMode: checked, trafficMode: checked ? "tun" : "app_proxy" }
-        : { allowLan: checked });
-      setOptions({ ...options, [key]: checked });
-      onShowNotice?.((key === "tunMode" ? "TUN" : "局域网访问") + (checked ? "已开启" : "已关闭"));
-    });
-  };
-
   const runTool = async (action: ToolAction) => {
     if (toolAction || pendingControl) return;
     setToolAction(action);
@@ -221,7 +202,7 @@ export const MiniWidgetView: React.FC<MiniWidgetViewProps> = ({
         await reloadCoreConfig();
         onShowNotice?.("核心已重启");
       }
-      await Promise.all([readNetworkOptions(), refreshOutlets()]);
+      await Promise.all([tunAccess.refresh(), refreshOutlets()]);
     } catch (error) {
       onShowNotice?.((action === "repair" ? "网络修复失败，" : "重启核心失败，") + (error instanceof Error ? error.message : String(error)));
     } finally {
@@ -265,23 +246,9 @@ export const MiniWidgetView: React.FC<MiniWidgetViewProps> = ({
               </p>
             </div>
             <div className="workbench-network-switches" role="group" aria-label="网络开关">
-              <div className="workbench-network-switch-row">
-                <span>TUN 虚拟网卡</span>
-                <CapsuleToggle title="TUN 虚拟网卡" checked={Boolean(options?.tunMode)} disabled={!options || controlBusy}
-                  onChange={(checked) => changeNetworkOption("tunMode", checked)} />
-              </div>
-              <div className="workbench-network-switch-row">
-                <span>允许局域网</span>
-                <CapsuleToggle title="允许局域网" checked={Boolean(options?.allowLan)} disabled={!options || controlBusy}
-                  onChange={(checked) => changeNetworkOption("allowLan", checked)} />
-              </div>
+              <TunToggle access={tunAccess} disabled={controlBusy || lanAccess.pending} onShowNotice={onShowNotice} />
+              <LanAccessToggle access={lanAccess} disabled={controlBusy || tunAccess.pending} onShowNotice={onShowNotice} />
             </div>
-            {options === null && (
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
-                <span>读取网络设置失败</span>
-                <Button type="button" size="sm" variant="ghost" onClick={() => void readNetworkOptions()}>重试</Button>
-              </div>
-            )}
           </section>
 
           <section className="workbench-panel workbench-mini-panel" aria-label="挂件网络">

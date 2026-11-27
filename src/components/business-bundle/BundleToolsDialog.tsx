@@ -5,13 +5,17 @@ interface Actions {
   close(): void; confirm(): Promise<void>; retry(): Promise<void>; select(path: string): void; choose(): Promise<void>;
   change(action: "patch" | "create" | "restore", id?: string | null): Promise<void>;
 }
-export function BundleToolsDialog({ state, actions }: { state: BundleToolsState; actions: Actions }) {
+export function BundleToolsDialog({ state, actions, workbench = false }: { state: BundleToolsState; actions: Actions; workbench?: boolean }) {
   const platform = usePlatform();
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (state.open && !dialog.current?.open) dialog.current?.showModal(); else if (!state.open) dialog.current?.close(); }, [state.open]);
-  const button = "px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-xs disabled:opacity-40 disabled:cursor-not-allowed";
-  return <dialog ref={dialog} onCancel={event => { event.preventDefault(); actions.close(); }} aria-labelledby="bundle-tools-title" className="w-[min(620px,calc(100vw-32px))] max-h-[85vh] overflow-y-auto rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 p-5 shadow-xl backdrop:bg-slate-950/40">
-    <h2 id="bundle-tools-title" className="font-bold text-base">{state.title} · {state.kind === "launch" ? state.hotSwap ? "热替换确认" : "应用接入" : "桌面快捷方式"}</h2>
+  const button = workbench ? "workbench-action" : "px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 text-xs disabled:opacity-40 disabled:cursor-not-allowed";
+  return <dialog ref={dialog} onCancel={event => { event.preventDefault(); actions.close(); }} aria-labelledby="bundle-tools-title"
+    data-workbench-dialog={workbench || undefined}
+    className={"max-h-[85vh] w-[min(620px,calc(100vw-32px))] overflow-y-auto p-5 " + (
+      workbench ? "workbench-dialog text-[var(--text-primary)]" : "rounded-2xl border border-slate-200 bg-white text-slate-800 shadow-xl backdrop:bg-slate-950/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+    )}>
+    <h2 id="bundle-tools-title" className={workbench ? "workbench-panel-title" : "text-base font-bold"}>{state.title} · {state.kind === "launch" ? state.hotSwap ? "热替换确认" : "应用接入" : "桌面快捷方式"}</h2>
     {state.hotSwap && <p className="text-xs text-amber-700 dark:text-amber-300 mt-3">自动检测发现入口需要处理。只有点击下方重启确认才会正常关闭应用，不会强制结束进程；暂不重启后，同一实例不再自动弹窗。</p>}
     <p className="text-xs text-slate-500 dark:text-slate-400 my-3">{platform.os === "macos" ? "沿用现有应用资料。应用需支持代理参数、环境变量或系统代理；启动成功后，请通过连接记录核验实际出口。" : "沿用现有用户资料、登录状态和资料目录。业务包入口固定，节点切换后快捷方式继续使用该包的当前选择。"}</p>
     {state.message && <p role="status" className="text-sm my-3 break-words">{state.message}</p>}
@@ -21,7 +25,8 @@ export function BundleToolsDialog({ state, actions }: { state: BundleToolsState;
     {state.kind === "shortcuts" && state.shortcuts && <div className="space-y-3 text-xs">
       <p className="break-all">实际桌面：{state.shortcuts.desktop}</p>
       <label className="block">选择现有快捷方式（保留其资料目录参数）
-        <select aria-label="现有快捷方式" value={state.selected} disabled={state.busy} onChange={e => actions.select(e.target.value)} className="w-full mt-2 p-2 border rounded-lg bg-white dark:bg-slate-950 border-slate-300 dark:border-slate-600">
+        <select aria-label="现有快捷方式" value={state.selected} disabled={state.busy} onChange={e => actions.select(e.target.value)}
+          className={"mt-2 w-full p-2 " + (workbench ? "workbench-field" : "rounded-lg border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-950")}>
           <option value="">{state.shortcuts.candidates.length ? "请选择快捷方式" : "未找到指向该应用的桌面快捷方式"}</option>
           {state.shortcuts.candidates.map(item => <option key={item.path} value={item.path}>{item.label} · {item.path}</option>)}
         </select>
@@ -42,7 +47,7 @@ export function BundleToolsDialog({ state, actions }: { state: BundleToolsState;
       {state.kind === "launch" && state.error && <button className={button} disabled={state.busy} onClick={() => void actions.choose()}>{platform.os === "macos" ? "选择应用（.app）/ 可执行文件" : "选择主程序 / 快捷方式"}</button>}
       {state.kind === "launch" && state.error && state.request && <button className={button} disabled={state.busy} onClick={() => void actions.retry()}>{state.hotSwap ? "重新检测" : "重新检测并启动"}</button>}
       <button autoFocus className={button} disabled={state.busy} onClick={actions.close}>{state.outcome?.state === "restart_required" ? "暂不重启" : "关闭"}</button>
-      {state.outcome?.state === "restart_required" && <button className={`${button} bg-indigo-600 text-white`} disabled={state.busy} onClick={() => void actions.confirm()}>已保存工作，正常关闭并重启</button>}
+      {state.outcome?.state === "restart_required" && <button className={button + (workbench ? " workbench-action-primary" : " bg-indigo-600 text-white")} disabled={state.busy} onClick={() => void actions.confirm()}>已保存工作，正常关闭并重启</button>}
     </div>
   </dialog>;
 }

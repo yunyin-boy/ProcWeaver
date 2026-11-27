@@ -61,6 +61,227 @@ async fn local_connect(port: u16, target: &str) -> TcpStream {
 }
 
 #[cfg(windows)]
+#[test]
+fn external_policy_uses_the_original_address_port_and_name() {
+    use crate::routing_overrides::model::BundlePolicy;
+    let mut config = Config::default();
+    config.default_endpoint_id = Some("fixture".into());
+    config.endpoints = vec![endpoint(1080, "socks5")];
+    let mut bundle = bundle("policy");
+    bundle.policy = Some(BundlePolicy {
+        port_filter_mode: "custom".into(), custom_ports: "443, 8000 - 8002".into(),
+        target_filter_mode: "include".into(), target_rules: vec!["*.fixture.test".into(), "192.0.2.0/25".into()],
+        ..Default::default()
+    });
+    let uses_proxy = |host: &str, port, address: Option<&str>, traffic| {
+        model::select_exit(&config, &bundle, host, port, address.map(|ip| ip.parse().unwrap()), traffic)
+            .unwrap().0.is_some()
+    };
+    assert!(uses_proxy("api.fixture.test", 8001, None, Traffic::Tcp));
+    assert!(uses_proxy("other.test", 443, Some("192.0.2.99"), Traffic::Tcp));
+    assert!(!uses_proxy("api.fixture.test", 8443, None, Traffic::Tcp));
+    assert!(!uses_proxy("api.fixture.test", 443, Some("10.0.0.50"), Traffic::Tcp));
+    assert!(!uses_proxy("192.168.1.1", 443, None, Traffic::Tcp));
+    assert!(uses_proxy("api.fixture.test", 53, None, Traffic::Dns));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn scoped_dns_preserves_the_name_and_reserves_fake_ip_per_bundle() {
+    use crate::routing_overrides::model::BundlePolicy;
+    let f = Fixture::new();
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = f.runtime.config();
+    config.default_endpoint_id = Some("fixture".into());
+    config.endpoints = vec![endpoint(upstream.local_addr().unwrap().port(), "http")];
+    config.bundles = vec![bundle("first")];
+    config.bundles[0].policy = Some(BundlePolicy {
+        port_filter_mode: "web_only".into(), target_filter_mode: "include".into(),
+        target_rules: vec!["only.fixture.test".into()], ..Default::default()
+    });
+    let view = f.runtime.apply(config).await.unwrap();
+    let entry = endpoint(view.states[0].port, "socks5");
+    let service = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await.unwrap();
+        assert!(header(&mut stream).await.starts_with("CONNECT 1.1.1.1:53 "));
+        stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+        let len = stream.read_u16().await.unwrap() as usize;
+        let mut request = vec![0; len];
+        stream.read_exact(&mut request).await.unwrap();
+        assert_eq!(dns::question(&request).unwrap().name, "only.fixture.test");
+        let mut reply = dns::failure(&request, 0);
+        reply[7] = 1;
+        reply.extend([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 192, 0, 2, 80]);
+        stream.write_u16(reply.len() as u16).await.unwrap();
+        stream.write_all(&reply).await.unwrap();
+    });
+    let ask = |entry: Endpoint| async move {
+        let target = transport::Destination::new(dns::SUITE_DNS, 53).unwrap();
+        let mut stream = transport::connect(Some(&entry), &target, &[]).await.unwrap();
+        let query = dns::query("only.fixture.test", 42).unwrap();
+        stream.write_u16(query.len() as u16).await.unwrap();
+        stream.write_all(&query).await.unwrap();
+        let len = stream.read_u16().await.unwrap() as usize;
+        let mut reply = vec![0; len];
+        stream.read_exact(&mut reply).await.unwrap();
+        let octets: [u8; 4] = reply[reply.len()-4..].try_into().unwrap();
+        std::net::Ipv4Addr::from(octets)
+    };
+    assert_eq!(ask(entry.clone()).await.to_string(), "192.0.2.80");
+    service.await.unwrap();
+    let process = crate::routing_overrides::native::inspect(std::process::id(), 0, String::new());
+    let literal = transport::Destination::new("192.0.2.80", 443).unwrap();
+    assert!(f.runtime.select("first", &process, &literal).unwrap().0.is_some());
+
+    let mut config = f.runtime.config();
+    config.bundles[0].policy.as_mut().unwrap().dns_mode = "fake_ip".into();
+    f.runtime.apply(config).await.unwrap();
+    let alias = ask(entry).await;
+    assert_eq!(alias.octets()[..2], [198, 19]);
+    let target = transport::Destination::new(&alias.to_string(), 443).unwrap();
+    assert_eq!(f.runtime.translate_token("first", target.clone()).unwrap().host, "only.fixture.test");
+    assert!(f.runtime.translate_token("another", target).is_err());
+
+    let native_resolver = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let native_target = transport::Destination::new("127.0.0.1", native_resolver.local_addr().unwrap().port()).unwrap();
+    let direct = tokio::spawn(async move {
+        let (mut stream, _) = native_resolver.accept().await.unwrap();
+        let len = stream.read_u16().await.unwrap() as usize;
+        let mut query = vec![0; len];
+        stream.read_exact(&mut query).await.unwrap();
+        let reply = dns::failure(&query, 0);
+        stream.write_u16(reply.len() as u16).await.unwrap();
+        stream.write_all(&reply).await.unwrap();
+    });
+    let mut config = f.runtime.config();
+    config.bundles[0].policy.as_mut().unwrap().dns_mode = "system_native".into();
+    f.runtime.apply(config).await.unwrap();
+    let query = dns::query("only.fixture.test", 43).unwrap();
+    let reply = dns::answer(&f.runtime, "first", &process, &query, Some(&native_target), true, "test DNS").await.unwrap();
+    assert_eq!(reply, dns::failure(&query, 0));
+    direct.await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn switching_the_external_outlet_follows_the_old_connection_strategy() {
+    let f = Fixture::new();
+    let (first_port, first) = echo_socks().await;
+    let (second_port, second) = echo_socks().await;
+    let view = start(&f, endpoint(first_port, "socks5")).await;
+    let mut config = f.runtime.config();
+    config.bundles[0].policy = Some(Default::default());
+    f.runtime.apply(config).await.unwrap();
+    let mut old = local_connect(view.states[0].port, "unresolved.fixture.invalid:443").await;
+    old.write_all(b"a").await.unwrap();
+    assert_eq!(old.read_u8().await.unwrap(), b'a');
+    let mut config = f.runtime.config();
+    config.endpoints[0].port = second_port;
+    let view = f.runtime.apply(config).await.unwrap();
+    let prompt = view.hot_reset.unwrap().prompt.unwrap();
+    assert_eq!(prompt.connection_count, 1);
+    old.write_all(b"b").await.unwrap();
+    assert_eq!(old.read_u8().await.unwrap(), b'b');
+    let result = f.runtime.hot_reset.confirm(view.revision, &prompt.ticket, true).await.unwrap();
+    assert_eq!(result["refreshed"], 1);
+    assert!(tokio::time::timeout(Duration::from_secs(2), old.read_u8()).await.unwrap().is_err());
+    let mut new = local_connect(view.states[0].port, "unresolved.fixture.invalid:443").await;
+    new.write_all(b"c").await.unwrap();
+    assert_eq!(new.read_u8().await.unwrap(), b'c');
+
+    let mut config = f.runtime.config();
+    config.bundles[0].policy.as_mut().unwrap().stale_connection_strategy = "ignore".into();
+    config.endpoints[0].port = first_port;
+    assert!(f.runtime.apply(config).await.unwrap().hot_reset.is_none());
+    new.write_all(b"d").await.unwrap();
+    assert_eq!(new.read_u8().await.unwrap(), b'd');
+
+    let mut config = f.runtime.config();
+    config.bundles[0].policy.as_mut().unwrap().stale_connection_strategy = "auto_reset".into();
+    config.endpoints[0].port = second_port;
+    let mut stale = local_connect(view.states[0].port, "unresolved.fixture.invalid:443").await;
+    stale.write_all(b"e").await.unwrap();
+    assert_eq!(stale.read_u8().await.unwrap(), b'e');
+    assert!(f.runtime.apply(config).await.unwrap().hot_reset.is_none());
+    assert!(tokio::time::timeout(Duration::from_secs(2), stale.read_u8()).await.unwrap().is_err());
+    first.abort(); second.abort();
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "uses the Windows Hook DLL and an isolated native test application"]
+async fn native_hook_uses_external_dns_modes_without_launch_proxy_arguments() {
+    use crate::{capture::user_mode, routing_overrides::model::BundlePolicy};
+    use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::{GetExitCodeProcess, OpenProcess, TerminateProcess, WaitForSingleObject}};
+
+    let executable = PathBuf::from(std::env::var_os("PROCWEAVER_TEST_HOOK_FIXTURE").expect("native fixture path"));
+    let f = Fixture::new();
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = f.runtime.config();
+    config.default_endpoint_id = Some("fixture".into());
+    config.endpoints = vec![endpoint(upstream.local_addr().unwrap().port(), "http")];
+    let mut suite = bundle("first");
+    suite.main_exe = executable.to_string_lossy().into_owned();
+    suite.members[0].value = suite.main_exe.clone();
+    suite.mode = "sandbox".into();
+    suite.domains = vec!["scoped.fixture.test".into()];
+    suite.policy = Some(BundlePolicy {
+        port_filter_mode: "web_only".into(), target_filter_mode: "include".into(),
+        target_rules: suite.domains.clone(), ..Default::default()
+    });
+    config.bundles = vec![suite];
+    let view = f.runtime.apply(config).await.unwrap();
+    *ENGINE.lock().unwrap() = Some(f.runtime.clone());
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) { *ENGINE.lock().unwrap() = None; }
+    }
+    let _clear = Clear;
+    let service = tokio::spawn(async move {
+        for target in ["1.1.1.1:53", "192.0.2.80:443", "scoped.fixture.test:443"] {
+            let (mut stream, _) = upstream.accept().await.unwrap();
+            assert!(header(&mut stream).await.starts_with(&format!("CONNECT {target} ")));
+            stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+            if target.ends_with(":53") {
+                let len = stream.read_u16().await.unwrap() as usize;
+                let mut query = vec![0; len];
+                stream.read_exact(&mut query).await.unwrap();
+                assert_eq!(dns::question(&query).unwrap().name, "scoped.fixture.test");
+                let mut reply = dns::failure(&query, 0);
+                reply[7] = 1;
+                reply.extend([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, 192, 0, 2, 80]);
+                stream.write_u16(reply.len() as u16).await.unwrap();
+                stream.write_all(&reply).await.unwrap();
+            } else {
+                let byte = stream.read_u8().await.unwrap();
+                stream.write_u8(byte).await.unwrap();
+            }
+        }
+    });
+    for (mode, expected) in [("safe_pure", "real"), ("fake_ip", "fake")] {
+        let mut config = f.runtime.config();
+        let policy = config.bundles[0].policy.as_mut().unwrap();
+        policy.dns_mode = mode.into();
+        let policy = policy.clone();
+        f.runtime.apply(config).await.unwrap();
+        let pid = user_mode::launch_with_hook(&executable, &["scoped-external".into(), expected.into()], executable.parent(),
+            view.states[0].port, 0, Some(&policy), false).unwrap();
+        let process = unsafe { OpenProcess(0x00101001, 0, pid) };
+        assert!(!process.is_null());
+        let mut exit_code = 1;
+        let completed = unsafe {
+            let status = WaitForSingleObject(process, 10_000);
+            if status == 0 { GetExitCodeProcess(process, &mut exit_code); }
+            else { TerminateProcess(process, 1); }
+            CloseHandle(process);
+            status == 0
+        };
+        assert!(completed && exit_code == 0, "{mode}: {exit_code}");
+    }
+    tokio::time::timeout(Duration::from_secs(5), service).await.unwrap().unwrap();
+}
+
+#[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn coreless_http_to_socks_stream_survives_upstream_change_and_stops_on_disable() {
     let f = Fixture::new(); let (port, upstream) = echo_socks().await;

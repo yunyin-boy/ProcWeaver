@@ -1,13 +1,44 @@
 // ==========================================================================
 // ProcWeaver src-next 通用首选项与排除名单服务
-// 对接指令: get_general_settings, save_general_settings, get_exclusions, save_exclusions, export_config_snapshot, restore_config_snapshot
+// 对接指令: get_general_settings, patch_general_settings, get_exclusions, save_exclusions, export_config_snapshot, restore_config_snapshot
 // ==========================================================================
 
 import { version as appVersion } from "../../package.json";
+import type { Exclusions } from "../../src/api/mihomo";
 import { invokeCommand, isTauriEnvironment } from "./client";
 import { GeneralSettings, DEFAULT_GENERAL_SETTINGS } from "../types/settings";
 
 const STORAGE_KEY = "procweaver_general_settings";
+
+function readBrowserSettings(): GeneralSettings {
+  try {
+    const cached = localStorage.getItem(STORAGE_KEY);
+    if (cached) {
+      return { ...DEFAULT_GENERAL_SETTINGS, ...JSON.parse(cached) };
+    }
+  } catch {}
+  return { ...DEFAULT_GENERAL_SETTINGS };
+}
+
+export async function getBypassList(): Promise<string[]> {
+  const config = await invokeCommand<Exclusions>("get_exclusions", undefined, () => ({
+    enabled: true,
+    entries: readBrowserSettings().bypassList,
+  }));
+  if (!Array.isArray(config?.entries) || !config.entries.every((entry) => typeof entry === "string")) {
+    throw new Error("排除名单内容无效");
+  }
+  return config.entries;
+}
+
+export async function saveBypassList(entries: string[]): Promise<string[]> {
+  const config = { enabled: true, entries };
+  const saved = await invokeCommand<Exclusions>("save_exclusions", { config }, () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...readBrowserSettings(), bypassList: entries }));
+    return config;
+  });
+  return saved.entries;
+}
 
 export async function getGeneralSettings({ strict = false }: { strict?: boolean } = {}): Promise<GeneralSettings> {
   if (isTauriEnvironment()) {
@@ -16,10 +47,7 @@ export async function getGeneralSettings({ strict = false }: { strict?: boolean 
       if (strict && (!raw || typeof raw !== "object")) throw new Error("设置数据不可用");
       let bypassList: string[] = DEFAULT_GENERAL_SETTINGS.bypassList || [];
       try {
-        const exclusions = await invokeCommand<any>("get_exclusions");
-        if (exclusions && Array.isArray(exclusions.entries)) {
-          bypassList = exclusions.entries;
-        }
+        bypassList = await getBypassList();
       } catch (e) {
         console.warn("[settingsService] get_exclusions fallback:", e);
       }
@@ -63,58 +91,70 @@ export async function getGeneralSettings({ strict = false }: { strict?: boolean 
     }
   }
 
-  // 浏览器环境仿真回退
-  try {
-    const cached = localStorage.getItem(STORAGE_KEY);
-    if (cached) {
-      return { ...DEFAULT_GENERAL_SETTINGS, ...JSON.parse(cached) };
-    }
-  } catch {}
-  return { ...DEFAULT_GENERAL_SETTINGS };
+  return readBrowserSettings();
 }
 
-export async function saveGeneralSettings(settings: Partial<GeneralSettings>): Promise<void> {
-  if (isTauriEnvironment()) {
-    try {
-      // 1. 若包含了排除白名单更新，同步持久化至核心 exclusions.json
-      if (settings.bypassList && Array.isArray(settings.bypassList)) {
-        await invokeCommand("save_exclusions", {
-          config: {
-            enabled: true,
-            entries: settings.bypassList,
-          },
-        });
-      }
+export type GeneralSettingsPatch = Partial<Omit<GeneralSettings, "bypassList">>;
 
-      // 2. 获取当前完整设置底表并更新
-      const current = await invokeCommand<any>("get_general_settings");
-      const nextSettings = {
-        ...current,
-        ...settings,
-        autoStartProcessRouting:
-          settings.autoStartProcessRouting !== undefined
-            ? settings.autoStartProcessRouting
-            : Boolean(current.autoStartProcessRouting),
-        tunMode: settings.tunMode !== undefined ? settings.tunMode : current.tunMode,
-        allowLan: settings.allowLan !== undefined ? settings.allowLan : current.allowLan,
-        trafficMode: settings.trafficMode || (settings.tunMode ? "tun" : current.trafficMode),
-        onlyProxyTraffic: settings.onlyProxyTraffic !== undefined ? settings.onlyProxyTraffic : current.onlyProxyTraffic,
-      };
-
-      await invokeCommand("save_general_settings", { settings: nextSettings });
-      return;
-    } catch (e) {
-      console.warn("[settingsService] saveGeneralSettings failed:", e);
-      throw e;
-    }
-  }
-
-  // 浏览器环境仿真持久化
-  try {
-    const current = await getGeneralSettings();
-    const updated = { ...current, ...settings };
+export async function saveGeneralSettings(patch: GeneralSettingsPatch): Promise<Omit<GeneralSettings, "bypassList">> {
+  return invokeCommand("patch_general_settings", { patch }, () => {
+    const updated = { ...readBrowserSettings(), ...patch };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  } catch {}
+    return updated;
+  });
+}
+
+export interface LanAccessStatus {
+  configured: boolean;
+  running: boolean;
+  effective: boolean | null;
+}
+
+export async function getLanAccessStatus(previewRunning: boolean): Promise<LanAccessStatus> {
+  return invokeCommand("get_lan_access_status", undefined, () => {
+    const configured = readBrowserSettings().allowLan;
+    return { configured, running: previewRunning, effective: previewRunning ? configured : null };
+  });
+}
+
+export interface TunStatus {
+  supported: boolean;
+  configured: boolean;
+  running: boolean;
+  effective: boolean | null;
+  autoRoute: boolean | null;
+  detail: string | null;
+  configuredMode: GeneralSettings["trafficMode"];
+  activeMode: GeneralSettings["trafficMode"] | null;
+}
+
+export function getTunStatus(previewRunning: boolean): Promise<TunStatus> {
+  return invokeCommand("get_tun_status", undefined, () => {
+    const { trafficMode: configuredMode } = readBrowserSettings();
+    const configured = configuredMode === "tun";
+    return {
+      supported: true, configured, running: previewRunning,
+      effective: previewRunning ? configured : null, autoRoute: true, detail: null,
+      configuredMode, activeMode: previewRunning ? configuredMode : null,
+    };
+  });
+}
+
+export function setTunEnabled(enabled: boolean): Promise<Omit<GeneralSettings, "bypassList">> {
+  return invokeCommand("set_tun_enabled", { enabled }, () => {
+    const previous = readBrowserSettings() as GeneralSettings & {
+      tunResumeMode?: Exclude<GeneralSettings["trafficMode"], "tun">;
+    };
+    if (!enabled && previous.trafficMode !== "tun") return previous;
+    const resume = previous.trafficMode === "tun" ? previous.tunResumeMode : previous.trafficMode;
+    const saved = {
+      ...previous, tunMode: enabled,
+      trafficMode: enabled ? "tun" as const : resume ?? "app_proxy",
+      tunResumeMode: enabled ? resume : undefined,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+    return saved;
+  });
 }
 
 // 导出全量配置快照

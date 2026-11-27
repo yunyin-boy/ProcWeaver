@@ -8,6 +8,7 @@ import type { BundlePlatform } from "../../types/platform";
 interface Props {
   platform: BundlePlatform; bundleId?: string; exesText: string; domainsText: string;
   bindings: BundleProcessBinding[]; members?: BundleProcessMember[];
+  workbench?: boolean;
   onProcesses: (text: string, bindings: BundleProcessBinding[]) => void;
   onDomains: (text: string) => void;
 }
@@ -30,10 +31,13 @@ export function BundleDiscoveryTools(props: Props) {
       props.onProcesses([...namesByKey.values()].join("\n"), next); setError("");
     } catch (e) { setError(e instanceof Error ? e.message : "进程选择无效"); }
   };
+  const actionClass = props.workbench
+    ? "workbench-action"
+    : "px-3 py-1.5 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5 disabled:opacity-50 hover:bg-indigo-50 dark:hover:bg-indigo-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500";
   return <div className="space-y-2 mt-2">
     <div className="flex flex-wrap gap-2">
-      <button type="button" onClick={() => setDialog("processes")} className="px-3 py-1.5 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5 hover:bg-indigo-50 dark:hover:bg-indigo-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"><FolderTree size={14} />从运行进程选择</button>
-      <button type="button" disabled={!names.length} onClick={() => setDialog("domains")} className="px-3 py-1.5 rounded-lg border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5 disabled:opacity-50 hover:bg-indigo-50 dark:hover:bg-indigo-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500"><Globe size={14} />检测已连接域名</button>
+      <button type="button" onClick={() => setDialog("processes")} className={actionClass}><FolderTree size={14} aria-hidden="true" />从运行进程选择</button>
+      <button type="button" disabled={!names.length} onClick={() => setDialog("domains")} className={actionClass}><Globe size={14} aria-hidden="true" />检测已连接域名</button>
     </div>
     {error && <p role="alert" className="text-amber-700 dark:text-amber-300">{error}</p>}
     {bindings.length > 0 && <div className="space-y-1 max-h-36 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 p-2">
@@ -48,6 +52,6 @@ export function BundleDiscoveryTools(props: Props) {
         }}><X size={13} /></button>
       </div>)}
     </div>}
-    {dialog && <ProcessDiscoveryDialog mode={dialog} input={input} onClose={() => setDialog(null)} onProcesses={addProcesses} onDomains={items => props.onDomains([...new Set([...processNames(props.domainsText).map(s => s.toLowerCase()), ...items])].join("\n"))} />}
+    {dialog && <ProcessDiscoveryDialog mode={dialog} input={input} workbench={props.workbench} onClose={() => setDialog(null)} onProcesses={addProcesses} onDomains={items => props.onDomains([...new Set([...processNames(props.domainsText).map(s => s.toLowerCase()), ...items])].join("\n"))} />}
   </div>;
 }

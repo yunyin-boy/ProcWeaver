@@ -1,7 +1,91 @@
 //! Opt-in, per-bundle loopback DNS. Never changes adapter/system DNS settings.
-use super::{model::Endpoint, transport::{self, Destination}, udp::Channel, Engine};
-use std::{sync::Arc, time::Duration};
+use super::{model::{Endpoint, Traffic}, transport::{self, Destination}, udp::Channel, Engine};
+use crate::routing_overrides::tracker::ProcessEntry;
+use std::{collections::{BTreeSet, HashMap}, net::{IpAddr, Ipv4Addr, Ipv6Addr}, sync::Arc, time::{Duration, Instant}};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream, UdpSocket}, sync::{watch, Semaphore}};
+
+// This address terminates the Hook's scoped DNS request inside the proxy inlet.
+pub(super) const SUITE_DNS: &str = "198.19.0.1";
+const FIRST_ALIAS: u32 = u32::from_be_bytes([198, 19, 0, 2]);
+const LAST_ALIAS: u32 = u32::from_be_bytes([198, 19, 255, 254]);
+
+pub(super) fn alias(host: &str) -> Option<Ipv4Addr> {
+    host.parse::<Ipv4Addr>().ok().filter(|address| address.octets()[..2] == [198, 19])
+}
+
+#[derive(Default)]
+pub(super) struct Addresses {
+    aliases: HashMap<(String, String), Ipv4Addr>,
+    names: Vec<(String, String)>,
+    resolved: HashMap<(String, IpAddr), (Option<String>, Instant)>,
+}
+
+impl Addresses {
+    fn allocate(&mut self, id: &str, host: &str) -> Option<Ipv4Addr> {
+        let key = (id.to_owned(), host.to_owned());
+        if let Some(address) = self.aliases.get(&key) { return Some(*address); }
+        let address = FIRST_ALIAS + self.names.len() as u32;
+        if address > LAST_ALIAS { return None; }
+        let address = Ipv4Addr::from(address);
+        self.names.push(key.clone());
+        self.aliases.insert(key, address);
+        Some(address)
+    }
+
+    pub(super) fn domain(&self, id: &str, token: Ipv4Addr) -> Option<String> {
+        let offset = u32::from(token).checked_sub(FIRST_ALIAS)?;
+        let (owner, host) = self.names.get(offset as usize)?;
+        (owner == id).then(|| host.clone())
+    }
+
+    pub(super) fn name(&self, id: &str, address: IpAddr) -> Option<String> {
+        self.resolved.get(&(id.to_owned(), address)).filter(|(_, expires)| *expires > Instant::now())
+            .and_then(|(host, _)| host.clone())
+    }
+
+    fn observe(&mut self, id: &str, host: &str, reply: &[u8]) {
+        let Ok(question) = parse(reply, true) else { return; };
+        if reply[3] & 15 != 0 || reply[2] & 2 != 0 { return; }
+        let mut names = BTreeSet::new();
+        if record_name_end(reply, 12, &mut names).is_err() { return; }
+        let mut position = question.end;
+        let now = Instant::now();
+        if self.resolved.len() >= 4096 { self.resolved.retain(|_, (_, expiry)| *expiry > now); }
+        for _ in 0..u16::from_be_bytes([reply[6], reply[7]]) {
+            let Ok(head) = record_name_end(reply, position, &mut names) else { break; };
+            let Some(fields) = reply.get(head..head + 10) else { break; };
+            let kind = u16::from_be_bytes([fields[0], fields[1]]);
+            let ttl = u32::from_be_bytes([fields[4], fields[5], fields[6], fields[7]]);
+            let length = u16::from_be_bytes([fields[8], fields[9]]) as usize;
+            position = head + 10 + length;
+            let Some(bytes) = reply.get(head + 10..position) else { break; };
+            if fields[2..4] != [0, 1] || ttl == 0 { continue; }
+            let address = match (kind, bytes) {
+                (1, &[a, b, c, d]) => IpAddr::V4(Ipv4Addr::new(a, b, c, d)),
+                (28, bytes) if bytes.len() == 16 => {
+                    let mut octets = [0; 16];
+                    octets.copy_from_slice(bytes);
+                    IpAddr::V6(Ipv6Addr::from(octets))
+                }
+                (5, _) => { let _ = record_name_end(reply, head + 10, &mut names); continue; }
+                _ => continue,
+            };
+            let expires = now + Duration::from_secs(u64::from(ttl.min(300)));
+            let key = (id.to_owned(), address);
+            if let Some((previous, previous_expiry)) = self.resolved.get_mut(&key) {
+                if *previous_expiry <= now {
+                    *previous = Some(host.to_owned());
+                    *previous_expiry = expires;
+                } else {
+                    if previous.as_deref() != Some(host) { *previous = None; }
+                    *previous_expiry = (*previous_expiry).max(expires);
+                }
+            } else if self.resolved.len() < 4096 {
+                self.resolved.insert(key, (Some(host.to_owned()), expires));
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct Question { pub name: String, pub id: u16, pub kind: u16, pub class: u16, pub end: usize }
@@ -108,6 +192,13 @@ pub(crate) fn failure(query: &[u8], code: u8) -> Vec<u8> {
 pub(super) fn empty_reply(query: &[u8]) -> Vec<u8> {
     failure(query, 0)
 }
+fn fake_reply(query: &[u8], address: Ipv4Addr) -> Vec<u8> {
+    let mut reply = empty_reply(query);
+    reply[7] = 1;
+    reply.extend([0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4]);
+    reply.extend(address.octets());
+    reply
+}
 fn append_name(packet: &mut Vec<u8>, name: &str) {
     for part in name.split('.').filter(|s| !s.is_empty()) { packet.push(part.len() as u8); packet.extend(part.as_bytes()); }
     packet.push(0);
@@ -141,11 +232,9 @@ async fn tcp_exchange(endpoint: Option<&Endpoint>, target: &Destination, query: 
     if len < 12 { return Err("DNS TCP 响应无效".into()); }
     let mut reply = vec![0; len]; stream.read_exact(&mut reply).await.map_err(|_| "DNS TCP 响应不完整")?; Ok(reply)
 }
+#[cfg(test)]
 pub(super) async fn exchange(endpoint: Option<&Endpoint>, target: &Destination, query: &[u8], ports: &[u16]) -> Result<Vec<u8>, String> {
-    exchange_using(endpoint, target, query, ports, false).await
-}
-pub(super) async fn exchange_using(endpoint: Option<&Endpoint>, target: &Destination, query: &[u8], ports: &[u16], tcp: bool) -> Result<Vec<u8>, String> {
-    exchange_traced(endpoint,target,query,ports,tcp,&super::diagnostics::Trace::new(None)).await
+    exchange_traced(endpoint, target, query, ports, false, &super::diagnostics::Trace::new(None)).await
 }
 pub(super) async fn exchange_traced(endpoint: Option<&Endpoint>, target: &Destination, query: &[u8], ports: &[u16], tcp: bool, trace: &super::diagnostics::Trace) -> Result<Vec<u8>, String> {
     let q = question(query)?;
@@ -229,7 +318,7 @@ pub(super) async fn listen(runtime: Arc<Engine>, id: String, tcp: TcpListener, u
                 let Ok(local) = local_capacity.clone().try_acquire_owned() else { continue; };
                 let Ok(global) = runtime.capacity.clone().try_acquire_owned() else { continue; };
                 let runtime = runtime.clone(); let id = id.clone();
-                tasks.spawn(async move { let _permits = (local, global); let _ = serve_tcp(runtime, id, stream).await; });
+                tasks.spawn(async move { let _permits = (local, global); let _ = serve_tcp(runtime, id, stream, false).await; });
             }
         }
     }
@@ -237,31 +326,74 @@ pub(super) async fn listen(runtime: Arc<Engine>, id: String, tcp: TcpListener, u
     while tasks.join_next().await.is_some() {}
 }
 async fn handle(runtime: &Engine, id: &str, process: &crate::routing_overrides::tracker::ProcessEntry, query: &[u8], tcp: bool) -> Vec<u8> {
-    let Ok(q) = question(query) else { return failure(query, 1); };
-    let config = runtime.config();
-    let bundle = config.bundles.iter().find(|b| b.id == id);
-    if bundle.map(|b| b.effective_block_ipv6(&config)).unwrap_or(config.block_ipv6) && q.kind == 28 {
-        return empty_reply(query);
+    {
+        let config = runtime.config.read().unwrap_or_else(|e| e.into_inner());
+        if !config.dns.enabled || !config.enabled || super::identity::owner(&config.bundles, process) != Some(id) {
+            return failure(query, 5);
+        }
     }
-    let policy_target = Destination { host: q.name, port: 53 };
-    let Ok((endpoint, route, generation, ports)) = runtime.select(id, process, &policy_target) else { return failure(query, 5); };
-    let settings = runtime.config().dns;
-    if !settings.enabled { return failure(query, 5); }
-    let target = Destination { host: settings.server, port: settings.port };
-    let record = runtime.record(id, process.pid, &process.name, &policy_target.authority(), &format!("DNS · {route}"), generation, endpoint.as_ref());
-    let result = exchange_traced(endpoint.as_ref(), &target, query, &ports, tcp,&super::diagnostics::Trace::new(Some(record))).await;
-    let current = runtime.config().dns;
-    if !current.enabled || current.server != target.host || current.port != target.port
-        || !runtime.select(id, process, &policy_target).is_ok_and(|(now, _, _, _)| now == endpoint) {
+    answer(runtime, id, process, query, None, tcp, "DNS").await.unwrap_or_else(|_| failure(query, 2))
+}
+
+pub(super) async fn answer(
+    runtime: &Engine,
+    id: &str,
+    process: &ProcessEntry,
+    query: &[u8],
+    original_resolver: Option<&Destination>,
+    tcp: bool,
+    source: &str,
+) -> Result<Vec<u8>, String> {
+    let q = question(query)?;
+    let policy_target = Destination { host: q.name.clone(), port: 53 };
+    let (endpoint, route, generation, ports) = runtime.select_flow(id, process, &policy_target, None, Traffic::Dns)?;
+    let config = runtime.config();
+    if config.revision != generation { return Err("DNS 查询时配置已改变".into()); }
+    let bundle = config.bundles.iter().find(|b| b.id == id).ok_or("业务包已移除")?;
+    let mode = bundle.policy.as_ref().map(|policy| policy.dns_mode.as_str());
+    if bundle.effective_block_ipv6(&config) && q.kind == 28 {
+        return Ok(empty_reply(query));
+    }
+    let mut target = original_resolver.cloned().unwrap_or(Destination { host: config.dns.server.clone(), port: config.dns.port });
+    if mode.is_some() && endpoint.is_some() {
+        target = Destination { host: config.dns.server.clone(), port: config.dns.port };
+    }
+    #[cfg(windows)]
+    if original_resolver.is_none() && matches!(mode, Some("system_native" | "system")) {
+        let server = crate::capture::suite_dns::system_servers().into_iter().next().ok_or("未找到可用的系统 DNS")?;
+        target = Destination { host: server.to_string(), port: 53 };
+    }
+
+    let record = runtime.record(id, process.pid, &process.name, &policy_target.authority(), &format!("{source} · {route}"), generation, endpoint.as_ref());
+    let synthetic = mode == Some("fake_ip") && endpoint.is_some() && q.class == 1 && matches!(q.kind, 1 | 28 | 64 | 65);
+    let result = if synthetic {
+        if q.kind == 1 {
+            runtime.addresses.lock().unwrap_or_else(|e| e.into_inner()).allocate(id, &q.name)
+                .map(|address| fake_reply(query, address)).ok_or_else(|| "套件的 Fake-IP 地址池已满".into())
+        } else {
+            Ok(empty_reply(query))
+        }
+    } else {
+        exchange_traced(endpoint.as_ref(), &target, query, &ports, tcp, &super::diagnostics::Trace::new(Some(record))).await
+    };
+    if !runtime.select_flow(id, process, &policy_target, None, Traffic::Dns)
+        .is_ok_and(|(now, _, revision, _)| now == endpoint && revision == generation) {
         runtime.update(record, "failed", "DNS 出口配置已改变，旧响应已丢弃，请重新查询", (0, 0));
-        return failure(query, 2);
+        return Err("DNS 出口配置已改变".into());
     }
     match result {
-        Ok(reply) => { runtime.update(record, "response", "DNS 响应已转发", (query.len() as u64, reply.len() as u64)); reply },
-        Err(error) => { runtime.update(record, "failed", &error, (0, 0)); failure(query, 2) },
+        Ok(reply) => {
+            if !synthetic {
+                runtime.addresses.lock().unwrap_or_else(|e| e.into_inner()).observe(id, &q.name, &reply);
+            }
+            runtime.update(record, "response", "DNS 响应已转发", (query.len() as u64, reply.len() as u64));
+            Ok(reply)
+        }
+        Err(error) => { runtime.update(record, "failed", &error, (0, 0)); Err(error) }
     }
 }
-async fn serve_tcp(runtime: Arc<Engine>, id: String, mut stream: TcpStream) -> Result<(), String> {
+
+pub(super) async fn serve_tcp(runtime: Arc<Engine>, id: String, mut stream: TcpStream, scoped: bool) -> Result<(), String> {
     let source = stream.peer_addr().map_err(|_| "DNS 连接无效")?; let destination = stream.local_addr().map_err(|_| "DNS 入口无效")?;
     for _ in 0..512 {
         let query = tokio::time::timeout(Duration::from_secs(30), async {
@@ -270,7 +402,11 @@ async fn serve_tcp(runtime: Arc<Engine>, id: String, mut stream: TcpStream) -> R
             let mut data = vec![0; len]; stream.read_exact(&mut data).await.map_err(|_| "DNS TCP 查询不完整")?; Ok(data)
         }).await.map_err(|_| "DNS TCP 读取超时")??;
         let process = super::identity::inspect(source, destination).await?;
-        let response = handle(&runtime, &id, &process, &query, true).await;
+        let response = if scoped {
+            answer(&runtime, &id, &process, &query, None, true, "Hook DNS").await.unwrap_or_else(|_| failure(&query, 2))
+        } else {
+            handle(&runtime, &id, &process, &query, true).await
+        };
         tokio::time::timeout(transport::HANDSHAKE, async {
             stream.write_u16(response.len() as u16).await?; stream.write_all(&response).await
         }).await.map_err(|_| "DNS TCP 回写超时")?.map_err(|_| "DNS TCP 回写失败")?;

@@ -6,6 +6,9 @@ import type { BundleEntryState } from "../../api/bundleTools";
 import { usePlatform } from "../../context/PlatformContext";
 import { bundleProcesses } from "../../utils/bundlePlatform";
 import {
+  ArrowDown,
+  ArrowUp,
+  Package,
   X,
   Shield,
   Activity,
@@ -32,6 +35,8 @@ interface Props {
   onLaunch?: (instanceId: string) => void;
   onEdit?: (instance: BundleLocalInstance) => void;
   onOpenSelectExit?: (instance: BundleLocalInstance) => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }
 
 export const BundleDetailModal: React.FC<Props> = ({
@@ -49,6 +54,8 @@ export const BundleDetailModal: React.FC<Props> = ({
   onLaunch,
   onEdit,
   onOpenSelectExit,
+  onMoveUp,
+  onMoveDown,
 }) => {
   const platform = usePlatform();
   const panel = useRef<HTMLDivElement>(null);
@@ -83,16 +90,19 @@ export const BundleDetailModal: React.FC<Props> = ({
     def,
     platform.os === "android" ? "android" : platform.os === "macos" ? "macos" : "windows"
   );
+  const detailCard = drawer ? "rounded-lg bg-[var(--workbench-row-hover)]" : "rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800";
 
   return createPortal(
-    <div className={`fixed inset-0 z-[9999] bg-black/60 backdrop-blur-md flex font-sans ${drawer ? "justify-end" : "items-center justify-center p-4"}`} onMouseDown={e => { if (drawer && e.target === e.currentTarget) onClose(); }} data-no-drag>
-      <div ref={panel} tabIndex={-1} data-bundle-detail role="dialog" aria-modal="true" aria-label="业务包详情" className={`w-full max-w-2xl bg-white/95 dark:bg-[#0d1015]/95 backdrop-blur-2xl border border-slate-200 dark:border-white/10 shadow-[-25px_25px_60px_-10px_rgba(0,0,0,0.85),inset_0_1px_0_0_rgba(255,255,255,0.06)] overflow-hidden flex flex-col outline-none ${drawer ? "h-full" : "rounded-2xl max-h-[90vh]"} animate-in fade-in zoom-in-95 duration-150`}>
+    <div className={`fixed inset-0 z-[9999] flex font-sans ${drawer ? "workbench-dialog-backdrop justify-end p-2" : "items-center justify-center bg-black/60 p-4 backdrop-blur-md"}`} onMouseDown={e => { if (drawer && e.target === e.currentTarget) onClose(); }} data-no-drag>
+      <div ref={panel} tabIndex={-1} data-bundle-detail role="dialog" aria-modal="true" aria-label="业务包详情" className={`flex w-full max-w-2xl flex-col overflow-hidden outline-none ${drawer
+        ? "workbench-dialog h-full text-[var(--text-primary)]"
+        : "max-h-[90vh] rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur-2xl dark:border-white/10 dark:bg-[#0d1015]/95"}`}>
         
         {/* 头部 (Raycast 风格) */}
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between bg-slate-50/80 dark:bg-black/30">
+        <div className={"flex items-center justify-between gap-3 px-6 py-4 " + (drawer ? "" : "border-b border-slate-200 bg-slate-50/80 dark:border-white/[0.08] dark:bg-black/30")}>
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-2xl shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]">
-              {def.icon || "📦"}
+            <div className={"grid size-9 shrink-0 place-items-center rounded-lg " + (drawer ? "bg-[var(--workbench-selected)] text-[var(--workbench-accent)]" : "bg-slate-100 text-2xl dark:bg-white/[0.05]")}>
+              {drawer ? <Package size={17} aria-hidden="true" /> : def.icon || "📦"}
             </div>
             <div>
               <div className="flex items-center space-x-2">
@@ -141,7 +151,7 @@ export const BundleDetailModal: React.FC<Props> = ({
         <div className="flex-1 overflow-y-auto p-6 space-y-5 text-xs">
           
           {/* 1. 核心状态与实时连接核验面板 */}
-          <div className="p-4 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] space-y-3">
+          <div className={`space-y-3 p-4 ${detailCard}`}>
             <div className="flex items-center justify-between border-b border-slate-200/60 dark:border-white/[0.06] pb-2">
               <span className="font-bold text-slate-800 dark:text-slate-200 flex items-center space-x-1.5 text-xs">
                 <Activity className="w-4 h-4 text-emerald-500" />
@@ -235,7 +245,7 @@ export const BundleDetailModal: React.FC<Props> = ({
 
           {/* 2. 插槽与 DNS 解析配置卡片 */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-            <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-2">
+            <div className={`space-y-2 p-3.5 ${detailCard}`}>
               <div className="flex items-center justify-between">
                 <span className="font-bold text-slate-800 dark:text-slate-200 text-xs">
                   主业务出口插槽 [main]
@@ -275,7 +285,7 @@ export const BundleDetailModal: React.FC<Props> = ({
               )}
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-2">
+            <div className={`space-y-2 p-3.5 ${detailCard}`}>
               <span className="font-bold text-slate-800 dark:text-slate-200 text-xs block">
                 {independent ? "域名解析与协议范围" : remoteDns ? "业务域名远端解析" : "DNS 解析出口插槽 [dns]"}
               </span>
@@ -294,7 +304,7 @@ export const BundleDetailModal: React.FC<Props> = ({
           </div>
 
           {/* 3. 协同成员进程与匹配域名清单 (图 2 重点) */}
-          <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-950/60 border border-slate-200/80 dark:border-slate-800 space-y-3">
+          <div className={`space-y-3 p-4 ${detailCard}`}>
             <div className="flex items-center justify-between">
               <span className="font-bold text-slate-800 dark:text-slate-200 text-xs flex items-center space-x-1.5">
                 <FileCode2 className="w-4 h-4 text-indigo-500" />
@@ -455,7 +465,7 @@ export const BundleDetailModal: React.FC<Props> = ({
         </div>
 
         {/* 底部按钮栏 */}
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-white/[0.08] flex items-center justify-between bg-white dark:bg-black/40">
+        <div className={"flex flex-wrap items-center justify-between gap-2 px-6 py-4 " + (drawer ? "" : "border-t border-slate-200 bg-white dark:border-white/[0.08] dark:bg-black/40")}>
           <div className="flex items-center space-x-2">
             {onEdit && (
               <button
@@ -470,6 +480,8 @@ export const BundleDetailModal: React.FC<Props> = ({
                 <span>编辑规则定义</span>
               </button>
             )}
+            {onMoveUp && <button type="button" className="workbench-action" aria-label="提高套件优先级" title="提高套件优先级" onClick={onMoveUp}><ArrowUp size={14} aria-hidden="true" /></button>}
+            {onMoveDown && <button type="button" className="workbench-action" aria-label="降低套件优先级" title="降低套件优先级" onClick={onMoveDown}><ArrowDown size={14} aria-hidden="true" /></button>}
           </div>
 
           <div className="flex items-center space-x-2.5">

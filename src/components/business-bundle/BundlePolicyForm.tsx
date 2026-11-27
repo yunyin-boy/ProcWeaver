@@ -7,6 +7,7 @@ interface Props {
   onChange: (next: BundlePolicy) => void;
   isHttpUpstream?: boolean;
   remoteDns?: boolean;
+  workbench?: boolean;
 }
 
 export const BundlePolicyForm: React.FC<Props> = ({
@@ -14,61 +15,50 @@ export const BundlePolicyForm: React.FC<Props> = ({
   onChange,
   isHttpUpstream,
   remoteDns = false,
+  workbench = false,
 }) => {
   const [activeTab, setActiveTab] = useState<"protocol" | "network" | "filter">("protocol");
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-workbench-policy={workbench || undefined}>
       {/* 选项卡导航 */}
-      <div className="flex border-b border-slate-200 dark:border-slate-800 bg-slate-100/90 dark:bg-black/45 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.3)] rounded-xl p-0.5 gap-1">
-        <button
-          type="button"
-          onClick={() => setActiveTab("protocol")}
-          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeTab === "protocol"
-              ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
-              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
-        >
-          <Cpu className="w-3.5 h-3.5" />
-          <span>协议与安全</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("network")}
-          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeTab === "network"
-              ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
-              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
-        >
-          <Globe className="w-3.5 h-3.5" />
-          <span>DNS 与局域网</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab("filter")}
-          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-            activeTab === "filter"
-              ? "bg-white dark:bg-white/[0.12] text-zinc-900 dark:text-white shadow-2xs font-semibold"
-              : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-          }`}
-        >
-          <Shield className="w-3.5 h-3.5" />
-          <span>目标与端口</span>
-        </button>
+      <div
+        className={workbench
+          ? "workbench-segments workbench-settings-segments w-fit max-w-full flex-wrap"
+          : "flex gap-1 rounded-xl border border-slate-200/80 bg-slate-100/90 p-0.5 dark:border-white/[0.08] dark:bg-black/45"}
+        role="group"
+        aria-label="高级策略分类"
+      >
+        {([
+          ["protocol", "协议与安全", Cpu],
+          ["network", "DNS 与局域网", Globe],
+          ["filter", "目标与端口", Shield],
+        ] as const).map(([tab, label, Icon]) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            aria-pressed={activeTab === tab}
+            className={workbench ? undefined : "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold " + (
+              activeTab === tab ? "bg-white text-zinc-900 dark:bg-white/[0.12] dark:text-white" : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+            )}
+          >
+            <Icon className="size-3.5" aria-hidden="true" />
+            {label}
+          </button>
+        ))}
       </div>
 
       {isHttpUpstream && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/20 text-xs">
           <Info className="w-4 h-4 shrink-0" />
-          <span>当前业务包已绑定独立代理出口；若所连上游为标准 HTTP 代理，UDP 请求将自动收束为 TCP 代理。</span>
+          <span>当前出口是 HTTP 代理，仅支持 TCP 转发。</span>
         </div>
       )}
 
       {/* 1. 协议与安全防护 */}
       {activeTab === "protocol" && (
-        <div className="space-y-2.5">
+        <div data-policy-fields className="space-y-2.5">
           {/* 代理 TCP */}
           <div className="flex items-start justify-between p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="space-y-0.5 pr-3">
@@ -228,7 +218,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
                 </span>
               </div>
               <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                开启分流或切换出口时处理已建立的长连接。利用 Windows 协议栈热重置机制，迫使应用 0.1 秒内自动重连切入代理
+                开启分流或切换出口时，可刷新匹配的旧 TCP 连接，由应用自行重连。
               </div>
             </div>
 
@@ -259,7 +249,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
 
       {/* 2. DNS 与局域网 */}
       {activeTab === "network" && (
-        <div className="space-y-3.5">
+        <div data-policy-fields className="space-y-3.5">
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-900 dark:text-white block">
               DNS 域名解析模式
@@ -286,12 +276,9 @@ export const BundlePolicyForm: React.FC<Props> = ({
                 <div className="space-y-0.5">
                   <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                     <span>安全纯净解析</span>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                      推荐 · 100% 兼容
-                    </span>
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                    通过专用纯净解析通道向 DoH/DoT 安全上游获取真实公网 IP，SOCKS5 发送真实 IP；绝对兼容各类严苛软件，无任何假 IP 认知偏差
+                    通过套件选定的出口查询 DNS 上游，返回真实 IP。
                   </div>
                 </div>
               </label>
@@ -315,12 +302,9 @@ export const BundlePolicyForm: React.FC<Props> = ({
                 <div className="space-y-0.5">
                   <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                     <span>Fake-IP 极速模式</span>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded font-mono bg-sky-500/10 text-sky-600 dark:text-sky-400">
-                      秒开 · 零本地泄露
-                    </span>
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                    本地 0ms 瞬间生成 198.18.x.x 假 IP，SOCKS5 CONNECT 报文携带原始域名（ATYP=0x03），远端节点解析；性能天花板，适合网页与 AI 工具
+                    为代理域名分配临时地址。连接时恢复原始域名，由代理上游解析。
                   </div>
                 </div>
               </label>
@@ -381,7 +365,7 @@ export const BundlePolicyForm: React.FC<Props> = ({
 
       {/* 3. 目标与端口过滤 */}
       {activeTab === "filter" && (
-        <div className="space-y-3.5">
+        <div data-policy-fields className="space-y-3.5">
           {/* 端口过滤 */}
           <div className="space-y-2 p-3 rounded-xl bg-white dark:bg-[#121316]/60 border border-slate-200/80 dark:border-white/[0.08] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
             <div className="text-xs font-bold text-slate-900 dark:text-white">

@@ -60,7 +60,7 @@ fn overlaps(a: SocketAddr, b: SocketAddr) -> bool {
 }
 
 #[cfg(windows)]
-fn owners(tcp: bool) -> Result<Vec<(SocketAddr, u32)>, String> {
+pub(super) fn listener_owners(tcp: bool) -> Result<Vec<(SocketAddr, u32)>, String> {
     use windows_sys::Win32::NetworkManagement::IpHelper::*;
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
     // 系统表为 DWORD 计数和连续 ROW；读取时校验边界并使用未对齐读取。
@@ -76,7 +76,7 @@ fn owners(tcp: bool) -> Result<Vec<(SocketAddr, u32)>, String> {
         read(std::ptr::null_mut(), &mut size);
         for _ in 0..3 {
             if size < 4 || size > 16 * 1024 * 1024 {
-                return Err("DNS 监听归属表大小异常".into());
+                return Err("监听归属表大小异常".into());
             }
             let mut aligned = vec![0u32; (size as usize).div_ceil(4)];
             let status = read(aligned.as_mut_ptr().cast(), &mut size);
@@ -84,19 +84,19 @@ fn owners(tcp: bool) -> Result<Vec<(SocketAddr, u32)>, String> {
                 continue;
             } // ERROR_INSUFFICIENT_BUFFER：网络表发生变化。
             if status != 0 {
-                return Err(format!("无法读取 DNS 监听归属（系统代码 {status}）"));
+                return Err(format!("无法读取监听归属（系统代码 {status}）"));
             }
             let data = std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), aligned.len() * 4);
             let count = u32::from_ne_bytes(data[..4].try_into().unwrap()) as usize;
             let width = std::mem::size_of::<T>();
             if count > (data.len() - 4) / width {
-                return Err("DNS 监听归属表不完整".into());
+                return Err("监听归属表不完整".into());
             }
             return Ok((0..count)
                 .map(|i| std::ptr::read_unaligned(data.as_ptr().add(4 + i * width).cast::<T>()))
                 .collect());
         }
-        Err("DNS 监听归属表持续变化，请重试".into())
+        Err("监听归属表持续变化，请重试".into())
     }
     let mut result = Vec::new();
     unsafe {
@@ -150,7 +150,7 @@ fn owners(tcp: bool) -> Result<Vec<(SocketAddr, u32)>, String> {
 fn ownership(addr: SocketAddr, pid: u32, tcp: bool) -> Result<bool, String> {
     #[cfg(windows)]
     {
-        let matching: Vec<_> = owners(tcp)?
+        let matching: Vec<_> = listener_owners(tcp)?
             .into_iter()
             .filter(|(endpoint, _)| overlaps(*endpoint, addr))
             .collect();

@@ -58,7 +58,7 @@ export function useExternalProxyEditor(open: boolean, instance: BundleLocalInsta
     const password = draft.password === "" && view.endpoints.some(e => e.id === draft.id && e.hasPassword && e.username === draft.username) ? undefined : draft.password;
     const saved = await externalProxyApi.settings({ revision: view.revision, defaultEndpointId: view.defaultEndpointId || draft.id,
       endpoints: [...endpoints, { ...draft, password }] });
-    setView(saved); edit(draft.id, saved); setMessage("代理已保存；修改上游后新连接使用新设置，已有隧道继续运行。");
+    setView(saved); edit(draft.id, saved); setMessage("代理已保存，新连接会使用更新后的出口。");
   });
   const setDefault = (id: string) => run(async () => {
     if (!view) return;

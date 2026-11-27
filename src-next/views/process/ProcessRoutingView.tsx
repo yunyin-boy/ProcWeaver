@@ -42,6 +42,7 @@ import {
 import { fetchProxiesData } from "../../services/proxyService";
 import { invokeCommand, isTauriEnvironment } from "../../services/client";
 import { PROFILE_CHANGED_EVENT } from "../../services/profileService";
+import { captureModeName, HOOK_RESTART_NOTICE, type TunAccess } from "../../utils/useTunAccess";
 import type { RoutingTarget } from "../../../src/types/routingOverrides";
 import type { RepositoryPackage } from "../../../src/types/bundleRepository";
 
@@ -58,12 +59,14 @@ import { Button } from "../../primitives/Button";
 import { ConfirmModal } from "../../primitives/ConfirmModal";
 
 interface ProcessRoutingViewProps {
+  tunAccess: TunAccess;
   onShowNotice?: (msg: string) => void;
   captureWarning: string | null;
   onCaptureWarningChange: (message: string | null) => void;
 }
 
 export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
+  tunAccess,
   onShowNotice,
   captureWarning,
   onCaptureWarningChange,
@@ -81,6 +84,9 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
     totalRuleCount: 0,
   });
   const [isPending, setIsPending] = useState(false);
+  const engineMode = tunAccess.status?.configuredMode ?? state.engineMode;
+  const driverActive = tunAccess.status?.activeMode === engineMode;
+  const actionPending = isPending || tunAccess.pending;
 
   // 2. 子 Tab 切换状态与搜索过滤
   const [subTab, setSubTab] = useState<ProcessSubTab>("bundles");
@@ -121,6 +127,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
   } | null>(null);
   const [isRestartConfirming, setIsRestartConfirming] = useState(false);
   const proxyLoad = useRef(0);
+  const bundleLoad = useRef(0);
   const refreshAvailableProxies = useCallback(async () => {
     const request = ++proxyLoad.current;
     try {
@@ -170,6 +177,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
 
   // 5. 初始化加载大盘全量数据
   const loadData = useCallback(async () => {
+    const bundleRequest = ++bundleLoad.current;
     setIsLoading(true);
     try {
       const [routingState, bundleList, ruleList, liveList] = await Promise.all([
@@ -181,7 +189,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
       ]);
 
       setState(routingState);
-      setBundles(bundleList);
+      if (bundleRequest === bundleLoad.current) setBundles(bundleList);
       setRules(ruleList);
       setLiveProcesses(liveList);
 
@@ -201,7 +209,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
             }
           }
         }
-        if (hasChanges) {
+        if (hasChanges && bundleRequest === bundleLoad.current) {
           await syncRoutingToCore(bundleList, ruleList);
         }
       } catch (syncErr: any) {
@@ -215,19 +223,25 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
 
   useEffect(() => {
     loadData();
-    const handleProfileChange = () => { void refreshAvailableProxies(); };
+    const handleProfileChange = () => {
+      const request = ++bundleLoad.current;
+      void Promise.all([fetchBundles({ strict: true }), refreshAvailableProxies()]).then(([items]) => {
+        if (request === bundleLoad.current) setBundles(items);
+      }).catch(error => console.warn("[ProcessRoutingView] 刷新业务包出口失败", error));
+    };
     window.addEventListener("netbox-profile-changed", handleProfileChange);
     window.addEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
     return () => {
       ++proxyLoad.current;
+      ++bundleLoad.current;
       window.removeEventListener("netbox-profile-changed", handleProfileChange);
       window.removeEventListener(PROFILE_CHANGED_EVENT, handleProfileChange);
     };
   }, [loadData, refreshAvailableProxies]);
 
   useEffect(() => {
-    if (isLoading || isPending) return;
-    const watchCapture = state.engineMode === "windivert_v1";
+    if (isLoading || actionPending) return;
+    const watchCapture = engineMode === "windivert_v1";
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
@@ -259,17 +273,17 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
       ++entryRefresh.current;
       clearTimeout(timer);
     };
-  }, [bundles, rules, state.engineMode, state.processEnabled, state.bundlesEnabled, isLoading, isPending, refreshEntryStates]);
+  }, [bundles, rules, engineMode, state.processEnabled, state.bundlesEnabled, isLoading, actionPending, refreshEntryStates]);
 
   const captureByOwner = useMemo(() => {
     const evidence = new Map<string, CaptureConnectionEvidence>();
-    if (state.engineMode === "windivert_v1") {
+    if (engineMode === "windivert_v1") {
       for (const event of captureEvidence?.recentConnections ?? []) {
         if (event.ruleOwner && !evidence.has(event.ruleOwner)) evidence.set(event.ruleOwner, event);
       }
     }
     return evidence;
-  }, [captureEvidence, state.engineMode]);
+  }, [captureEvidence, engineMode]);
 
   const captureOwnerLabels = useMemo(() => new Map([
     ...bundles.map((bundle) => ["bundle:" + bundle.id, bundle.name] as const),
@@ -317,20 +331,20 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
     driver: ProcessTrafficDriver,
     options?: Parameters<typeof switchProcessDriver>[1],
   ) => {
-    if (isPending) return;
+    if (actionPending) return;
     setIsPending(true);
     try {
-      const nextState = await switchProcessDriver(driver, options);
-      setState(nextState);
-      if (nextState.engineMode === "windivert_v1") onCaptureWarningChange(null);
-      const optName =
-        driver === "windivert_v1"
-          ? "WinDivert 驱动"
-          : driver === "user_mode"
-          ? "用户态 Hook 注入"
-          : "纯应用层代理";
-      if (onShowNotice) {
-        onShowNotice(`已切换分流驱动为: ${optName}`);
+      const { result, status } = await tunAccess.apply(() => switchProcessDriver(driver, options));
+      setState(result);
+      if (status?.activeMode === "windivert_v1") onCaptureWarningChange(null);
+      const name = captureModeName(driver);
+      if (status?.activeMode === driver) {
+        const reminder = driver === "user_mode" ? `。${HOOK_RESTART_NOTICE}` : "";
+        onShowNotice?.(`已切换至${name}${reminder}`);
+      } else if (status && !status.running) {
+        onShowNotice?.(`已保存${name}，启动核心后应用`);
+      } else {
+        onShowNotice?.(`${name}待就绪`);
       }
     } catch (e: any) {
       if (onShowNotice) {
@@ -645,14 +659,15 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
       <ProcessToolbar
         currentSubTab={subTab}
         onSelectSubTab={setSubTab}
-        state={state}
+        state={{ ...state, engineMode, driverActive }}
+        tunAccess={tunAccess}
         bundleCount={bundles.length}
         ruleCount={rules.length}
         liveCount={liveProcesses.length}
         onToggleMaster={handleToggleMaster}
         onSwitchDriver={handleSwitchDriver}
         onElevateAdmin={handleElevateAdmin}
-        isPending={isPending}
+        isPending={actionPending}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenAddModal={handleOpenToolbarAction}
@@ -671,7 +686,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
             <Button type="button" variant="ghost" size="sm" onClick={() => onCaptureWarningChange(null)}>
               关闭
             </Button>
-            <Button type="button" variant="primary" size="sm" disabled={isPending}
+            <Button type="button" variant="primary" size="sm" disabled={actionPending}
               onClick={() => void handleSwitchDriver("windivert_v1", { rebuildRules: false })}>
               切换为 WinDivert
             </Button>
@@ -679,7 +694,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
         </section>
       )}
 
-      {state.engineMode === "windivert_v1" && (
+      {engineMode === "windivert_v1" && (
         <CaptureDiagnostics capture={captureEvidence} ownerLabels={captureOwnerLabels} />
       )}
 
@@ -703,14 +718,14 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
                     <BundleCard
                       key={bundle.id}
                       bundle={bundle}
-                      isGlobalActive={state.bundlesEnabled && state.driverActive}
+                      isGlobalActive={state.bundlesEnabled && driverActive}
                       entryStatus={entryStatusMap[bundle.id]}
                       outletUnavailable={unavailableOutlets.includes("bundle:" + bundle.id)}
                       captureEvidence={captureByOwner.get("bundle:" + bundle.id)}
                       globalStatusHint={
                         !state.bundlesEnabled
                           ? "进程分流全局总控已暂停，请开启顶栏总控"
-                          : state.engineMode === "windivert_v1" && !state.isAdmin
+                          : engineMode === "windivert_v1" && !state.isAdmin
                           ? "WinDivert 驱动需管理员特权，请点击顶栏进行 UAC 提权"
                           : "分流拦截尚未就绪"
                       }
@@ -726,12 +741,9 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
                           bundle,
                         })
                       }
-                      onExport={handleExportBundle}
-                      onDelete={(id) => {
-                        const target = bundles.find((b) => b.id === id);
-                        if (target) setBundleToDelete(target);
-                      }}
-                      onLaunch={handleLaunchBundle}
+                      onExport={() => handleExportBundle(bundle)}
+                      onDelete={() => setBundleToDelete(bundle)}
+                      onLaunch={() => handleLaunchBundle(bundle)}
                     />
                   ))}
                 </section>
@@ -762,7 +774,7 @@ export const ProcessRoutingView: React.FC<ProcessRoutingViewProps> = ({
                       rule={rule}
                       entryStatus={entryStatusMap[rule.id]}
                       captureEvidence={captureByOwner.get("rule:" + rule.id)}
-                      isGlobalActive={state.processEnabled && state.driverActive}
+                      isGlobalActive={state.processEnabled && driverActive}
                       onToggleEnabled={(enabled) => handleToggleRule(rule.id, enabled)}
                       onDelete={() => handleDeleteRule(rule.id)}
                       onLaunch={handleLaunchRule}

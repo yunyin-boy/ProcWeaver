@@ -106,9 +106,9 @@ async fn resolve(host: &str, port: u16, forbidden: &[u16], ipv4: Option<bool>) -
     Err("没有可用的 UDP 地址".into())
 }
 
-struct Flow { sender: mpsc::Sender<Vec<u8>>, task: tokio::task::AbortHandle, endpoint: Option<Endpoint> }
+struct Flow { sender: mpsc::Sender<Vec<u8>>, task: tokio::task::AbortHandle, endpoint: Option<Endpoint>, revision: u64 }
 impl Drop for Flow { fn drop(&mut self) { self.task.abort(); } }
-struct Response { policy: Destination, endpoint: Option<Endpoint>, packet: Vec<u8> }
+struct Response { revision: u64, packet: Vec<u8> }
 const RESPONSE_QUEUE_WAIT: Duration = Duration::from_secs(2);
 
 async fn enqueue_response(
@@ -161,7 +161,8 @@ pub(super) async fn associate(runtime: Arc<Engine>, id: String, mut control: Tcp
             _ = &mut expiry => { trace.event("udp.local_associate_end","info",json!({"reason":"idle","idleMs":IDLE.as_millis() as u64})); break; },
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
             Some(response) = responses.recv() => {
-                if runtime.select(&id, &process, &response.policy).is_ok_and(|(endpoint, _, _, _)| endpoint == response.endpoint) {
+                let revision = runtime.config.read().unwrap_or_else(|e| e.into_inner()).revision;
+                if revision == response.revision {
                     if let Some(client) = client {
                         if super::identity::udp_matches(client, &process).await { let _ = socket.send_to(&response.packet, client).await; }
                     }
@@ -179,26 +180,28 @@ pub(super) async fn associate(runtime: Arc<Engine>, id: String, mut control: Tcp
                     if fresh.identity != process.identity { break; } process = fresh; identity_checked = std::time::Instant::now();
                 }
                 client = Some(source); expiry.as_mut().reset(tokio::time::Instant::now() + IDLE);
-                let query = if target.port == 53 { if data.len() > 4096 { continue; } match super::dns::question(data) { Ok(q) => Some(q), Err(_) => continue } } else { None };
-                let policy_target = query.as_ref().map(|q| Destination { host: q.name.clone(), port: 53 }).unwrap_or_else(|| target.clone());
-                let (endpoint, route, generation, ports) = runtime.select(&id, &process, &policy_target)?;
                 flows.retain(|_, f| !f.sender.is_closed());
-                if query.is_some() {
+                if target.port == 53 {
+                    if data.len() > 4096 || super::dns::question(data).is_err() { continue; }
                     if tasks.len() >= 64 { continue; }
                     let Ok(permit) = runtime.capacity.clone().try_acquire_owned() else { continue; };
-                    let record = runtime.record(&id, process.pid, &process.name, &policy_target.authority(), &format!("DNS · {route}"), generation, endpoint.as_ref());
+                    let revision = runtime.config.read().unwrap_or_else(|e| e.into_inner()).revision;
                     let runtime = runtime.clone(); let out = out.clone(); let data = data.to_vec();
+                    let process = process.clone(); let id = id.clone();
                     tasks.spawn(async move {
                         let _permit = permit;
-                        match super::dns::exchange(endpoint.as_ref(), &target, &data, &ports).await {
-                            Ok(response) => { runtime.update(record, "response", "DNS 响应已转发", (data.len() as u64, response.len() as u64)); if let Ok(packet) = encode(&target, &super::dns::fit_udp(&data, response)) { let _ = out.send(Response { policy: policy_target, endpoint, packet }).await; } },
-                            Err(error) => { runtime.update(record, "failed", &error, (0, 0)); if let Ok(packet) = encode(&target, &super::dns::failure(&data, 2)) { let _ = out.send(Response { policy: policy_target, endpoint, packet }).await; } },
+                        let response = super::dns::answer(&runtime, &id, &process, &data, Some(&target), false, "DNS").await
+                            .unwrap_or_else(|_| super::dns::failure(&data, 2));
+                        if let Ok(packet) = encode(&target, &super::dns::fit_udp(&data, response)) {
+                            let _ = out.send(Response { revision, packet }).await;
                         }
                     });
                     continue;
                 }
+                let Ok(target) = runtime.translate_token(&id, target) else { continue; };
+                let Ok((endpoint, route, generation, ports)) = runtime.select_flow(&id, &process, &target, None, super::model::Traffic::Udp) else { continue; };
                 let key = target.authority();
-                if flows.get(&key).is_some_and(|f| f.endpoint != endpoint) { flows.remove(&key); }
+                if flows.get(&key).is_some_and(|flow| flow.endpoint != endpoint || flow.revision != generation) { flows.remove(&key); }
                 if !flows.contains_key(&key) {
                     if flows.len() >= 32 { continue; }
                     let Ok(permit) = runtime.capacity.clone().try_acquire_owned() else { continue; };
@@ -209,9 +212,9 @@ pub(super) async fn associate(runtime: Arc<Engine>, id: String, mut control: Tcp
                     let task = tasks.spawn(async move {
                         let _permit = permit;
                         let _record_guard = UdpRecord { runtime: runtime.clone(), record };
-                        if let Err(error) = relay(runtime.clone(), record, endpoint, target, ports, input, out).await { runtime.update(record, "failed", &error, (0, 0)); }
+                        if let Err(error) = relay(runtime.clone(), record, generation, endpoint, target, ports, input, out).await { runtime.update(record, "failed", &error, (0, 0)); }
                     });
-                    flows.insert(key.clone(), Flow { sender, task, endpoint: selected_endpoint });
+                    flows.insert(key.clone(), Flow { sender, task, endpoint: selected_endpoint, revision: generation });
                 }
                 if let Some(flow) = flows.get(&key) { if flow.sender.try_send(data.to_vec()).is_err() { queue_drops+=1; if last_drop.elapsed()>=Duration::from_secs(1) { trace.event("udp.local_queue_drop","warning",json!({"target":key,"closed":flow.sender.is_closed(),"droppedSinceLast":queue_drops})); queue_drops=0; last_drop=std::time::Instant::now(); } } }
             }
@@ -229,7 +232,7 @@ impl Drop for UdpRecord {
         }
     }
 }
-async fn relay(runtime: Arc<Engine>, record: u64, endpoint: Option<Endpoint>, target: Destination, ports: Vec<u16>, mut input: mpsc::Receiver<Vec<u8>>, output: mpsc::Sender<Response>) -> Result<(), String> {
+async fn relay(runtime: Arc<Engine>, record: u64, revision: u64, endpoint: Option<Endpoint>, target: Destination, ports: Vec<u16>, mut input: mpsc::Receiver<Vec<u8>>, output: mpsc::Sender<Response>) -> Result<(), String> {
     let trace=Trace::new(Some(record)); let _activity=trace.activity("udp");
     let mut channel = Channel::open_traced(endpoint.as_ref(), &target, &ports,trace.clone()).await?;
     runtime.update(record, "active", "UDP 转发已建立", (0, 0));
@@ -248,7 +251,7 @@ async fn relay(runtime: Arc<Engine>, record: u64, endpoint: Option<Endpoint>, ta
                 let (source, data) = result?; totals.1 += data.len() as u64;
                 enqueue_response(
                     &output,
-                    Response { policy: target.clone(), endpoint: endpoint.clone(), packet: encode(&source, &data)? },
+                    Response { revision, packet: encode(&source, &data)? },
                     &trace,
                     RESPONSE_QUEUE_WAIT,
                 ).await?;
@@ -266,13 +269,12 @@ mod tests {
 
     #[tokio::test]
     async fn response_queue_reports_backpressure_and_closed_receiver() {
-        let target = transport::Destination::new("fixture.invalid", 443).unwrap();
         let trace = Trace::new(None);
         let (output, mut pending) = mpsc::channel(1);
-        output.send(Response { policy: target.clone(), endpoint: None, packet: vec![1] }).await.unwrap();
+        output.send(Response { revision: 1, packet: vec![1] }).await.unwrap();
         let result = enqueue_response(
             &output,
-            Response { policy: target.clone(), endpoint: None, packet: vec![2] },
+            Response { revision: 1, packet: vec![2] },
             &trace,
             Duration::from_millis(10),
         ).await;
@@ -282,7 +284,7 @@ mod tests {
         drop(pending);
         let result = enqueue_response(
             &output,
-            Response { policy: target, endpoint: None, packet: vec![3] },
+            Response { revision: 1, packet: vec![3] },
             &trace,
             Duration::from_millis(10),
         ).await;

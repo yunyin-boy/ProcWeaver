@@ -14,7 +14,7 @@ import type { ProcessBundleItem } from "../../types/processRouting";
 interface GithubBundleModalProps {
   isOpen: boolean;
   onClose: () => void;
-  existingBundles: ProcessBundleItem[];
+  existingBundles: readonly Pick<ProcessBundleItem, "packageId" | "repositoryOrigin">[];
   onMount: (item: RepositoryPackage) => Promise<void>;
 }
 

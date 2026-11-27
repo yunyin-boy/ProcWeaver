@@ -8,8 +8,8 @@ pub mod process_capture;
 pub mod edition;
 #[cfg(feature = "process-edition")]
 pub mod process_app;
-#[cfg(feature = "process-edition")]
-mod process_update;
+#[cfg(windows)]
+pub mod portable_update;
 #[cfg(feature = "process-edition")]
 mod process_conflict;
 mod bundle_repository;
@@ -84,6 +84,8 @@ pub fn run() {
         .setup(|_app| {
             #[cfg(not(target_os = "android"))]
             desktop_startup::setup(_app.handle())?;
+            #[cfg(windows)]
+            portable_update::watch_trial(_app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -222,6 +224,13 @@ pub fn run() {
             commands::profile::sync_smart_groups_to_core,
             commands::settings::get_general_settings,
             commands::settings::save_general_settings,
+            commands::settings::patch_general_settings,
+            #[cfg(windows)]
+            commands::settings::set_tun_enabled,
+            #[cfg(not(target_os = "android"))]
+            commands::lan_access::get_lan_access_status,
+            #[cfg(not(target_os = "android"))]
+            commands::tun::get_tun_status,
             commands::settings::set_close_action,
             commands::settings::get_active_traffic_driver,
             commands::settings::clean_windivert_residual_service,
@@ -264,9 +273,18 @@ pub fn run() {
             commands::process_watcher::get_process_watcher_status,
             commands::process_watcher::get_watcher_mode,
             commands::process_watcher::set_watcher_mode,
+            #[cfg(not(windows))]
             commands::maintenance::check_app_update,
+            #[cfg(not(windows))]
             commands::maintenance::download_app_update,
+            #[cfg(not(windows))]
             commands::maintenance::install_app_update,
+            #[cfg(windows)]
+            portable_update::check_app_update,
+            #[cfg(windows)]
+            portable_update::apply_portable_update,
+            #[cfg(windows)]
+            portable_update::portable_workbench_ready,
             commands::maintenance::restart_app,
             commands::maintenance::get_mihomo_core_detail,
             commands::maintenance::check_mihomo_update,

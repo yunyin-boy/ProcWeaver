@@ -6,34 +6,43 @@ import {
   ProcessTrafficDriver,
   PROCESS_DRIVER_OPTIONS,
 } from "../../types/processRouting";
+import { describeCaptureMode, HOOK_RESTART_NOTICE, type TunAccess } from "../../utils/useTunAccess";
 
 export type ProcessSubTab = "bundles" | "rules" | "live";
 
 interface ProcessToolbarProps {
-  currentSubTab: ProcessSubTab;
-  onSelectSubTab: (tab: ProcessSubTab) => void;
-  state: ProcessRoutingState;
+  currentSubTab?: ProcessSubTab;
+  onSelectSubTab?: (tab: ProcessSubTab) => void;
+  state: Pick<ProcessRoutingState, "engineMode" | "isAdmin" | "processEnabled" | "driverActive">
+    & Partial<Pick<ProcessRoutingState, "matchedProcessCount">>;
   bundleCount: number;
-  ruleCount: number;
-  liveCount: number;
+  ruleCount?: number;
+  liveCount?: number;
+  captureSummary?: string;
+  tunAccess?: Pick<TunAccess, "status" | "pending">;
+  driverDisabled?: boolean;
   onToggleMaster: () => void;
-  onSwitchDriver: (driver: ProcessTrafficDriver) => Promise<void>;
-  onElevateAdmin: () => Promise<void>;
+  onSwitchDriver: (driver: ProcessTrafficDriver) => void | Promise<void>;
+  onElevateAdmin?: () => Promise<void>;
   isPending: boolean;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onOpenAddModal: () => void;
   onImportBundle?: (file: File) => void;
+  onOpenImportModal?: () => void;
   onOpenGithubModal?: () => void;
 }
 
 export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
-  currentSubTab,
+  currentSubTab = "bundles",
   onSelectSubTab,
   state,
   bundleCount,
-  ruleCount,
-  liveCount,
+  ruleCount = 0,
+  liveCount = 0,
+  captureSummary,
+  tunAccess,
+  driverDisabled,
   onToggleMaster,
   onSwitchDriver,
   onElevateAdmin,
@@ -42,6 +51,7 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
   onSearchChange,
   onOpenAddModal,
   onImportBundle,
+  onOpenImportModal,
   onOpenGithubModal,
 }) => {
   const [driverDropdownOpen, setDriverDropdownOpen] = useState(false);
@@ -73,9 +83,12 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
   const currentOption =
     PROCESS_DRIVER_OPTIONS.find((opt) => opt.id === state.engineMode) ||
     PROCESS_DRIVER_OPTIONS[0];
+  const currentMode = tunAccess
+    ? describeCaptureMode(tunAccess.status, tunAccess.pending)
+    : currentOption.title;
 
   const handleSelectDriver = async (driverId: ProcessTrafficDriver) => {
-    if (driverId === state.engineMode || isSwitchingDriver) {
+    if (driverId === state.engineMode || isSwitchingDriver || tunAccess?.pending) {
       setDriverDropdownOpen(false);
       return;
     }
@@ -90,7 +103,7 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
 
   const handleElevate = async () => {
     try {
-      await onElevateAdmin();
+      await onElevateAdmin?.();
     } catch (e) {
       console.error("提权启动失败:", e);
     }
@@ -122,7 +135,7 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
               <p>进程捕获</p>
               <div className="flex flex-wrap items-baseline gap-x-2">
                 <span className={state.processEnabled && state.driverActive ? "!text-[var(--workbench-positive)]" : ""}>{captureLabel}</span>
-                <span className="tabular-nums">{state.matchedProcessCount} 个匹配进程</span>
+                <span className="tabular-nums">{captureSummary ?? `${state.matchedProcessCount} 个匹配进程`}</span>
               </div>
             </div>
             <CapsuleToggle
@@ -139,15 +152,19 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
               type="button"
               className="workbench-action justify-between text-left"
               onClick={() => setDriverDropdownOpen(!driverDropdownOpen)}
-              disabled={isSwitchingDriver}
+              disabled={isSwitchingDriver || driverDisabled || isPending || (tunAccess && !tunAccess.status)}
               aria-expanded={driverDropdownOpen}
-              aria-label={"捕获方式 " + currentOption.title}
+              aria-label={"捕获方式 " + currentMode}
+              title={tunAccess?.status?.detail ?? undefined}
             >
-              <span>{currentOption.title} · {currentOption.subLabel}</span>
+              <span>{tunAccess ? currentMode : `${currentOption.title} · ${currentOption.subLabel}`}</span>
               <ChevronDown size={14} aria-hidden="true" className={driverDropdownOpen ? "rotate-180 shrink-0" : "shrink-0"} />
             </button>
             {driverDropdownOpen && (
               <div className="workbench-menu workbench-driver-menu absolute left-0 top-full z-50 mt-1.5 grid gap-1 rounded-xl p-1.5">
+                {state.engineMode === "tun" && (
+                  <p className="px-2 py-1 text-[11px] text-[var(--text-muted)]">选择其他捕获方式会关闭 TUN。</p>
+                )}
                 {PROCESS_DRIVER_OPTIONS.map((option) => (
                   <button
                     key={option.id}
@@ -167,9 +184,12 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
                 ))}
               </div>
             )}
+            {tunAccess?.status?.activeMode === "user_mode" && (
+              <p className="text-[11px] text-[var(--text-muted)]">{HOOK_RESTART_NOTICE}。</p>
+            )}
           </div>
 
-          {needsElevation && (
+          {needsElevation && onElevateAdmin && (
             <button
               type="button"
               className="workbench-action workbench-action-warning"
@@ -198,8 +218,8 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
               <Package size={14} aria-hidden="true" /> GitHub 业务包
             </button>
           )}
-          {currentSubTab === "bundles" && onImportBundle && (
-            <button type="button" className="workbench-action" onClick={() => fileInputRef.current?.click()}>
+          {currentSubTab === "bundles" && (onImportBundle || onOpenImportModal) && (
+            <button type="button" className="workbench-action" onClick={onOpenImportModal ?? (() => fileInputRef.current?.click())}>
               <Upload size={14} aria-hidden="true" /> 导入规则包
             </button>
           )}
@@ -210,13 +230,19 @@ export const ProcessToolbar: React.FC<ProcessToolbarProps> = ({
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <div className="workbench-segments workbench-process-tabs" role="group" aria-label="进程分流视图">
-          {tabs.map(({ id, label, count }) => (
-            <button type="button" key={id} aria-pressed={currentSubTab === id} onClick={() => onSelectSubTab(id)}>
-              {label} <span className="tabular-nums">{count}</span>
-            </button>
-          ))}
-        </div>
+        {onSelectSubTab ? (
+          <div className="workbench-segments workbench-process-tabs" role="group" aria-label="进程分流视图">
+            {tabs.map(({ id, label, count }) => (
+              <button type="button" key={id} aria-pressed={currentSubTab === id} onClick={() => onSelectSubTab(id)}>
+                {label} <span className="tabular-nums">{count}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="px-1 text-xs font-semibold text-[var(--text-secondary)]">
+            业务规则包 <span className="tabular-nums text-[var(--text-muted)]">{bundleCount}</span>
+          </span>
+        )}
         <div className="workbench-field flex min-w-[min(100%,175px)] flex-1 items-center gap-2 px-2.5">
           <Search size={14} className="shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
           <input

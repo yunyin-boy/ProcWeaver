@@ -314,12 +314,15 @@ fn hook_environment_with_action(port: u16, dns: u16, policy: Option<&crate::rout
     use crate::capture::suite_dns::{self, Mode};
     let default = crate::routing_overrides::model::BundlePolicy::default();
     let p = policy.unwrap_or(&default);
-    // Full-edition suite inlets evaluate these settings using the original
-    // destination, for both literal addresses and Hook-generated DNS tokens.
-    let server_filters = uses_core_listener(port);
+    // Both suite inlets evaluate the complete destination policy. Leaving a
+    // second filter in the Hook can bypass the inlet with a synthetic address.
+    let core_listener = uses_core_listener(port);
+    let external_listener = port != 0 && crate::external_proxy::routes().iter().any(|route| route.port == port);
+    let server_filters = core_listener || external_listener;
     let selected_dns = Mode::for_policy(Some(p));
-    let scoped_dns = server_filters && selected_dns != Mode::SystemNative && scoped_dns_inlet(port, selected_dns);
-    let dns_mode = effective_dns_mode(server_filters, scoped_dns, selected_dns);
+    let scoped_dns = selected_dns != Mode::SystemNative
+        && (external_listener || core_listener && scoped_dns_inlet(port, selected_dns));
+    let dns_mode = effective_dns_mode(core_listener, scoped_dns, selected_dns);
     let native_servers = if server_filters && dns_mode == Mode::SystemNative {
         suite_dns::system_servers().into_iter().map(|ip| ip.to_string()).collect::<Vec<_>>().join(",")
     } else {
@@ -335,7 +338,7 @@ fn hook_environment_with_action(port: u16, dns: u16, policy: Option<&crate::rout
         ("PROCWEAVER_PROXY_SUBPROCESSES", u8::from(p.proxy_subprocesses).to_string()), ("PROCWEAVER_BYPASS_LAN", u8::from(p.bypass_lan).to_string()),
         ("PROCWEAVER_DNS_MODE", dns_mode.as_str().into()),
         ("PROCWEAVER_REMOTE_DNS_REQUIRED", u8::from(server_filters && dns_mode != Mode::SystemNative).to_string()),
-        ("PROCWEAVER_CORE_LISTENER", u8::from(server_filters).to_string()),
+        ("PROCWEAVER_CORE_LISTENER", u8::from(core_listener).to_string()),
         ("PROCWEAVER_SCOPED_DNS", u8::from(scoped_dns).to_string()),
         ("PROCWEAVER_NATIVE_DNS_SERVERS", native_servers),
         ("PROCWEAVER_PORT_FILTER_MODE", if server_filters { "all".into() } else { p.port_filter_mode.clone() }),

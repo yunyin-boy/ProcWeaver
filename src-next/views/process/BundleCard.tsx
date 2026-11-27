@@ -2,32 +2,40 @@ import React from "react";
 import { ChevronRight, Package, Play, LoaderCircle } from "lucide-react";
 import { CapsuleToggle } from "../../primitives/CapsuleToggle";
 import { CaptureConnectionEvidence, ProcessBundleItem, usesExistingBundleRules } from "../../types/processRouting";
-import { EntryStatusItem, exportBundleToPwPack } from "../../services/processRoutingService";
+import type { EntryStatusItem } from "../../services/processRoutingService";
 import { RoutingEvidenceBadge } from "./RoutingEvidenceBadge";
 
 interface BundleCardProps {
-  bundle: ProcessBundleItem;
+  bundle: Pick<ProcessBundleItem, "name" | "description" | "mainExe" | "exes" | "enabled" | "targetProxy" | "mode"> & {
+    policy: Pick<ProcessBundleItem["policy"], "dnsMode" | "proxySubprocesses" | "useExistingRules">;
+  };
   isGlobalActive?: boolean;
+  busy?: boolean;
   globalStatusHint?: string;
   entryStatus?: EntryStatusItem;
   outletUnavailable?: boolean;
   captureEvidence?: CaptureConnectionEvidence;
+  notice?: string;
+  onOpenDetail?: () => void;
   onToggleEnabled: (enabled: boolean) => void;
   onOpenOutletPicker: () => void;
   onToggleSubprocesses: (enabled: boolean) => void;
   onEdit: () => void;
-  onExport?: (bundle: ProcessBundleItem) => void;
-  onDelete?: (bundleId: string) => void;
-  onLaunch?: (bundle: ProcessBundleItem) => Promise<void> | void;
+  onExport: () => void;
+  onDelete?: () => void;
+  onLaunch?: () => Promise<void> | void;
 }
 
 export const BundleCard: React.FC<BundleCardProps> = ({
   bundle,
   isGlobalActive = true,
+  busy = false,
   globalStatusHint,
   entryStatus,
   outletUnavailable = false,
   captureEvidence,
+  notice,
+  onOpenDetail,
   onToggleEnabled,
   onOpenOutletPicker,
   onToggleSubprocesses,
@@ -43,32 +51,18 @@ export const BundleCard: React.FC<BundleCardProps> = ({
     if (!onLaunch || isLaunching) return;
     setIsLaunching(true);
     try {
-      await onLaunch(bundle);
+      await onLaunch();
     } finally {
       setIsLaunching(false);
     }
-  };
-
-  const handleExport = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (onExport) {
-      onExport(bundle);
-    } else {
-      exportBundleToPwPack(bundle);
-    }
-  };
-
-  const handleDeleteClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!onDelete) return;
-    onDelete(bundle.id);
   };
 
   const displayedExes = bundle.exes.slice(0, 3);
   const hiddenCount = bundle.exes.length - displayedExes.length;
   const useExistingRules = usesExistingBundleRules(bundle);
   const needsOutlet = outletUnavailable || !bundle.targetProxy;
-  const outletLabel = outletUnavailable ? "出口失效，待重绑" : bundle.targetProxy || "待绑定出口";
+  const outletLabel = bundle.targetProxy || (outletUnavailable ? "出口失效" : "待绑定出口");
+  const outletTitle = outletUnavailable ? outletLabel + " · 待重绑" : outletLabel;
   const dnsLabel = { fake_ip: "Fake-IP", system_native: "系统 DNS", safe_pure: "纯净 DNS" }[bundle.policy.dnsMode] || "纯净 DNS";
   const bundleStatus = needsOutlet ? (outletUnavailable ? "待重绑" : "待绑定") : bundle.enabled ? "已启用" : "已暂停";
   const bundleStatusTone = needsOutlet
@@ -83,7 +77,13 @@ export const BundleCard: React.FC<BundleCardProps> = ({
             <Package size={17} aria-hidden="true" />
           </span>
           <div className="min-w-0">
-            <h2 className="workbench-panel-title [overflow-wrap:anywhere]">{bundle.name}</h2>
+            <h2 className="workbench-panel-title [overflow-wrap:anywhere]">
+              {onOpenDetail ? (
+                <button type="button" className="text-left hover:text-[var(--workbench-accent)]" onClick={onOpenDetail} title="查看运行详情">
+                  {bundle.name}
+                </button>
+              ) : bundle.name}
+            </h2>
             <div className="mt-1 flex flex-wrap gap-1.5">
               <span className="workbench-tag">{bundle.mode === "sandbox" ? "沙盒" : "严格"}</span>
               <span className={"workbench-tag " + bundleStatusTone}>{bundleStatus}</span>
@@ -91,6 +91,7 @@ export const BundleCard: React.FC<BundleCardProps> = ({
           </div>
         </div>
         {bundle.description && <p className="break-words text-[13px] leading-relaxed text-[var(--text-muted)]">{bundle.description}</p>}
+        {notice && <p className="text-xs leading-relaxed text-[var(--workbench-warning)]">{notice}</p>}
         <div className="grid gap-1 text-xs text-[var(--text-muted)]">
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <span>进程名单 <strong className="tabular-nums text-[var(--text-primary)]">{bundle.exes.length}</strong></span>
@@ -116,8 +117,8 @@ export const BundleCard: React.FC<BundleCardProps> = ({
           type="button"
           onClick={onOpenOutletPicker}
           className={"workbench-action w-full justify-between " + (needsOutlet ? "!text-[var(--workbench-warning)]" : "")}
-          title={outletLabel}
-          aria-label={bundle.name + "，专用出口 " + outletLabel}
+          title={outletTitle}
+          aria-label={bundle.name + "，专用出口 " + outletTitle}
         >
           <span className="min-w-0 truncate">{outletLabel}</span>
           <ChevronRight size={13} className="shrink-0" aria-hidden="true" />
@@ -128,6 +129,7 @@ export const BundleCard: React.FC<BundleCardProps> = ({
             <input
               type="checkbox"
               checked={bundle.policy.proxySubprocesses}
+              disabled={busy}
               onChange={(event) => onToggleSubprocesses(event.target.checked)}
               className="size-3 accent-[var(--workbench-accent-solid)]"
             />
@@ -147,14 +149,14 @@ export const BundleCard: React.FC<BundleCardProps> = ({
       <div className="workbench-bundle-actions">
         <div className="flex flex-wrap items-center gap-2 text-[13px] text-[var(--text-secondary)]">
           启用套件
-          <CapsuleToggle checked={bundle.enabled} onChange={onToggleEnabled} title={"启用套件 " + bundle.name} />
+          <CapsuleToggle checked={bundle.enabled} disabled={busy} onChange={onToggleEnabled} title={"启用套件 " + bundle.name} />
         </div>
         <div className="flex flex-wrap items-center gap-0.5">
           {onLaunch && (
             <button
               type="button"
               onClick={handleLaunchClick}
-              disabled={isLaunching || !bundle.enabled || outletUnavailable}
+              disabled={busy || isLaunching || !bundle.enabled || outletUnavailable}
               className="workbench-action workbench-action-primary"
               title={bundle.enabled ? "受控启动应用" : "启用套件后可受控启动"}
             >
@@ -163,8 +165,8 @@ export const BundleCard: React.FC<BundleCardProps> = ({
             </button>
           )}
           <button type="button" className="workbench-action workbench-action-ghost" onClick={onEdit}>编辑</button>
-          <button type="button" className="workbench-action workbench-action-ghost" onClick={handleExport} title="导出脱敏规则包">导出</button>
-          {onDelete && <button type="button" className="workbench-action workbench-action-ghost" onClick={handleDeleteClick}>删除</button>}
+          <button type="button" className="workbench-action workbench-action-ghost" onClick={onExport} title="导出脱敏规则包">导出</button>
+          {onDelete && <button type="button" disabled={busy} className="workbench-action workbench-action-ghost" onClick={onDelete}>删除</button>}
         </div>
       </div>
     </article>

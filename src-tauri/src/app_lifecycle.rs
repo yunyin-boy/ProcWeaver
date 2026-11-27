@@ -212,12 +212,14 @@ pub fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         "toggle_autolaunch" => {
             let app_handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                if let Ok(mut s) = crate::commands::settings::get_general_settings() {
+                if let Ok(s) = crate::commands::settings::get_general_settings() {
                     let next = !s.auto_start;
-                    s.auto_start = next;
-                    s.auto_run = next;
+                    let patch = [
+                        ("autoStart".into(), next.into()),
+                        ("autoRun".into(), next.into()),
+                    ].into_iter().collect();
                     let state = app_handle.state::<crate::commands::process::CoreStateMutex>();
-                    let _ = crate::commands::settings::save_general_settings(s, state).await;
+                    if crate::commands::settings::patch_general_settings(patch, state).await.is_err() { return; }
                     if let Ok(mut guard) = CURRENT_TRAY_PAYLOAD.lock() {
                         if let Some(payload) = guard.as_mut() {
                             payload.auto_run = next;
