@@ -8,4 +8,5 @@ ipv6: false
 proxies: []
 proxy-groups: []
 rules:
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
   - MATCH,DIRECT
